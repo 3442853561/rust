@@ -212,6 +212,18 @@ Rust. And a good place to ask for help would be [#rust-beginners].
 [#rust]: irc://irc.mozilla.org/rust
 [#rust-beginners]: irc://irc.mozilla.org/rust-beginners
 
+## Reference materials for Non-native English speakers
+
+* [Chinese-中文](https://www.rust-lang.org/zh-CN/) 
+ * [Rust 程序设计语言(简体中文)](https://kaisery.gitbooks.io/rust-book-chinese/content/)
+ * [Rust 程式語言(正體中文)](http://askeing.github.io/rust-book/)
+* [French-Français](https://www.rust-lang.org/fr-FR/)
+* Japanese-日本語
+ * [rust-by-exampleの和訳リポジトリ](http://rust-lang-ja.org/rust-by-example/)
+* [Korean-한국어](https://www.rust-lang.org/ko-KR/)
+* [Portuguese-Português](https://www.rust-lang.org/pt-BR/)
+* [Russian-Русский](https://www.rust-lang.org/ru-RU/)
+
 ## License
 
 Rust is primarily distributed under the terms of both the MIT license
