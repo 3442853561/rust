@@ -13,8 +13,9 @@
 use std;
 
 use rustc_const_math::{ConstMathErr, Op};
-use rustc_data_structures::fnv::FnvHashMap;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
+use rustc_i128::i128;
 
 use build::{BlockAnd, BlockAndExtension, Builder};
 use build::expr::category::{Category, RvalueFunc};
@@ -22,7 +23,7 @@ use hair::*;
 use rustc_const_math::{ConstInt, ConstIsize};
 use rustc::middle::const_val::ConstVal;
 use rustc::ty;
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use syntax::ast;
 use syntax_pos::Span;
 
@@ -131,7 +132,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let source = unpack!(block = this.as_operand(block, source));
                 block.and(Rvalue::Cast(CastKind::Unsize, source, expr.ty))
             }
-            ExprKind::Vec { fields } => {
+            ExprKind::Array { fields } => {
                 // (*) We would (maybe) be closer to trans if we
                 // handled this and other aggregate cases via
                 // `into()`, not `as_rvalue` -- in that case, instead
@@ -190,7 +191,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
                 // first process the set of fields that were provided
                 // (evaluating them in order given by user)
-                let fields_map: FnvHashMap<_, _> =
+                let fields_map: FxHashMap<_, _> =
                     fields.into_iter()
                           .map(|f| (f.name, unpack!(block = this.as_operand(block, f.expr))))
                           .collect();
@@ -347,6 +348,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     ast::IntTy::I16 => ConstInt::I16(-1),
                     ast::IntTy::I32 => ConstInt::I32(-1),
                     ast::IntTy::I64 => ConstInt::I64(-1),
+                    ast::IntTy::I128 => ConstInt::I128(-1),
                     ast::IntTy::Is => {
                         let int_ty = self.hir.tcx().sess.target.int_type;
                         let val = ConstIsize::new(-1, int_ty).unwrap();
@@ -369,10 +371,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         let literal = match ty.sty {
             ty::TyInt(ity) => {
                 let val = match ity {
-                    ast::IntTy::I8  => ConstInt::I8(std::i8::MIN),
-                    ast::IntTy::I16 => ConstInt::I16(std::i16::MIN),
-                    ast::IntTy::I32 => ConstInt::I32(std::i32::MIN),
-                    ast::IntTy::I64 => ConstInt::I64(std::i64::MIN),
+                    ast::IntTy::I8  => ConstInt::I8(i8::min_value()),
+                    ast::IntTy::I16 => ConstInt::I16(i16::min_value()),
+                    ast::IntTy::I32 => ConstInt::I32(i32::min_value()),
+                    ast::IntTy::I64 => ConstInt::I64(i64::min_value()),
+                    ast::IntTy::I128 => ConstInt::I128(i128::min_value()),
                     ast::IntTy::Is => {
                         let int_ty = self.hir.tcx().sess.target.int_type;
                         let min = match int_ty {

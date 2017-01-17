@@ -383,15 +383,27 @@ tempus vel, gravida nec quam.";
 
 // check the panic includes the prefix of the sliced string
 #[test]
-#[should_panic(expected="Lorem ipsum dolor sit amet")]
+#[should_panic(expected="byte index 1024 is out of bounds of `Lorem ipsum dolor sit amet")]
 fn test_slice_fail_truncated_1() {
     &LOREM_PARAGRAPH[..1024];
 }
 // check the truncation in the panic message
 #[test]
-#[should_panic(expected="luctus, im`[...] do not lie on character boundary")]
+#[should_panic(expected="luctus, im`[...]")]
 fn test_slice_fail_truncated_2() {
     &LOREM_PARAGRAPH[..1024];
+}
+
+#[test]
+#[should_panic(expected="byte index 4 is not a char boundary; it is inside 'α' (bytes 3..5) of")]
+fn test_slice_fail_boundary_1() {
+    &"abcαβγ"[4..];
+}
+
+#[test]
+#[should_panic(expected="byte index 6 is not a char boundary; it is inside 'β' (bytes 5..7) of")]
+fn test_slice_fail_boundary_2() {
+    &"abcαβγ"[2..6];
 }
 
 #[test]
@@ -530,7 +542,7 @@ fn from_utf8_mostly_ascii() {
 
 #[test]
 fn test_is_utf16() {
-    use rustc_unicode::str::is_utf16;
+    use std_unicode::str::is_utf16;
 
     macro_rules! pos {
         ($($e:expr),*) => { { $(assert!(is_utf16($e));)* } }
@@ -767,6 +779,7 @@ fn test_iterator() {
         pos += 1;
     }
     assert_eq!(pos, v.len());
+    assert_eq!(s.chars().count(), v.len());
 }
 
 #[test]
@@ -812,6 +825,14 @@ fn test_iterator_clone() {
     let mut it = s.chars();
     it.next();
     assert!(it.clone().zip(it).all(|(x,y)| x == y));
+}
+
+#[test]
+fn test_iterator_last() {
+    let s = "ศไทย中华Việt Nam";
+    let mut it = s.chars();
+    it.next();
+    assert_eq!(it.last(), Some('m'));
 }
 
 #[test]
@@ -909,6 +930,14 @@ fn test_char_indices_revator() {
     }
     assert_eq!(pos, v.len());
     assert_eq!(pos, p.len());
+}
+
+#[test]
+fn test_char_indices_last() {
+    let s = "ศไทย中华Việt Nam";
+    let mut it = s.char_indices();
+    it.next();
+    assert_eq!(it.last(), Some((27, 'm')));
 }
 
 #[test]
@@ -1169,7 +1198,7 @@ fn test_rev_split_char_iterator_no_trailing() {
 
 #[test]
 fn test_utf16_code_units() {
-    use rustc_unicode::str::Utf16Encoder;
+    use std_unicode::str::Utf16Encoder;
     assert_eq!(Utf16Encoder::new(vec!['é', '\u{1F4A9}'].into_iter()).collect::<Vec<u16>>(),
                [0xE9, 0xD83D, 0xDCA9])
 }

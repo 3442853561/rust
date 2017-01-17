@@ -127,6 +127,9 @@ pub struct Config {
     // Only run tests that match this filter
     pub filter: Option<String>,
 
+    // Exactly match the filter, rather than a substring
+    pub filter_exact: bool,
+
     // Write out a parseable log of tests that were run
     pub logfile: Option<PathBuf>,
 
@@ -146,8 +149,14 @@ pub struct Config {
     // Host triple for the compiler being invoked
     pub host: String,
 
-    // Version of GDB
-    pub gdb_version: Option<String>,
+    // Path to / name of the GDB executable
+    pub gdb: Option<String>,
+
+    // Version of GDB, encoded as ((major * 1000) + minor) * 1000 + patch
+    pub gdb_version: Option<u32>,
+
+    // Whether GDB has native rust support
+    pub gdb_native_rust: bool,
 
     // Version of LLDB
     pub lldb_version: Option<String>,

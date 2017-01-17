@@ -9,16 +9,12 @@
 // except according to those terms.
 
 use attributes;
-use arena::TypedArena;
 use llvm::{ValueRef, get_params};
 use rustc::traits;
-use abi::FnType;
-use base::*;
-use build::*;
-use callee::Callee;
+use callee::{Callee, CalleeData};
 use common::*;
+use builder::Builder;
 use consts;
-use debuginfo::DebugLoc;
 use declare;
 use glue;
 use machine;
@@ -32,15 +28,15 @@ use rustc::ty;
 const VTABLE_OFFSET: usize = 3;
 
 /// Extracts a method from a trait object's vtable, at the specified index.
-pub fn get_virtual_method<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                      llvtable: ValueRef,
-                                      vtable_index: usize)
-                                      -> ValueRef {
+pub fn get_virtual_method<'a, 'tcx>(bcx: &Builder<'a, 'tcx>,
+                                    llvtable: ValueRef,
+                                    vtable_index: usize)
+                                    -> ValueRef {
     // Load the data pointer from the object.
     debug!("get_virtual_method(vtable_index={}, llvtable={:?})",
            vtable_index, Value(llvtable));
 
-    Load(bcx, GEPi(bcx, llvtable, &[vtable_index + VTABLE_OFFSET]))
+    bcx.load(bcx.gepi(llvtable, &[vtable_index + VTABLE_OFFSET]))
 }
 
 /// Generate a shim function that allows an object type like `SomeTrait` to
@@ -67,36 +63,46 @@ pub fn get_virtual_method<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
 pub fn trans_object_shim<'a, 'tcx>(ccx: &'a CrateContext<'a, 'tcx>,
                                    callee: Callee<'tcx>)
                                    -> ValueRef {
-    let _icx = push_ctxt("trans_object_shim");
-    let tcx = ccx.tcx();
-
     debug!("trans_object_shim({:?})", callee);
 
-    let (sig, abi, function_name) = match callee.ty.sty {
-        ty::TyFnDef(def_id, substs, f) => {
+    let function_name = match callee.ty.sty {
+        ty::TyFnDef(def_id, substs, _) => {
             let instance = Instance::new(def_id, substs);
-            (&f.sig, f.abi, instance.symbol_name(ccx.shared()))
+            instance.symbol_name(ccx.shared())
         }
         _ => bug!()
     };
 
-    let sig = tcx.erase_late_bound_regions_and_normalize(sig);
-    let fn_ty = FnType::new(ccx, abi, &sig, &[]);
-
     let llfn = declare::define_internal_fn(ccx, &function_name, callee.ty);
     attributes::set_frame_pointer_elimination(ccx, llfn);
 
-    let (block_arena, fcx): (TypedArena<_>, FunctionContext);
-    block_arena = TypedArena::new();
-    fcx = FunctionContext::new(ccx, llfn, fn_ty, None, &block_arena);
-    let mut bcx = fcx.init(false);
+    let bcx = Builder::new_block(ccx, llfn, "entry-block");
 
-    let dest = fcx.llretslotptr.get();
-    let llargs = get_params(fcx.llfn);
-    bcx = callee.call(bcx, DebugLoc::None,
-                      &llargs[fcx.fn_ty.ret.is_indirect() as usize..], dest).bcx;
+    let mut llargs = get_params(llfn);
+    let fn_ret = callee.ty.fn_ret();
+    let fn_ty = callee.direct_fn_type(ccx, &[]);
 
-    fcx.finish(bcx, DebugLoc::None);
+    let fn_ptr = match callee.data {
+        CalleeData::Virtual(idx) => {
+            let fn_ptr = get_virtual_method(&bcx,
+                llargs.remove(fn_ty.ret.is_indirect() as usize + 1), idx);
+            let llty = fn_ty.llvm_type(bcx.ccx).ptr_to();
+            bcx.pointercast(fn_ptr, llty)
+        },
+        _ => bug!("trans_object_shim called with non-virtual callee"),
+    };
+    let llret = bcx.call(fn_ptr, &llargs, None);
+    fn_ty.apply_attrs_callsite(llret);
+
+    if fn_ret.0.is_never() {
+        bcx.unreachable();
+    } else {
+        if fn_ty.ret.is_indirect() || fn_ty.ret.is_ignore() {
+            bcx.ret_void();
+        } else {
+            bcx.ret(llret);
+        }
+    }
 
     llfn
 }
@@ -110,42 +116,47 @@ pub fn trans_object_shim<'a, 'tcx>(ccx: &'a CrateContext<'a, 'tcx>,
 /// making an object `Foo<Trait>` from a value of type `Foo<T>`, then
 /// `trait_ref` would map `T:Trait`.
 pub fn get_vtable<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
-                            trait_ref: ty::PolyTraitRef<'tcx>)
+                            ty: ty::Ty<'tcx>,
+                            trait_ref: Option<ty::PolyExistentialTraitRef<'tcx>>)
                             -> ValueRef
 {
     let tcx = ccx.tcx();
-    let _icx = push_ctxt("meth::get_vtable");
 
-    debug!("get_vtable(trait_ref={:?})", trait_ref);
+    debug!("get_vtable(ty={:?}, trait_ref={:?})", ty, trait_ref);
 
     // Check the cache.
-    if let Some(&val) = ccx.vtables().borrow().get(&trait_ref) {
+    if let Some(&val) = ccx.vtables().borrow().get(&(ty, trait_ref)) {
         return val;
     }
 
     // Not in the cache. Build it.
     let nullptr = C_null(Type::nil(ccx).ptr_to());
-    let methods = traits::get_vtable_methods(tcx, trait_ref).map(|opt_mth| {
-        opt_mth.map_or(nullptr, |(def_id, substs)| {
-            Callee::def(ccx, def_id, substs).reify(ccx)
-        })
-    });
 
-    let size_ty = sizing_type_of(ccx, trait_ref.self_ty());
+    let size_ty = sizing_type_of(ccx, ty);
     let size = machine::llsize_of_alloc(ccx, size_ty);
-    let align = align_of(ccx, trait_ref.self_ty());
+    let align = align_of(ccx, ty);
 
-    let components: Vec<_> = [
+    let mut components: Vec<_> = [
         // Generate a destructor for the vtable.
-        glue::get_drop_glue(ccx, trait_ref.self_ty()),
+        glue::get_drop_glue(ccx, ty),
         C_uint(ccx, size),
         C_uint(ccx, align)
-    ].iter().cloned().chain(methods).collect();
+    ].iter().cloned().collect();
+
+    if let Some(trait_ref) = trait_ref {
+        let trait_ref = trait_ref.with_self_ty(tcx, ty);
+        let methods = traits::get_vtable_methods(tcx, trait_ref).map(|opt_mth| {
+            opt_mth.map_or(nullptr, |(def_id, substs)| {
+                Callee::def(ccx, def_id, substs).reify(ccx)
+            })
+        });
+        components.extend(methods);
+    }
 
     let vtable_const = C_struct(ccx, &components, false);
     let align = machine::llalign_of_pref(ccx, val_ty(vtable_const));
     let vtable = consts::addr_of(ccx, vtable_const, align, "vtable");
 
-    ccx.vtables().borrow_mut().insert(trait_ref, vtable);
+    ccx.vtables().borrow_mut().insert((ty, trait_ref), vtable);
     vtable
 }

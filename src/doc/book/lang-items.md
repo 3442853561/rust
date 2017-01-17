@@ -16,14 +16,11 @@ and one for deallocation. A freestanding program that uses the `Box`
 sugar for dynamic allocations via `malloc` and `free`:
 
 ```rust,ignore
-#![feature(lang_items, box_syntax, start, libc)]
+#![feature(lang_items, box_syntax, start, libc, core_intrinsics)]
 #![no_std]
+use core::intrinsics;
 
 extern crate libc;
-
-extern {
-    fn abort() -> !;
-}
 
 #[lang = "owned_box"]
 pub struct Box<T>(*mut T);
@@ -32,9 +29,9 @@ pub struct Box<T>(*mut T);
 unsafe fn allocate(size: usize, _align: usize) -> *mut u8 {
     let p = libc::malloc(size as libc::size_t) as *mut u8;
 
-    // malloc failed
+    // Check if `malloc` failed:
     if p as usize == 0 {
-        abort();
+        intrinsics::abort();
     }
 
     p
@@ -46,8 +43,8 @@ unsafe fn deallocate(ptr: *mut u8, _size: usize, _align: usize) {
 }
 
 #[lang = "box_free"]
-unsafe fn box_free<T>(ptr: *mut T) {
-    deallocate(ptr as *mut u8, ::core::mem::size_of::<T>(), ::core::mem::align_of::<T>());
+unsafe fn box_free<T: ?Sized>(ptr: *mut T) {
+    deallocate(ptr as *mut u8, ::core::mem::size_of_val(&*ptr), ::core::mem::align_of_val(&*ptr));
 }
 
 #[start]
@@ -58,7 +55,7 @@ fn main(argc: isize, argv: *const *const u8) -> isize {
 }
 
 #[lang = "eh_personality"] extern fn rust_eh_personality() {}
-#[lang = "panic_fmt"] extern fn rust_begin_panic() -> ! { loop {} }
+#[lang = "panic_fmt"] extern fn rust_begin_panic() -> ! { unsafe { intrinsics::abort() } }
 # #[lang = "eh_unwind_resume"] extern fn rust_eh_unwind_resume() {}
 # #[no_mangle] pub extern fn rust_eh_register_frames () {}
 # #[no_mangle] pub extern fn rust_eh_unregister_frames () {}

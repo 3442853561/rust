@@ -21,26 +21,24 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(associated_consts)]
-#![feature(borrow_state)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(collections)]
 #![feature(conservative_impl_trait)]
 #![feature(const_fn)]
 #![feature(core_intrinsics)]
-#![feature(dotdot_in_tuple_patterns)]
-#![feature(enumset)]
 #![feature(libc)]
 #![feature(nonzero)]
+#![feature(pub_restricted)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(slice_patterns)]
 #![feature(staged_api)]
-#![cfg_attr(stage0, feature(question_mark))]
+#![feature(unboxed_closures)]
 #![cfg_attr(test, feature(test))]
 
 extern crate arena;
@@ -64,6 +62,9 @@ extern crate rustc_errors as errors;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
+// SNAP:
+extern crate rustc_i128;
+
 #[cfg(test)]
 extern crate test;
 
@@ -82,9 +83,8 @@ pub mod lint;
 
 pub mod middle {
     pub mod astconv_util;
-    pub mod expr_use_visitor; // STAGE0: increase glitch immunity
+    pub mod expr_use_visitor;
     pub mod const_val;
-    pub mod const_qualif;
     pub mod cstore;
     pub mod dataflow;
     pub mod dead;
@@ -105,23 +105,12 @@ pub mod middle {
     pub mod weak_lang_items;
 }
 
-pub mod mir {
-    mod cache;
-    pub mod repr;
-    pub mod tcx;
-    pub mod visit;
-    pub mod transform;
-    pub mod traversal;
-    pub mod mir_map;
-}
-
+pub mod mir;
 pub mod session;
 pub mod traits;
 pub mod ty;
 
 pub mod util {
-    pub use rustc_back::sha2;
-
     pub mod common;
     pub mod ppaux;
     pub mod nodemap;

@@ -47,7 +47,7 @@ pub fn load_plugins(sess: &Session,
                     krate: &ast::Crate,
                     crate_name: &str,
                     addl_plugins: Option<Vec<String>>) -> Vec<PluginRegistrar> {
-    let mut loader = PluginLoader::new(sess, cstore, crate_name, krate.config.clone());
+    let mut loader = PluginLoader::new(sess, cstore, crate_name);
 
     // do not report any error now. since crate attributes are
     // not touched by expansion, every use of plugin without
@@ -69,9 +69,9 @@ pub fn load_plugins(sess: &Session,
             for plugin in plugins {
                 // plugins must have a name and can't be key = value
                 match plugin.name() {
-                    Some(ref name) if !plugin.is_value_str() => {
+                    Some(name) if !plugin.is_value_str() => {
                         let args = plugin.meta_item_list().map(ToOwned::to_owned);
-                        loader.load_plugin(plugin.span, name, args.unwrap_or_default());
+                        loader.load_plugin(plugin.span, &name.as_str(), args.unwrap_or_default());
                     },
                     _ => call_malformed_plugin_attribute(sess, attr.span),
                 }
@@ -89,14 +89,10 @@ pub fn load_plugins(sess: &Session,
 }
 
 impl<'a> PluginLoader<'a> {
-    fn new(sess: &'a Session,
-           cstore: &'a CStore,
-           crate_name: &str,
-           crate_config: ast::CrateConfig)
-            -> PluginLoader<'a> {
+    fn new(sess: &'a Session, cstore: &'a CStore, crate_name: &str) -> Self {
         PluginLoader {
             sess: sess,
-            reader: CrateLoader::new(sess, cstore, crate_name, crate_config),
+            reader: CrateLoader::new(sess, cstore, crate_name),
             plugins: vec![],
         }
     }

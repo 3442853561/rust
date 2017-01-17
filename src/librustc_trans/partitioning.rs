@@ -53,8 +53,6 @@
 //! - One for "stable", that is non-generic, code
 //! - One for more "volatile" code, i.e. monomorphized instances of functions
 //!   defined in that module
-//! - Code for monomorphized instances of functions from external crates gets
-//!   placed into every codegen unit that uses that instance.
 //!
 //! In order to see why this heuristic makes sense, let's take a look at when a
 //! codegen unit can get invalidated:
@@ -82,17 +80,6 @@
 //! side-effect of references a little by at least not touching the non-generic
 //! code of the module.
 //!
-//! As another optimization, monomorphized functions from external crates get
-//! some special handling. Since we assume that the definition of such a
-//! function changes rather infrequently compared to local items, we can just
-//! instantiate external functions in every codegen unit where it is referenced
-//! -- without having to fear that doing this will cause a lot of unnecessary
-//! re-compilations. If such a reference is added or removed, the codegen unit
-//! has to be re-translated anyway.
-//! (Note that this only makes sense if external crates actually don't change
-//! frequently. For certain multi-crate projects this might not be a valid
-//! assumption).
-//!
 //! A Note on Inlining
 //! ------------------
 //! As briefly mentioned above, in order for LLVM to be able to inline a
@@ -107,10 +94,9 @@
 //!   inlined, so it can distribute function instantiations accordingly. Since
 //!   there is no way of knowing for sure which functions LLVM will decide to
 //!   inline in the end, we apply a heuristic here: Only functions marked with
-//!   #[inline] and (as stated above) functions from external crates are
-//!   considered for inlining by the partitioner. The current implementation
-//!   will not try to determine if a function is likely to be inlined by looking
-//!   at the functions definition.
+//!   #[inline] are considered for inlining by the partitioner. The current
+//!   implementation will not try to determine if a function is likely to be
+//!   inlined by looking at the functions definition.
 //!
 //! Note though that as a side-effect of creating a codegen units per
 //! source-level module, functions from the same module will be available for
@@ -126,15 +112,15 @@ use rustc::hir::map::DefPathData;
 use rustc::session::config::NUMBERED_CODEGEN_UNIT_MARKER;
 use rustc::ty::TyCtxt;
 use rustc::ty::item_path::characteristic_def_id_of_type;
+use rustc_incremental::IchHasher;
 use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::Arc;
-use std::collections::hash_map::DefaultHasher;
 use symbol_map::SymbolMap;
 use syntax::ast::NodeId;
-use syntax::parse::token::{self, InternedString};
-use trans_item::TransItem;
-use util::nodemap::{FnvHashMap, FnvHashSet};
+use syntax::symbol::{Symbol, InternedString};
+use trans_item::{TransItem, InstantiationMode};
+use util::nodemap::{FxHashMap, FxHashSet};
 
 pub enum PartitioningStrategy {
     /// Generate one codegen unit per source-level module.
@@ -151,12 +137,12 @@ pub struct CodegenUnit<'tcx> {
     /// as well as the crate name and disambiguator.
     name: InternedString,
 
-    items: FnvHashMap<TransItem<'tcx>, llvm::Linkage>,
+    items: FxHashMap<TransItem<'tcx>, llvm::Linkage>,
 }
 
 impl<'tcx> CodegenUnit<'tcx> {
     pub fn new(name: InternedString,
-               items: FnvHashMap<TransItem<'tcx>, llvm::Linkage>)
+               items: FxHashMap<TransItem<'tcx>, llvm::Linkage>)
                -> Self {
         CodegenUnit {
             name: name,
@@ -165,7 +151,7 @@ impl<'tcx> CodegenUnit<'tcx> {
     }
 
     pub fn empty(name: InternedString) -> Self {
-        Self::new(name, FnvHashMap())
+        Self::new(name, FxHashMap())
     }
 
     pub fn contains_item(&self, item: &TransItem<'tcx>) -> bool {
@@ -176,7 +162,7 @@ impl<'tcx> CodegenUnit<'tcx> {
         &self.name
     }
 
-    pub fn items(&self) -> &FnvHashMap<TransItem<'tcx>, llvm::Linkage> {
+    pub fn items(&self) -> &FxHashMap<TransItem<'tcx>, llvm::Linkage> {
         &self.items
     }
 
@@ -188,14 +174,30 @@ impl<'tcx> CodegenUnit<'tcx> {
         DepNode::WorkProduct(self.work_product_id())
     }
 
-    pub fn compute_symbol_name_hash(&self, tcx: TyCtxt, symbol_map: &SymbolMap) -> u64 {
-        let mut state = DefaultHasher::new();
-        let all_items = self.items_in_deterministic_order(tcx, symbol_map);
+    pub fn compute_symbol_name_hash(&self,
+                                    scx: &SharedCrateContext,
+                                    symbol_map: &SymbolMap) -> u64 {
+        let mut state = IchHasher::new();
+        let exported_symbols = scx.exported_symbols();
+        let all_items = self.items_in_deterministic_order(scx.tcx(), symbol_map);
         for (item, _) in all_items {
             let symbol_name = symbol_map.get(item).unwrap();
+            symbol_name.len().hash(&mut state);
             symbol_name.hash(&mut state);
+            let exported = match item {
+               TransItem::Fn(ref instance) => {
+                    let node_id = scx.tcx().map.as_local_node_id(instance.def);
+                    node_id.map(|node_id| exported_symbols.contains(&node_id))
+                           .unwrap_or(false)
+               }
+               TransItem::Static(node_id) => {
+                    exported_symbols.contains(&node_id)
+               }
+               TransItem::DropGlue(..) => false,
+            };
+            exported.hash(&mut state);
         }
-        state.finish()
+        state.finish().to_smaller_hash()
     }
 
     pub fn items_in_deterministic_order(&self,
@@ -272,7 +274,7 @@ pub fn partition<'a, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,
     // If the partitioning should produce a fixed count of codegen units, merge
     // until that count is reached.
     if let PartitioningStrategy::FixedUnitCount(count) = strategy {
-        merge_codegen_units(&mut initial_partitioning, count, &tcx.crate_name[..]);
+        merge_codegen_units(&mut initial_partitioning, count, &tcx.crate_name.as_str());
 
         debug_dump(scx, "POST MERGING:", initial_partitioning.codegen_units.iter());
     }
@@ -297,7 +299,7 @@ pub fn partition<'a, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,
 
 struct PreInliningPartitioning<'tcx> {
     codegen_units: Vec<CodegenUnit<'tcx>>,
-    roots: FnvHashSet<TransItem<'tcx>>,
+    roots: FxHashSet<TransItem<'tcx>>,
 }
 
 struct PostInliningPartitioning<'tcx>(Vec<CodegenUnit<'tcx>>);
@@ -308,19 +310,21 @@ fn place_root_translation_items<'a, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,
     where I: Iterator<Item = TransItem<'tcx>>
 {
     let tcx = scx.tcx();
-    let mut roots = FnvHashSet();
-    let mut codegen_units = FnvHashMap();
+    let mut roots = FxHashSet();
+    let mut codegen_units = FxHashMap();
+    let is_incremental_build = tcx.sess.opts.incremental.is_some();
 
     for trans_item in trans_items {
-        let is_root = !trans_item.is_instantiated_only_on_demand(tcx);
+        let is_root = trans_item.instantiation_mode(tcx) == InstantiationMode::GloballyShared;
 
         if is_root {
             let characteristic_def_id = characteristic_def_id_of_trans_item(scx, trans_item);
-            let is_volatile = trans_item.is_generic_fn();
+            let is_volatile = is_incremental_build &&
+                              trans_item.is_generic_fn();
 
             let codegen_unit_name = match characteristic_def_id {
                 Some(def_id) => compute_codegen_unit_name(tcx, def_id, is_volatile),
-                None => InternedString::new(FALLBACK_CODEGEN_UNIT),
+                None => Symbol::intern(FALLBACK_CODEGEN_UNIT).as_str(),
             };
 
             let make_codegen_unit = || {
@@ -334,25 +338,9 @@ fn place_root_translation_items<'a, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,
                 Some(explicit_linkage) => explicit_linkage,
                 None => {
                     match trans_item {
+                        TransItem::Fn(..) |
                         TransItem::Static(..) => llvm::ExternalLinkage,
                         TransItem::DropGlue(..) => unreachable!(),
-                        // Is there any benefit to using ExternalLinkage?:
-                        TransItem::Fn(ref instance) => {
-                            if instance.substs.types().next().is_none() {
-                                // This is a non-generic functions, we always
-                                // make it visible externally on the chance that
-                                // it might be used in another codegen unit.
-                                // Later on base::internalize_symbols() will
-                                // assign "internal" linkage to those symbols
-                                // that are not referenced from other codegen
-                                // units (and are not publicly visible).
-                                llvm::ExternalLinkage
-                            } else {
-                                // In the current setup, generic functions cannot
-                                // be roots.
-                                unreachable!()
-                            }
-                        }
                     }
                 }
             };
@@ -365,7 +353,7 @@ fn place_root_translation_items<'a, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,
     // always ensure we have at least one CGU; otherwise, if we have a
     // crate with just types (for example), we could wind up with no CGU
     if codegen_units.is_empty() {
-        let codegen_unit_name = InternedString::new(FALLBACK_CODEGEN_UNIT);
+        let codegen_unit_name = Symbol::intern(FALLBACK_CODEGEN_UNIT).as_str();
         codegen_units.entry(codegen_unit_name.clone())
                      .or_insert_with(|| CodegenUnit::empty(codegen_unit_name.clone()));
     }
@@ -419,7 +407,7 @@ fn place_inlined_translation_items<'tcx>(initial_partitioning: PreInliningPartit
 
     for codegen_unit in &initial_partitioning.codegen_units[..] {
         // Collect all items that need to be available in this codegen unit
-        let mut reachable = FnvHashSet();
+        let mut reachable = FxHashSet();
         for root in codegen_unit.items.keys() {
             follow_inlining(*root, inlining_map, &mut reachable);
         }
@@ -432,29 +420,14 @@ fn place_inlined_translation_items<'tcx>(initial_partitioning: PreInliningPartit
             if let Some(linkage) = codegen_unit.items.get(&trans_item) {
                 // This is a root, just copy it over
                 new_codegen_unit.items.insert(trans_item, *linkage);
-            } else if initial_partitioning.roots.contains(&trans_item) {
-                // This item will be instantiated in some other codegen unit,
-                // so we just add it here with AvailableExternallyLinkage
-                // FIXME(mw): I have not seen it happening yet but having
-                //            available_externally here could potentially lead
-                //            to the same problem with exception handling tables
-                //            as in the case below.
-                new_codegen_unit.items.insert(trans_item,
-                                              llvm::AvailableExternallyLinkage);
-            } else if trans_item.is_from_extern_crate() && !trans_item.is_generic_fn() {
-                // FIXME(mw): It would be nice if we could mark these as
-                // `AvailableExternallyLinkage`, since they should have
-                // been instantiated in the extern crate. But this
-                // sometimes leads to crashes on Windows because LLVM
-                // does not handle exception handling table instantiation
-                // reliably in that case.
-                new_codegen_unit.items.insert(trans_item, llvm::InternalLinkage);
             } else {
-                // We can't be sure if this will also be instantiated
-                // somewhere else, so we add an instance here with
-                // InternalLinkage so we don't get any conflicts.
-                new_codegen_unit.items.insert(trans_item,
-                                              llvm::InternalLinkage);
+                if initial_partitioning.roots.contains(&trans_item) {
+                    bug!("GloballyShared trans-item inlined into other CGU: \
+                          {:?}", trans_item);
+                }
+
+                // This is a cgu-private copy
+                new_codegen_unit.items.insert(trans_item, llvm::InternalLinkage);
             }
         }
 
@@ -465,7 +438,7 @@ fn place_inlined_translation_items<'tcx>(initial_partitioning: PreInliningPartit
 
     fn follow_inlining<'tcx>(trans_item: TransItem<'tcx>,
                              inlining_map: &InliningMap<'tcx>,
-                             visited: &mut FnvHashSet<TransItem<'tcx>>) {
+                             visited: &mut FxHashSet<TransItem<'tcx>>) {
         if !visited.insert(trans_item) {
             return;
         }
@@ -495,7 +468,7 @@ fn characteristic_def_id_of_trans_item<'a, 'tcx>(scx: &SharedCrateContext<'a, 't
             if let Some(impl_def_id) = tcx.impl_of_method(instance.def) {
                 // This is a method within an inherent impl, find out what the
                 // self-type is:
-                let impl_self_ty = tcx.lookup_item_type(impl_def_id).ty;
+                let impl_self_ty = tcx.item_type(impl_def_id);
                 let impl_self_ty = tcx.erase_regions(&impl_self_ty);
                 let impl_self_ty = monomorphize::apply_param_substs(scx,
                                                                     instance.substs,
@@ -523,7 +496,7 @@ fn compute_codegen_unit_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let mut mod_path = String::with_capacity(64);
 
     let def_path = tcx.def_path(def_id);
-    mod_path.push_str(&tcx.crate_name(def_path.krate));
+    mod_path.push_str(&tcx.crate_name(def_path.krate).as_str());
 
     for part in tcx.def_path(def_id)
                    .data
@@ -542,14 +515,11 @@ fn compute_codegen_unit_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         mod_path.push_str(".volatile");
     }
 
-    return token::intern_and_get_ident(&mod_path[..]);
+    return Symbol::intern(&mod_path[..]).as_str();
 }
 
 fn numbered_codegen_unit_name(crate_name: &str, index: usize) -> InternedString {
-    token::intern_and_get_ident(&format!("{}{}{}",
-        crate_name,
-        NUMBERED_CODEGEN_UNIT_MARKER,
-        index)[..])
+    Symbol::intern(&format!("{}{}{}", crate_name, NUMBERED_CODEGEN_UNIT_MARKER, index)).as_str()
 }
 
 fn debug_dump<'a, 'b, 'tcx, I>(scx: &SharedCrateContext<'a, 'tcx>,

@@ -75,13 +75,13 @@ use std::collections::HashSet;
 
 use hir::map as ast_map;
 use hir;
-use hir::print as pprust;
 
 use lint;
 use hir::def::Def;
 use hir::def_id::DefId;
-use infer::{self, TypeOrigin};
+use infer;
 use middle::region;
+use traits::{ObligationCause, ObligationCauseCode};
 use ty::{self, TyCtxt, TypeFoldable};
 use ty::{Region, ReFree};
 use ty::error::TypeError;
@@ -90,8 +90,8 @@ use std::cell::{Cell, RefCell};
 use std::char::from_u32;
 use std::fmt;
 use syntax::ast;
-use syntax::parse::token;
 use syntax::ptr::P;
+use syntax::symbol::Symbol;
 use syntax_pos::{self, Pos, Span};
 use errors::DiagnosticBuilder;
 
@@ -110,6 +110,22 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 hir::ItemTrait(..) => "trait",
                 hir::ItemFn(..) => "function body",
                 _ => "item"
+            }
+        }
+
+        fn trait_item_scope_tag(item: &hir::TraitItem) -> &'static str {
+            match item.node {
+                hir::TraitItemKind::Method(..) => "method body",
+                hir::TraitItemKind::Const(..) |
+                hir::TraitItemKind::Type(..) => "associated item"
+            }
+        }
+
+        fn impl_item_scope_tag(item: &hir::ImplItem) -> &'static str {
+            match item.node {
+                hir::ImplItemKind::Method(..) => "method body",
+                hir::ImplItemKind::Const(..) |
+                hir::ImplItemKind::Type(_) => "associated item"
             }
         }
 
@@ -148,6 +164,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     },
                     Some(ast_map::NodeStmt(_)) => "statement",
                     Some(ast_map::NodeItem(it)) => item_scope_tag(&it),
+                    Some(ast_map::NodeTraitItem(it)) => trait_item_scope_tag(&it),
+                    Some(ast_map::NodeImplItem(it)) => impl_item_scope_tag(&it),
                     Some(_) | None => {
                         err.span_note(span, &unknown_scope());
                         return;
@@ -186,23 +204,31 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     }
                 };
 
-                match self.map.find(fr.scope.node_id(&self.region_maps)) {
-                    Some(ast_map::NodeBlock(ref blk)) => {
-                        let (msg, opt_span) = explain_span(self, "block", blk.span);
-                        (format!("{} {}", prefix, msg), opt_span)
+                let node = fr.scope.node_id(&self.region_maps);
+                let unknown;
+                let tag = match self.map.find(node) {
+                    Some(ast_map::NodeBlock(_)) |
+                    Some(ast_map::NodeExpr(_)) => "body",
+                    Some(ast_map::NodeItem(it)) => item_scope_tag(&it),
+                    Some(ast_map::NodeTraitItem(it)) => trait_item_scope_tag(&it),
+                    Some(ast_map::NodeImplItem(it)) => impl_item_scope_tag(&it),
+
+                    // this really should not happen, but it does:
+                    // FIXME(#27942)
+                    Some(_) => {
+                        unknown = format!("unexpected node ({}) for scope {:?}.  \
+                                           Please report a bug.",
+                                          self.map.node_to_string(node), fr.scope);
+                        &unknown
                     }
-                    Some(ast_map::NodeItem(it)) => {
-                        let tag = item_scope_tag(&it);
-                        let (msg, opt_span) = explain_span(self, tag, it.span);
-                        (format!("{} {}", prefix, msg), opt_span)
+                    None => {
+                        unknown = format!("unknown node for scope {:?}.  \
+                                           Please report a bug.", fr.scope);
+                        &unknown
                     }
-                    Some(_) | None => {
-                        // this really should not happen, but it does:
-                        // FIXME(#27942)
-                        (format!("{} unknown free region bounded by scope {:?}",
-                                 prefix, fr.scope), None)
-                    }
-                }
+                };
+                let (msg, opt_span) = explain_span(self, tag, self.map.span(node));
+                (format!("{} {}", prefix, msg), opt_span)
             }
 
             ty::ReStatic => ("the static lifetime".to_owned(), None),
@@ -245,6 +271,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         debug!("report_region_errors: {} errors after preprocessing", errors.len());
 
         for error in errors {
+            debug!("report_region_errors: error = {:?}", error);
             match error.clone() {
                 ConcreteFailure(origin, sub, sup) => {
                     self.report_concrete_failure(origin, sub, sup).emit();
@@ -299,44 +326,64 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let mut bound_failures = Vec::new();
 
         for error in errors {
+            // Check whether we can process this error into some other
+            // form; if not, fall through.
             match *error {
                 ConcreteFailure(ref origin, sub, sup) => {
                     debug!("processing ConcreteFailure");
-                    match free_regions_from_same_fn(self.tcx, sub, sup) {
-                        Some(ref same_frs) => {
-                            origins.push(
-                                ProcessedErrorOrigin::ConcreteFailure(
-                                    origin.clone(),
-                                    sub,
-                                    sup));
-                            append_to_same_regions(&mut same_regions, same_frs);
-                        }
-                        _ => {
-                            other_errors.push(error.clone());
-                        }
+                    if let SubregionOrigin::CompareImplMethodObligation { .. } = *origin {
+                        // When comparing an impl method against a
+                        // trait method, it is not helpful to suggest
+                        // changes to the impl method.  This is
+                        // because the impl method signature is being
+                        // checked using the trait's environment, so
+                        // usually the changes we suggest would
+                        // actually have to be applied to the *trait*
+                        // method (and it's not clear that the trait
+                        // method is even under the user's control).
+                    } else if let Some(same_frs) = free_regions_from_same_fn(self.tcx, sub, sup) {
+                        origins.push(
+                            ProcessedErrorOrigin::ConcreteFailure(
+                                origin.clone(),
+                                sub,
+                                sup));
+                        append_to_same_regions(&mut same_regions, &same_frs);
+                        continue;
                     }
                 }
-                SubSupConflict(ref var_origin, _, sub_r, _, sup_r) => {
-                    debug!("processing SubSupConflict sub: {:?} sup: {:?}", sub_r, sup_r);
-                    match free_regions_from_same_fn(self.tcx, sub_r, sup_r) {
-                        Some(ref same_frs) => {
-                            origins.push(
-                                ProcessedErrorOrigin::VariableFailure(
-                                    var_origin.clone()));
-                            append_to_same_regions(&mut same_regions, same_frs);
+                SubSupConflict(ref var_origin, ref sub_origin, sub, ref sup_origin, sup) => {
+                    debug!("processing SubSupConflict sub: {:?} sup: {:?}", sub, sup);
+                    match (sub_origin, sup_origin) {
+                        (&SubregionOrigin::CompareImplMethodObligation { .. }, _) => {
+                            // As above, when comparing an impl method
+                            // against a trait method, it is not helpful
+                            // to suggest changes to the impl method.
                         }
-                        None => {
-                            other_errors.push(error.clone());
+                        (_, &SubregionOrigin::CompareImplMethodObligation { .. }) => {
+                            // See above.
+                        }
+                        _ => {
+                            if let Some(same_frs) = free_regions_from_same_fn(self.tcx, sub, sup) {
+                                origins.push(
+                                    ProcessedErrorOrigin::VariableFailure(
+                                        var_origin.clone()));
+                                append_to_same_regions(&mut same_regions, &same_frs);
+                                continue;
+                            }
                         }
                     }
                 }
                 GenericBoundFailure(ref origin, ref kind, region) => {
                     bound_failures.push((origin.clone(), kind.clone(), region));
+                    continue;
                 }
                 ProcessedErrors(..) => {
                     bug!("should not encounter a `ProcessedErrors` yet: {:?}", error)
                 }
             }
+
+            // No changes to this error.
+            other_errors.push(error.clone());
         }
 
         // ok, let's pull together the errors, sorted in an order that
@@ -457,7 +504,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             }
             same_regions.push(SameRegions {
                 scope_id: scope_id,
-                regions: vec!(sub_fr.bound_region, sup_fr.bound_region)
+                regions: vec![sub_fr.bound_region, sup_fr.bound_region]
             })
         }
     }
@@ -503,10 +550,10 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
     fn note_error_origin(&self,
                          err: &mut DiagnosticBuilder<'tcx>,
-                         origin: &TypeOrigin)
+                         cause: &ObligationCause<'tcx>)
     {
-        match origin {
-            &TypeOrigin::MatchExpressionArm(_, arm_span, source) => match source {
+        match cause.code {
+            ObligationCauseCode::MatchExpressionArm { arm_span, source } => match source {
                 hir::MatchSource::IfLetDesugar {..} => {
                     err.span_note(arm_span, "`if let` arm with an incompatible type");
                 }
@@ -520,7 +567,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
 
     pub fn note_type_err(&self,
                          diag: &mut DiagnosticBuilder<'tcx>,
-                         origin: TypeOrigin,
+                         cause: &ObligationCause<'tcx>,
                          secondary_span: Option<(Span, String)>,
                          values: Option<ValuePairs<'tcx>>,
                          terr: &TypeError<'tcx>)
@@ -537,7 +584,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             }
         };
 
-        let span = origin.span();
+        let span = cause.span;
 
         if let Some((expected, found)) = expected_found {
             let is_simple_error = if let &TypeError::Sorts(ref values) = terr {
@@ -567,7 +614,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             diag.span_label(sp, &msg);
         }
 
-        self.note_error_origin(diag, &origin);
+        self.note_error_origin(diag, &cause);
         self.check_and_note_conflicting_crates(diag, terr, span);
         self.tcx.note_and_explain_type_err(diag, terr, span);
     }
@@ -577,17 +624,17 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                          terr: &TypeError<'tcx>)
                                          -> DiagnosticBuilder<'tcx>
     {
-        let span = trace.origin.span();
-        let failure_str = trace.origin.as_failure_str();
-        let mut diag = match trace.origin {
-            TypeOrigin::IfExpressionWithNoElse(_) => {
+        let span = trace.cause.span;
+        let failure_str = trace.cause.as_failure_str();
+        let mut diag = match trace.cause.code {
+            ObligationCauseCode::IfExpressionWithNoElse => {
                 struct_span_err!(self.tcx.sess, span, E0317, "{}", failure_str)
             },
             _ => {
                 struct_span_err!(self.tcx.sess, span, E0308, "{}", failure_str)
             },
         };
-        self.note_type_err(&mut diag, trace.origin, None, Some(trace.values), terr);
+        self.note_type_err(&mut diag, &trace.cause, None, Some(trace.values), terr);
         diag
     }
 
@@ -629,6 +676,19 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             GenericKind::Projection(ref p) =>
                 format!("the associated type `{}`", p),
         };
+
+        if let SubregionOrigin::CompareImplMethodObligation {
+            span, item_name, impl_item_def_id, trait_item_def_id, lint_id
+        } = origin {
+            self.report_extra_impl_obligation(span,
+                                              item_name,
+                                              impl_item_def_id,
+                                              trait_item_def_id,
+                                              &format!("`{}: {}`", bound_kind, sub),
+                                              lint_id)
+                .emit();
+            return;
+        }
 
         let mut err = match *sub {
             ty::ReFree(ty::FreeRegion {bound_region: ty::BrNamed(..), ..}) => {
@@ -947,6 +1007,18 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                     "");
                 err
             }
+            infer::CompareImplMethodObligation { span,
+                                                 item_name,
+                                                 impl_item_def_id,
+                                                 trait_item_def_id,
+                                                 lint_id } => {
+                self.report_extra_impl_obligation(span,
+                                                  item_name,
+                                                  impl_item_def_id,
+                                                  trait_item_def_id,
+                                                  &format!("`{}: {}`", sup, sub),
+                                                  lint_id)
+            }
         }
     }
 
@@ -1004,48 +1076,57 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             Some(ref node) => match *node {
                 ast_map::NodeItem(ref item) => {
                     match item.node {
-                        hir::ItemFn(ref fn_decl, unsafety, constness, _, ref gen, _) => {
-                            Some((fn_decl, gen, unsafety, constness, item.name, item.span))
-                        },
-                        _ => None
+                        hir::ItemFn(ref fn_decl, unsafety, constness, _, ref gen, body) => {
+                            Some((fn_decl, gen, unsafety, constness, item.name, item.span, body))
+                        }
+                        _ => None,
                     }
                 }
                 ast_map::NodeImplItem(item) => {
-                    match item.node {
-                        hir::ImplItemKind::Method(ref sig, _) => {
-                            Some((&sig.decl,
-                                  &sig.generics,
-                                  sig.unsafety,
-                                  sig.constness,
-                                  item.name,
-                                  item.span))
+                    let id = self.tcx.map.get_parent(item.id);
+                    if let Some(ast_map::NodeItem(parent_scope)) = self.tcx.map.find(id) {
+                        if let hir::ItemImpl(_, _, _, None, _, _) = parent_scope.node {
+                            // this impl scope implements a trait, do not recomend
+                            // using explicit lifetimes (#37363)
+                            return;
                         }
-                        _ => None,
+                    }
+                    if let hir::ImplItemKind::Method(ref sig, body) = item.node {
+                        Some((&sig.decl,
+                              &sig.generics,
+                              sig.unsafety,
+                              sig.constness,
+                              item.name,
+                              item.span,
+                              body))
+                    } else {
+                        None
                     }
                 },
                 ast_map::NodeTraitItem(item) => {
                     match item.node {
-                        hir::MethodTraitItem(ref sig, Some(_)) => {
+                        hir::TraitItemKind::Method(ref sig, hir::TraitMethod::Provided(body)) => {
                             Some((&sig.decl,
                                   &sig.generics,
                                   sig.unsafety,
                                   sig.constness,
                                   item.name,
-                                  item.span))
+                                  item.span,
+                                  body))
                         }
-                        _ => None
+                        _ => None,
                     }
                 }
-                _ => None
+                _ => None,
             },
-            None => None
+            None => None,
         };
-        let (fn_decl, generics, unsafety, constness, name, span)
+        let (fn_decl, generics, unsafety, constness, name, span, body)
                                     = node_inner.expect("expect item fn");
         let rebuilder = Rebuilder::new(self.tcx, fn_decl, generics, same_regions, &life_giver);
         let (fn_decl, generics) = rebuilder.rebuild();
         self.give_expl_lifetime_param(
-            err, &fn_decl, unsafety, constness, name, &generics, span);
+            err, &fn_decl, unsafety, constness, name, &generics, span, body);
     }
 
     pub fn issue_32330_warnings(&self, span: Span, issue32330s: &[ty::Issue32330]) {
@@ -1165,7 +1246,7 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
                 names.push(lt_name);
             }
             names.sort();
-            let name = token::intern(&names[0]);
+            let name = Symbol::intern(&names[0]);
             return (name_to_dummy_lifetime(name), Kept);
         }
         return (self.life_giver.give_lifetime(), Fresh);
@@ -1321,23 +1402,14 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
     }
 
     fn rebuild_args_ty(&self,
-                       inputs: &[hir::Arg],
+                       inputs: &[P<hir::Ty>],
                        lifetime: hir::Lifetime,
                        anon_nums: &HashSet<u32>,
                        region_names: &HashSet<ast::Name>)
-                       -> hir::HirVec<hir::Arg> {
-        let mut new_inputs = Vec::new();
-        for arg in inputs {
-            let new_ty = self.rebuild_arg_ty_or_output(&arg.ty, lifetime,
-                                                       anon_nums, region_names);
-            let possibly_new_arg = hir::Arg {
-                ty: new_ty,
-                pat: arg.pat.clone(),
-                id: arg.id
-            };
-            new_inputs.push(possibly_new_arg);
-        }
-        new_inputs.into()
+                       -> hir::HirVec<P<hir::Ty>> {
+        inputs.iter().map(|arg_ty| {
+            self.rebuild_arg_ty_or_output(arg_ty, lifetime, anon_nums, region_names)
+        }).collect()
     }
 
     fn rebuild_output(&self, ty: &hir::FunctionRetTy,
@@ -1359,7 +1431,7 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
                                 region_names: &HashSet<ast::Name>)
                                 -> P<hir::Ty> {
         let mut new_ty = P(ty.clone());
-        let mut ty_queue = vec!(ty);
+        let mut ty_queue = vec![ty];
         while !ty_queue.is_empty() {
             let cur_ty = ty_queue.remove(0);
             match cur_ty.node {
@@ -1386,11 +1458,11 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
                     }
                     ty_queue.push(&mut_ty.ty);
                 }
-                hir::TyPath(ref maybe_qself, ref path) => {
-                    match self.tcx.expect_def(cur_ty.id) {
+                hir::TyPath(hir::QPath::Resolved(ref maybe_qself, ref path)) => {
+                    match path.def {
                         Def::Enum(did) | Def::TyAlias(did) |
                         Def::Struct(did) | Def::Union(did) => {
-                            let generics = self.tcx.lookup_generics(did);
+                            let generics = self.tcx.item_generics(did);
 
                             let expected =
                                 generics.regions.len() as u32;
@@ -1422,15 +1494,12 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
                             };
                             let new_path = self.rebuild_path(rebuild_info, lifetime);
                             let qself = maybe_qself.as_ref().map(|qself| {
-                                hir::QSelf {
-                                    ty: self.rebuild_arg_ty_or_output(&qself.ty, lifetime,
-                                                                      anon_nums, region_names),
-                                    position: qself.position
-                                }
+                                self.rebuild_arg_ty_or_output(qself, lifetime,
+                                                              anon_nums, region_names)
                             });
                             let to = hir::Ty {
                                 id: cur_ty.id,
-                                node: hir::TyPath(qself, new_path),
+                                node: hir::TyPath(hir::QPath::Resolved(qself, P(new_path))),
                                 span: cur_ty.span
                             };
                             new_ty = self.rebuild_ty(new_ty, P(to));
@@ -1555,6 +1624,7 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
                 hir::AngleBracketedParameters(hir::AngleBracketedParameterData {
                     lifetimes: new_lts.into(),
                     types: new_types,
+                    infer_types: data.infer_types,
                     bindings: new_bindings,
                })
             }
@@ -1568,7 +1638,7 @@ impl<'a, 'gcx, 'tcx> Rebuilder<'a, 'gcx, 'tcx> {
         new_segs.push(new_seg);
         hir::Path {
             span: path.span,
-            global: path.global,
+            def: path.def,
             segments: new_segs.into()
         }
     }
@@ -1582,10 +1652,26 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                 constness: hir::Constness,
                                 name: ast::Name,
                                 generics: &hir::Generics,
-                                span: Span) {
-        let suggested_fn = pprust::fun_to_string(decl, unsafety, constness, name, generics);
-        let msg = format!("consider using an explicit lifetime \
-                           parameter as shown: {}", suggested_fn);
+                                span: Span,
+                                body: hir::BodyId) {
+        let s = hir::print::to_string(&self.tcx.map, |s| {
+            use syntax::abi::Abi;
+            use syntax::print::pprust::PrintState;
+
+            s.head("")?;
+            s.print_fn(decl,
+                       unsafety,
+                       constness,
+                       Abi::Rust,
+                       Some(name),
+                       generics,
+                       &hir::Inherited,
+                       &[],
+                       Some(body))?;
+            s.end()?; // Close the head box
+            s.end()   // Close the outer box
+        });
+        let msg = format!("consider using an explicit lifetime parameter as shown: {}", s);
         err.span_help(span, &msg[..]);
     }
 
@@ -1642,18 +1728,18 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 if let Some((expected, found)) = self.values_str(&trace.values) {
                     // FIXME: do we want a "the" here?
                     err.span_note(
-                        trace.origin.span(),
+                        trace.cause.span,
                         &format!("...so that {} (expected {}, found {})",
-                                 trace.origin.as_requirement_str(), expected, found));
+                                 trace.cause.as_requirement_str(), expected, found));
                 } else {
                     // FIXME: this really should be handled at some earlier stage. Our
                     // handling of region checking when type errors are present is
                     // *terrible*.
 
                     err.span_note(
-                        trace.origin.span(),
+                        trace.cause.span,
                         &format!("...so that {}",
-                                 trace.origin.as_requirement_str()));
+                                 trace.cause.as_requirement_str()));
                 }
             }
             infer::Reborrow(span) => {
@@ -1792,6 +1878,11 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                     "...so that references are valid when the destructor \
                      runs");
             }
+            infer::CompareImplMethodObligation { span, .. } => {
+                err.span_note(
+                    span,
+                    "...so that the definition in impl matches the definition from the trait");
+            }
         }
     }
 }
@@ -1872,7 +1963,7 @@ impl LifeGiver {
             let mut s = String::from("'");
             s.push_str(&num_to_string(self.counter.get()));
             if !self.taken.contains(&s) {
-                lifetime = name_to_dummy_lifetime(token::intern(&s[..]));
+                lifetime = name_to_dummy_lifetime(Symbol::intern(&s));
                 self.generated.borrow_mut().push(lifetime);
                 break;
             }
@@ -1903,3 +1994,45 @@ fn name_to_dummy_lifetime(name: ast::Name) -> hir::Lifetime {
                     span: syntax_pos::DUMMY_SP,
                     name: name }
 }
+
+impl<'tcx> ObligationCause<'tcx> {
+    fn as_failure_str(&self) -> &'static str {
+        use traits::ObligationCauseCode::*;
+        match self.code {
+            CompareImplMethodObligation { .. } => "method not compatible with trait",
+            MatchExpressionArm { source, .. } => match source {
+                hir::MatchSource::IfLetDesugar{..} => "`if let` arms have incompatible types",
+                _ => "match arms have incompatible types",
+            },
+            IfExpression => "if and else have incompatible types",
+            IfExpressionWithNoElse => "if may be missing an else clause",
+            EquatePredicate => "equality predicate not satisfied",
+            MainFunctionType => "main function has wrong type",
+            StartFunctionType => "start function has wrong type",
+            IntrinsicType => "intrinsic has wrong type",
+            MethodReceiver => "mismatched method receiver",
+            _ => "mismatched types",
+        }
+    }
+
+    fn as_requirement_str(&self) -> &'static str {
+        use traits::ObligationCauseCode::*;
+        match self.code {
+            CompareImplMethodObligation { .. } => "method type is compatible with trait",
+            ExprAssignable => "expression is assignable",
+            MatchExpressionArm { source, .. } => match source {
+                hir::MatchSource::IfLetDesugar{..} => "`if let` arms have compatible types",
+                _ => "match arms have compatible types",
+            },
+            IfExpression => "if and else have compatible types",
+            IfExpressionWithNoElse => "if missing an else returns ()",
+            EquatePredicate => "equality where clause is satisfied",
+            MainFunctionType => "`main` function has the correct type",
+            StartFunctionType => "`start` function has the correct type",
+            IntrinsicType => "intrinsic has the correct type",
+            MethodReceiver => "method receiver has the correct type",
+            _ => "types are compatible",
+        }
+    }
+}
+

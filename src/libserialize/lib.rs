@@ -25,7 +25,7 @@ Core encoding and decoding interfaces.
        html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        test(attr(allow(unused_variables), deny(warnings))))]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(box_syntax)]
 #![feature(collections)]
@@ -35,15 +35,16 @@ Core encoding and decoding interfaces.
 #![feature(specialization)]
 #![feature(staged_api)]
 #![feature(unicode)]
-#![cfg_attr(stage0, feature(question_mark))]
 #![cfg_attr(test, feature(test))]
 
 // test harness access
 #[cfg(test)] extern crate test;
 #[macro_use] extern crate log;
 
-extern crate rustc_unicode;
+extern crate std_unicode;
 extern crate collections;
+
+extern crate rustc_i128;
 
 pub use self::serialize::{Decoder, Encoder, Decodable, Encodable};
 

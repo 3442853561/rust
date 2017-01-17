@@ -36,7 +36,8 @@ fn main() {
     // targets, which means we have to build the alloc_jemalloc crate
     // for targets like emscripten, even if we don't use it.
     if target.contains("rumprun") || target.contains("bitrig") || target.contains("openbsd") ||
-       target.contains("msvc") || target.contains("emscripten") || target.contains("fuchsia") {
+       target.contains("msvc") || target.contains("emscripten") || target.contains("fuchsia") ||
+       target.contains("redox") {
         println!("cargo:rustc-cfg=dummy_jemalloc");
         return;
     }
@@ -69,6 +70,7 @@ fn main() {
         .read_dir()
         .unwrap()
         .map(|e| e.unwrap())
+        .filter(|e| &*e.file_name() != ".git")
         .collect::<Vec<_>>();
     while let Some(entry) = stack.pop() {
         let path = entry.path();
@@ -149,12 +151,24 @@ fn main() {
     cmd.arg(format!("--host={}", build_helper::gnu_target(&target)));
     cmd.arg(format!("--build={}", build_helper::gnu_target(&host)));
 
+    // for some reason, jemalloc configure doesn't detect this value
+    // automatically for this target
+    if target == "sparc64-unknown-linux-gnu" {
+        cmd.arg("--with-lg-quantum=4");
+    }
+
     run(&mut cmd);
-    run(Command::new("make")
-        .current_dir(&build_dir)
-        .arg("build_lib_static")
-        .arg("-j")
-        .arg(env::var("NUM_JOBS").expect("NUM_JOBS was not set")));
+    let mut make = Command::new(build_helper::make(&host));
+    make.current_dir(&build_dir)
+        .arg("build_lib_static");
+
+    // mingw make seems... buggy? unclear...
+    if !host.contains("windows") {
+        make.arg("-j")
+            .arg(env::var("NUM_JOBS").expect("NUM_JOBS was not set"));
+    }
+
+    run(&mut make);
 
     if target.contains("windows") {
         println!("cargo:rustc-link-lib=static=jemalloc");

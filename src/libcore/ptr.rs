@@ -74,7 +74,10 @@ pub const fn null_mut<T>() -> *mut T { 0 as *mut T }
 ///
 /// # Safety
 ///
-/// This is only unsafe because it accepts a raw pointer.
+/// This function copies the memory through the raw pointers passed to it
+/// as arguments.
+///
+/// Ensure that these pointers are valid before calling `swap`.
 #[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub unsafe fn swap<T>(x: *mut T, y: *mut T) {
@@ -117,6 +120,8 @@ pub unsafe fn replace<T>(dest: *mut T, mut src: T) -> T {
 /// `zero_memory`, or `copy_memory`). Note that `*src = foo` counts as a use
 /// because it will attempt to drop the value previously at `*src`.
 ///
+/// The pointer must be aligned; use `read_unaligned` if that is not the case.
+///
 /// # Examples
 ///
 /// Basic usage:
@@ -137,6 +142,44 @@ pub unsafe fn read<T>(src: *const T) -> T {
     tmp
 }
 
+/// Reads the value from `src` without moving it. This leaves the
+/// memory in `src` unchanged.
+///
+/// Unlike `read`, the pointer may be unaligned.
+///
+/// # Safety
+///
+/// Beyond accepting a raw pointer, this is unsafe because it semantically
+/// moves the value out of `src` without preventing further usage of `src`.
+/// If `T` is not `Copy`, then care must be taken to ensure that the value at
+/// `src` is not used before the data is overwritten again (e.g. with `write`,
+/// `zero_memory`, or `copy_memory`). Note that `*src = foo` counts as a use
+/// because it will attempt to drop the value previously at `*src`.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// #![feature(ptr_unaligned)]
+///
+/// let x = 12;
+/// let y = &x as *const i32;
+///
+/// unsafe {
+///     assert_eq!(std::ptr::read_unaligned(y), 12);
+/// }
+/// ```
+#[inline(always)]
+#[unstable(feature = "ptr_unaligned", issue = "37955")]
+pub unsafe fn read_unaligned<T>(src: *const T) -> T {
+    let mut tmp: T = mem::uninitialized();
+    copy_nonoverlapping(src as *const u8,
+                        &mut tmp as *mut T as *mut u8,
+                        mem::size_of::<T>());
+    tmp
+}
+
 /// Overwrites a memory location with the given value without reading or
 /// dropping the old value.
 ///
@@ -150,6 +193,8 @@ pub unsafe fn read<T>(src: *const T) -> T {
 ///
 /// This is appropriate for initializing uninitialized memory, or overwriting
 /// memory that has previously been `read` from.
+///
+/// The pointer must be aligned; use `write_unaligned` if that is not the case.
 ///
 /// # Examples
 ///
@@ -169,6 +214,47 @@ pub unsafe fn read<T>(src: *const T) -> T {
 #[stable(feature = "rust1", since = "1.0.0")]
 pub unsafe fn write<T>(dst: *mut T, src: T) {
     intrinsics::move_val_init(&mut *dst, src)
+}
+
+/// Overwrites a memory location with the given value without reading or
+/// dropping the old value.
+///
+/// Unlike `write`, the pointer may be unaligned.
+///
+/// # Safety
+///
+/// This operation is marked unsafe because it accepts a raw pointer.
+///
+/// It does not drop the contents of `dst`. This is safe, but it could leak
+/// allocations or resources, so care must be taken not to overwrite an object
+/// that should be dropped.
+///
+/// This is appropriate for initializing uninitialized memory, or overwriting
+/// memory that has previously been `read` from.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// #![feature(ptr_unaligned)]
+///
+/// let mut x = 0;
+/// let y = &mut x as *mut i32;
+/// let z = 12;
+///
+/// unsafe {
+///     std::ptr::write_unaligned(y, z);
+///     assert_eq!(std::ptr::read_unaligned(y), 12);
+/// }
+/// ```
+#[inline]
+#[unstable(feature = "ptr_unaligned", issue = "37955")]
+pub unsafe fn write_unaligned<T>(dst: *mut T, src: T) {
+    copy_nonoverlapping(&src as *const T as *const u8,
+                        dst as *mut u8,
+                        mem::size_of::<T>());
+    mem::forget(src);
 }
 
 /// Performs a volatile read of the value from `src` without moving it. This
@@ -344,6 +430,46 @@ impl<T: ?Sized> *const T {
     pub unsafe fn offset(self, count: isize) -> *const T where T: Sized {
         intrinsics::offset(self, count)
     }
+
+    /// Calculates the offset from a pointer using wrapping arithmetic.
+    /// `count` is in units of T; e.g. a `count` of 3 represents a pointer
+    /// offset of `3 * sizeof::<T>()` bytes.
+    ///
+    /// # Safety
+    ///
+    /// The resulting pointer does not need to be in bounds, but it is
+    /// potentially hazardous to dereference (which requires `unsafe`).
+    ///
+    /// Always use `.offset(count)` instead when possible, because `offset`
+    /// allows the compiler to optimize better.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(ptr_wrapping_offset)]
+    /// // Iterate using a raw pointer in increments of two elements
+    /// let data = [1u8, 2, 3, 4, 5];
+    /// let mut ptr: *const u8 = data.as_ptr();
+    /// let step = 2;
+    /// let end_rounded_up = ptr.wrapping_offset(6);
+    ///
+    /// // This loop prints "1, 3, 5, "
+    /// while ptr != end_rounded_up {
+    ///     unsafe {
+    ///         print!("{}, ", *ptr);
+    ///     }
+    ///     ptr = ptr.wrapping_offset(step);
+    /// }
+    /// ```
+    #[unstable(feature = "ptr_wrapping_offset", issue = "37570")]
+    #[inline]
+    pub fn wrapping_offset(self, count: isize) -> *const T where T: Sized {
+        unsafe {
+            intrinsics::arith_offset(self, count)
+        }
+    }
 }
 
 #[lang = "mut_ptr"]
@@ -427,6 +553,46 @@ impl<T: ?Sized> *mut T {
     #[inline]
     pub unsafe fn offset(self, count: isize) -> *mut T where T: Sized {
         intrinsics::offset(self, count) as *mut T
+    }
+
+    /// Calculates the offset from a pointer using wrapping arithmetic.
+    /// `count` is in units of T; e.g. a `count` of 3 represents a pointer
+    /// offset of `3 * sizeof::<T>()` bytes.
+    ///
+    /// # Safety
+    ///
+    /// The resulting pointer does not need to be in bounds, but it is
+    /// potentially hazardous to dereference (which requires `unsafe`).
+    ///
+    /// Always use `.offset(count)` instead when possible, because `offset`
+    /// allows the compiler to optimize better.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(ptr_wrapping_offset)]
+    /// // Iterate using a raw pointer in increments of two elements
+    /// let mut data = [1u8, 2, 3, 4, 5];
+    /// let mut ptr: *mut u8 = data.as_mut_ptr();
+    /// let step = 2;
+    /// let end_rounded_up = ptr.wrapping_offset(6);
+    ///
+    /// while ptr != end_rounded_up {
+    ///     unsafe {
+    ///         *ptr = 0;
+    ///     }
+    ///     ptr = ptr.wrapping_offset(step);
+    /// }
+    /// assert_eq!(&data, &[0, 2, 0, 4, 0]);
+    /// ```
+    #[unstable(feature = "ptr_wrapping_offset", issue = "37570")]
+    #[inline]
+    pub fn wrapping_offset(self, count: isize) -> *mut T where T: Sized {
+        unsafe {
+            intrinsics::arith_offset(self, count) as *mut T
+        }
     }
 
     /// Returns `None` if the pointer is null, or else returns a mutable

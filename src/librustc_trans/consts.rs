@@ -16,7 +16,7 @@ use rustc_const_eval::ConstEvalErr;
 use rustc::hir::def_id::DefId;
 use rustc::hir::map as hir_map;
 use {debuginfo, machine};
-use base::{self, push_ctxt};
+use base;
 use trans_item::TransItem;
 use common::{CrateContext, val_ty};
 use declare;
@@ -84,7 +84,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
         return g;
     }
 
-    let ty = ccx.tcx().lookup_item_type(def_id).ty;
+    let ty = ccx.tcx().item_type(def_id);
     let g = if let Some(id) = ccx.tcx().map.as_local_node_id(def_id) {
 
         let llty = type_of::type_of(ccx, ty);
@@ -95,8 +95,6 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                 let sym = ccx.symbol_map()
                              .get(TransItem::Static(id))
                              .expect("Local statics should always be in the SymbolMap");
-                // Make sure that this is never executed for something inlined.
-                assert!(!ccx.tcx().map.is_inlined_node_id(id));
 
                 let defined_in_current_codegen_unit = ccx.codegen_unit()
                                                          .items()
@@ -123,7 +121,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                     // extern "C" fn() from being non-null, so we can't just declare a
                     // static and call it a day. Some linkages (like weak) will make it such
                     // that the static actually has a null value.
-                    let linkage = match base::llvm_linkage_by_name(&name) {
+                    let linkage = match base::llvm_linkage_by_name(&name.as_str()) {
                         Some(linkage) => linkage,
                         None => {
                             ccx.sess().span_fatal(span, "invalid linkage specified");
@@ -191,7 +189,12 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                 llvm::set_thread_local(g, true);
             }
         }
-        if ccx.use_dll_storage_attrs() {
+        if ccx.use_dll_storage_attrs() && !ccx.sess().cstore.is_foreign_item(def_id) {
+            // This item is external but not foreign, i.e. it originates from an external Rust
+            // crate. Since we don't know whether this crate will be linked dynamically or
+            // statically in the final application, we always mark such symbols as 'dllimport'.
+            // If final linkage happens to be static, we rely on compiler-emitted __imp_ stubs to
+            // make things work.
             unsafe {
                 llvm::LLVMSetDLLStorageClass(g, llvm::DLLStorageClass::DllImport);
             }
@@ -199,6 +202,12 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
         g
     };
 
+    if ccx.use_dll_storage_attrs() && ccx.sess().cstore.is_dllimport_foreign_item(def_id) {
+        // For foreign (native) libs we know the exact storage type to use.
+        unsafe {
+            llvm::LLVMSetDLLStorageClass(g, llvm::DLLStorageClass::DllImport);
+        }
+    }
     ccx.instances().borrow_mut().insert(instance, g);
     ccx.statics().borrow_mut().insert(g, def_id);
     g
@@ -210,7 +219,6 @@ pub fn trans_static(ccx: &CrateContext,
                     attrs: &[ast::Attribute])
                     -> Result<ValueRef, ConstEvalErr> {
     unsafe {
-        let _icx = push_ctxt("trans_static");
         let def_id = ccx.tcx().map.local_def_id(id);
         let g = get_static(ccx, def_id);
 
@@ -226,7 +234,7 @@ pub fn trans_static(ccx: &CrateContext,
             v
         };
 
-        let ty = ccx.tcx().lookup_item_type(def_id).ty;
+        let ty = ccx.tcx().item_type(def_id);
         let llty = type_of::type_of(ccx, ty);
         let g = if val_llty == llty {
             g

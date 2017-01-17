@@ -6,18 +6,22 @@ version = "0.0.0"
 [lib]
 name = "bootstrap"
 path = "lib.rs"
+doctest = false
 
 [[bin]]
 name = "bootstrap"
 path = "bin/main.rs"
+test = false
 
 [[bin]]
 name = "rustc"
 path = "bin/rustc.rs"
+test = false
 
 [[bin]]
 name = "rustdoc"
 path = "bin/rustdoc.rs"
+test = false
 
 [dependencies]
 build_helper = { path = "../build_helper" }
@@ -27,10 +31,5 @@ num_cpus = "0.2"
 toml = "0.1"
 getopts = "0.2"
 rustc-serialize = "0.3"
-gcc = { git = "https://github.com/alexcrichton/gcc-rs" }
+gcc = "0.3.38"
 libc = "0.2"
-md5 = "0.1"
-
-[target.'cfg(windows)'.dependencies]
-winapi = "0.2"
-kernel32-sys = "0.2"

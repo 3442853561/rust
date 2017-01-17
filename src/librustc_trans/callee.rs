@@ -16,7 +16,6 @@
 
 pub use self::CalleeData::*;
 
-use arena::TypedArena;
 use llvm::{self, ValueRef, get_params};
 use rustc::hir::def_id::DefId;
 use rustc::ty::subst::Substs;
@@ -24,13 +23,13 @@ use rustc::traits;
 use abi::{Abi, FnType};
 use attributes;
 use base;
-use base::*;
-use build::*;
-use closure;
-use common::{self, Block, Result, CrateContext, FunctionContext, SharedCrateContext};
+use builder::Builder;
+use common::{self, CrateContext, SharedCrateContext};
+use cleanup::CleanupScope;
+use mir::lvalue::LvalueRef;
 use consts;
-use debuginfo::DebugLoc;
 use declare;
+use value::Value;
 use meth;
 use monomorphize::{self, Instance};
 use trans_item::TransItem;
@@ -38,6 +37,7 @@ use type_of;
 use Disr;
 use rustc::ty::{self, Ty, TypeFoldable};
 use rustc::hir;
+use std::iter;
 
 use syntax_pos::DUMMY_SP;
 
@@ -70,25 +70,8 @@ impl<'tcx> Callee<'tcx> {
         }
     }
 
-    /// Trait or impl method call.
-    pub fn method_call<'blk>(bcx: Block<'blk, 'tcx>,
-                             method_call: ty::MethodCall)
-                             -> Callee<'tcx> {
-        let method = bcx.tcx().tables.borrow().method_map[&method_call];
-        Callee::method(bcx, method)
-    }
-
-    /// Trait or impl method.
-    pub fn method<'blk>(bcx: Block<'blk, 'tcx>,
-                        method: ty::MethodCallee<'tcx>) -> Callee<'tcx> {
-        let substs = bcx.fcx.monomorphize(&method.substs);
-        Callee::def(bcx.ccx(), method.def_id, substs)
-    }
-
     /// Function or method definition.
-    pub fn def<'a>(ccx: &CrateContext<'a, 'tcx>,
-                   def_id: DefId,
-                   substs: &'tcx Substs<'tcx>)
+    pub fn def<'a>(ccx: &CrateContext<'a, 'tcx>, def_id: DefId, substs: &'tcx Substs<'tcx>)
                    -> Callee<'tcx> {
         let tcx = ccx.tcx();
 
@@ -147,11 +130,12 @@ impl<'tcx> Callee<'tcx> {
                 // after passing through fulfill_obligation
                 let trait_closure_kind = tcx.lang_items.fn_trait_kind(trait_id).unwrap();
                 let instance = Instance::new(def_id, substs);
-                let llfn = closure::trans_closure_method(ccx,
-                                                         vtable_closure.closure_def_id,
-                                                         vtable_closure.substs,
-                                                         instance,
-                                                         trait_closure_kind);
+                let llfn = trans_closure_method(
+                    ccx,
+                    vtable_closure.closure_def_id,
+                    vtable_closure.substs,
+                    instance,
+                    trait_closure_kind);
 
                 let method_ty = def_ty(ccx.shared(), def_id, substs);
                 Callee::ptr(llfn, method_ty)
@@ -194,25 +178,6 @@ impl<'tcx> Callee<'tcx> {
         fn_ty
     }
 
-    /// This behemoth of a function translates function calls. Unfortunately, in
-    /// order to generate more efficient LLVM output at -O0, it has quite a complex
-    /// signature (refactoring this into two functions seems like a good idea).
-    ///
-    /// In particular, for lang items, it is invoked with a dest of None, and in
-    /// that case the return value contains the result of the fn. The lang item must
-    /// not return a structural type or else all heck breaks loose.
-    ///
-    /// For non-lang items, `dest` is always Some, and hence the result is written
-    /// into memory somewhere. Nonetheless we return the actual return value of the
-    /// function.
-    pub fn call<'a, 'blk>(self, bcx: Block<'blk, 'tcx>,
-                          debug_loc: DebugLoc,
-                          args: &[ValueRef],
-                          dest: Option<ValueRef>)
-                          -> Result<'blk, 'tcx> {
-        trans_call_inner(bcx, debug_loc, self, args, dest)
-    }
-
     /// Turn the callee into a function pointer.
     pub fn reify<'a>(self, ccx: &CrateContext<'a, 'tcx>) -> ValueRef {
         match self.data {
@@ -246,8 +211,203 @@ fn def_ty<'a, 'tcx>(shared: &SharedCrateContext<'a, 'tcx>,
                     def_id: DefId,
                     substs: &'tcx Substs<'tcx>)
                     -> Ty<'tcx> {
-    let ty = shared.tcx().lookup_item_type(def_id).ty;
+    let ty = shared.tcx().item_type(def_id);
     monomorphize::apply_param_substs(shared, substs, &ty)
+}
+
+
+fn trans_closure_method<'a, 'tcx>(ccx: &'a CrateContext<'a, 'tcx>,
+                                  def_id: DefId,
+                                  substs: ty::ClosureSubsts<'tcx>,
+                                  method_instance: Instance<'tcx>,
+                                  trait_closure_kind: ty::ClosureKind)
+                                  -> ValueRef
+{
+    // If this is a closure, redirect to it.
+    let (llfn, _) = get_fn(ccx, def_id, substs.substs);
+
+    // If the closure is a Fn closure, but a FnOnce is needed (etc),
+    // then adapt the self type
+    let llfn_closure_kind = ccx.tcx().closure_kind(def_id);
+
+    debug!("trans_closure_adapter_shim(llfn_closure_kind={:?}, \
+           trait_closure_kind={:?}, llfn={:?})",
+           llfn_closure_kind, trait_closure_kind, Value(llfn));
+
+    match needs_fn_once_adapter_shim(llfn_closure_kind, trait_closure_kind) {
+        Ok(true) => trans_fn_once_adapter_shim(ccx,
+                                               def_id,
+                                               substs,
+                                               method_instance,
+                                               llfn),
+        Ok(false) => llfn,
+        Err(()) => {
+            bug!("trans_closure_adapter_shim: cannot convert {:?} to {:?}",
+                 llfn_closure_kind,
+                 trait_closure_kind);
+        }
+    }
+}
+
+pub fn needs_fn_once_adapter_shim(actual_closure_kind: ty::ClosureKind,
+                                  trait_closure_kind: ty::ClosureKind)
+                                  -> Result<bool, ()>
+{
+    match (actual_closure_kind, trait_closure_kind) {
+        (ty::ClosureKind::Fn, ty::ClosureKind::Fn) |
+        (ty::ClosureKind::FnMut, ty::ClosureKind::FnMut) |
+        (ty::ClosureKind::FnOnce, ty::ClosureKind::FnOnce) => {
+            // No adapter needed.
+           Ok(false)
+        }
+        (ty::ClosureKind::Fn, ty::ClosureKind::FnMut) => {
+            // The closure fn `llfn` is a `fn(&self, ...)`.  We want a
+            // `fn(&mut self, ...)`. In fact, at trans time, these are
+            // basically the same thing, so we can just return llfn.
+            Ok(false)
+        }
+        (ty::ClosureKind::Fn, ty::ClosureKind::FnOnce) |
+        (ty::ClosureKind::FnMut, ty::ClosureKind::FnOnce) => {
+            // The closure fn `llfn` is a `fn(&self, ...)` or `fn(&mut
+            // self, ...)`.  We want a `fn(self, ...)`. We can produce
+            // this by doing something like:
+            //
+            //     fn call_once(self, ...) { call_mut(&self, ...) }
+            //     fn call_once(mut self, ...) { call_mut(&mut self, ...) }
+            //
+            // These are both the same at trans time.
+            Ok(true)
+        }
+        _ => Err(()),
+    }
+}
+
+fn trans_fn_once_adapter_shim<'a, 'tcx>(
+    ccx: &'a CrateContext<'a, 'tcx>,
+    def_id: DefId,
+    substs: ty::ClosureSubsts<'tcx>,
+    method_instance: Instance<'tcx>,
+    llreffn: ValueRef)
+    -> ValueRef
+{
+    if let Some(&llfn) = ccx.instances().borrow().get(&method_instance) {
+        return llfn;
+    }
+
+    debug!("trans_fn_once_adapter_shim(def_id={:?}, substs={:?}, llreffn={:?})",
+           def_id, substs, Value(llreffn));
+
+    let tcx = ccx.tcx();
+
+    // Find a version of the closure type. Substitute static for the
+    // region since it doesn't really matter.
+    let closure_ty = tcx.mk_closure_from_closure_substs(def_id, substs);
+    let ref_closure_ty = tcx.mk_imm_ref(tcx.mk_region(ty::ReErased), closure_ty);
+
+    // Make a version with the type of by-ref closure.
+    let ty::ClosureTy { unsafety, abi, mut sig } = tcx.closure_type(def_id, substs);
+    sig.0 = tcx.mk_fn_sig(
+        iter::once(ref_closure_ty).chain(sig.0.inputs().iter().cloned()),
+        sig.0.output(),
+        sig.0.variadic
+    );
+    let llref_fn_ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(ty::BareFnTy {
+        unsafety: unsafety,
+        abi: abi,
+        sig: sig.clone()
+    }));
+    debug!("trans_fn_once_adapter_shim: llref_fn_ty={:?}",
+           llref_fn_ty);
+
+
+    // Make a version of the closure type with the same arguments, but
+    // with argument #0 being by value.
+    assert_eq!(abi, Abi::RustCall);
+    sig.0 = tcx.mk_fn_sig(
+        iter::once(closure_ty).chain(sig.0.inputs().iter().skip(1).cloned()),
+        sig.0.output(),
+        sig.0.variadic
+    );
+
+    let sig = tcx.erase_late_bound_regions_and_normalize(&sig);
+    let fn_ty = FnType::new(ccx, abi, &sig, &[]);
+
+    let llonce_fn_ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(ty::BareFnTy {
+        unsafety: unsafety,
+        abi: abi,
+        sig: ty::Binder(sig)
+    }));
+
+    // Create the by-value helper.
+    let function_name = method_instance.symbol_name(ccx.shared());
+    let lloncefn = declare::define_internal_fn(ccx, &function_name, llonce_fn_ty);
+    attributes::set_frame_pointer_elimination(ccx, lloncefn);
+
+    let orig_fn_ty = fn_ty;
+    let mut bcx = Builder::new_block(ccx, lloncefn, "entry-block");
+
+    let callee = Callee {
+        data: Fn(llreffn),
+        ty: llref_fn_ty
+    };
+
+    // the first argument (`self`) will be the (by value) closure env.
+
+    let mut llargs = get_params(lloncefn);
+    let fn_ret = callee.ty.fn_ret();
+    let fn_ty = callee.direct_fn_type(bcx.ccx, &[]);
+    let self_idx = fn_ty.ret.is_indirect() as usize;
+    let env_arg = &orig_fn_ty.args[0];
+    let llenv = if env_arg.is_indirect() {
+        llargs[self_idx]
+    } else {
+        let scratch = bcx.alloca_ty(closure_ty, "self");
+        let mut llarg_idx = self_idx;
+        env_arg.store_fn_arg(&bcx, &mut llarg_idx, scratch);
+        scratch
+    };
+
+    debug!("trans_fn_once_adapter_shim: env={:?}", Value(llenv));
+    // Adjust llargs such that llargs[self_idx..] has the call arguments.
+    // For zero-sized closures that means sneaking in a new argument.
+    if env_arg.is_ignore() {
+        llargs.insert(self_idx, llenv);
+    } else {
+        llargs[self_idx] = llenv;
+    }
+
+    // Call the by-ref closure body with `self` in a cleanup scope,
+    // to drop `self` when the body returns, or in case it unwinds.
+    let self_scope = CleanupScope::schedule_drop_mem(
+        &bcx, LvalueRef::new_sized_ty(llenv, closure_ty)
+    );
+
+    let llfn = callee.reify(bcx.ccx);
+    let llret;
+    if let Some(landing_pad) = self_scope.landing_pad {
+        let normal_bcx = bcx.build_sibling_block("normal-return");
+        llret = bcx.invoke(llfn, &llargs[..], normal_bcx.llbb(), landing_pad, None);
+        bcx = normal_bcx;
+    } else {
+        llret = bcx.call(llfn, &llargs[..], None);
+    }
+    fn_ty.apply_attrs_callsite(llret);
+
+    if fn_ret.0.is_never() {
+        bcx.unreachable();
+    } else {
+        self_scope.trans(&bcx);
+
+        if fn_ty.ret.is_indirect() || fn_ty.ret.is_ignore() {
+            bcx.ret_void();
+        } else {
+            bcx.ret(llret);
+        }
+    }
+
+    ccx.instances().borrow_mut().insert(method_instance, lloncefn);
+
+    lloncefn
 }
 
 /// Translates an adapter that implements the `Fn` trait for a fn
@@ -269,7 +429,6 @@ fn trans_fn_pointer_shim<'a, 'tcx>(
     bare_fn_ty: Ty<'tcx>)
     -> ValueRef
 {
-    let _icx = push_ctxt("trans_fn_pointer_shim");
     let tcx = ccx.tcx();
 
     // Normalize the type for better caching.
@@ -326,13 +485,12 @@ fn trans_fn_pointer_shim<'a, 'tcx>(
         }
     };
     let sig = tcx.erase_late_bound_regions_and_normalize(sig);
-    let tuple_input_ty = tcx.intern_tup(&sig.inputs[..]);
-    let sig = ty::FnSig {
-        inputs: vec![bare_fn_ty_maybe_ref,
-                     tuple_input_ty],
-        output: sig.output,
-        variadic: false
-    };
+    let tuple_input_ty = tcx.intern_tup(sig.inputs());
+    let sig = tcx.mk_fn_sig(
+        [bare_fn_ty_maybe_ref, tuple_input_ty].iter().cloned(),
+        sig.output(),
+        false
+    );
     let fn_ty = FnType::new(ccx, Abi::RustCall, &sig, &[]);
     let tuple_fn_ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(ty::BareFnTy {
         unsafety: hir::Unsafety::Normal,
@@ -346,32 +504,38 @@ fn trans_fn_pointer_shim<'a, 'tcx>(
     let llfn = declare::define_internal_fn(ccx, &function_name, tuple_fn_ty);
     attributes::set_frame_pointer_elimination(ccx, llfn);
     //
-    let (block_arena, fcx): (TypedArena<_>, FunctionContext);
-    block_arena = TypedArena::new();
-    fcx = FunctionContext::new(ccx, llfn, fn_ty, None, &block_arena);
-    let mut bcx = fcx.init(false);
+    let bcx = Builder::new_block(ccx, llfn, "entry-block");
 
-    let llargs = get_params(fcx.llfn);
+    let mut llargs = get_params(llfn);
 
-    let self_idx = fcx.fn_ty.ret.is_indirect() as usize;
+    let self_arg = llargs.remove(fn_ty.ret.is_indirect() as usize);
     let llfnpointer = llfnpointer.unwrap_or_else(|| {
         // the first argument (`self`) will be ptr to the fn pointer
         if is_by_ref {
-            Load(bcx, llargs[self_idx])
+            bcx.load(self_arg)
         } else {
-            llargs[self_idx]
+            self_arg
         }
     });
-
-    let dest = fcx.llretslotptr.get();
 
     let callee = Callee {
         data: Fn(llfnpointer),
         ty: bare_fn_ty
     };
-    bcx = callee.call(bcx, DebugLoc::None, &llargs[(self_idx + 1)..], dest).bcx;
+    let fn_ret = callee.ty.fn_ret();
+    let fn_ty = callee.direct_fn_type(ccx, &[]);
+    let llret = bcx.call(llfnpointer, &llargs, None);
+    fn_ty.apply_attrs_callsite(llret);
 
-    fcx.finish(bcx, DebugLoc::None);
+    if fn_ret.0.is_never() {
+        bcx.unreachable();
+    } else {
+        if fn_ty.ret.is_indirect() || fn_ty.ret.is_ignore() {
+            bcx.ret_void();
+        } else {
+            bcx.ret(llret);
+        }
+    }
 
     ccx.fn_pointer_shims().borrow_mut().insert(bare_fn_ty_maybe_ref, llfn);
 
@@ -400,7 +564,7 @@ fn get_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 
     let substs = tcx.normalize_associated_type(&substs);
     let instance = Instance::new(def_id, substs);
-    let item_ty = ccx.tcx().lookup_item_type(def_id).ty;
+    let item_ty = ccx.tcx().item_type(def_id);
     let fn_ty = monomorphize::apply_param_substs(ccx.shared(), substs, &item_ty);
 
     if let Some(&llfn) = ccx.instances().borrow().get(&instance) {
@@ -435,13 +599,8 @@ fn get_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
     // reference. It also occurs when testing libcore and in some
     // other weird situations. Annoying.
 
-    let fn_ptr_ty = match fn_ty.sty {
-        ty::TyFnDef(.., fty) => {
-            // Create a fn pointer with the substituted signature.
-            tcx.mk_fn_ptr(fty)
-        }
-        _ => bug!("expected fn item type, found {}", fn_ty)
-    };
+    // Create a fn pointer with the substituted signature.
+    let fn_ptr_ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(common::ty_fn_ty(ccx, fn_ty).into_owned()));
     let llptrty = type_of::type_of(ccx, fn_ptr_ty);
 
     let llfn = if let Some(llfn) = declare::get_declared_value(ccx, &sym) {
@@ -469,95 +628,15 @@ fn get_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                 llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::ExternalLinkage);
             }
         }
-
+        if ccx.use_dll_storage_attrs() && ccx.sess().cstore.is_dllimport_foreign_item(def_id) {
+            unsafe {
+                llvm::LLVMSetDLLStorageClass(llfn, llvm::DLLStorageClass::DllImport);
+            }
+        }
         llfn
     };
 
     ccx.instances().borrow_mut().insert(instance, llfn);
 
     (llfn, fn_ty)
-}
-
-// ______________________________________________________________________
-// Translating calls
-
-fn trans_call_inner<'a, 'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                    debug_loc: DebugLoc,
-                                    callee: Callee<'tcx>,
-                                    args: &[ValueRef],
-                                    opt_llretslot: Option<ValueRef>)
-                                    -> Result<'blk, 'tcx> {
-    // Introduce a temporary cleanup scope that will contain cleanups
-    // for the arguments while they are being evaluated. The purpose
-    // this cleanup is to ensure that, should a panic occur while
-    // evaluating argument N, the values for arguments 0...N-1 are all
-    // cleaned up. If no panic occurs, the values are handed off to
-    // the callee, and hence none of the cleanups in this temporary
-    // scope will ever execute.
-    let fcx = bcx.fcx;
-    let ccx = fcx.ccx;
-
-    let fn_ret = callee.ty.fn_ret();
-    let fn_ty = callee.direct_fn_type(ccx, &[]);
-
-    let mut callee = match callee.data {
-        NamedTupleConstructor(_) | Intrinsic => {
-            bug!("{:?} calls should not go through Callee::call", callee);
-        }
-        f => f
-    };
-
-    // If there no destination, return must be direct, with no cast.
-    if opt_llretslot.is_none() {
-        assert!(!fn_ty.ret.is_indirect() && fn_ty.ret.cast.is_none());
-    }
-
-    let mut llargs = Vec::new();
-
-    if fn_ty.ret.is_indirect() {
-        let mut llretslot = opt_llretslot.unwrap();
-        if let Some(ty) = fn_ty.ret.cast {
-            llretslot = PointerCast(bcx, llretslot, ty.ptr_to());
-        }
-        llargs.push(llretslot);
-    }
-
-    match callee {
-        Virtual(idx) => {
-            llargs.push(args[0]);
-
-            let fn_ptr = meth::get_virtual_method(bcx, args[1], idx);
-            let llty = fn_ty.llvm_type(bcx.ccx()).ptr_to();
-            callee = Fn(PointerCast(bcx, fn_ptr, llty));
-            llargs.extend_from_slice(&args[2..]);
-        }
-        _ => llargs.extend_from_slice(args)
-    }
-
-    let llfn = match callee {
-        Fn(f) => f,
-        _ => bug!("expected fn pointer callee, found {:?}", callee)
-    };
-
-    let (llret, bcx) = base::invoke(bcx, llfn, &llargs, debug_loc);
-    if !bcx.unreachable.get() {
-        fn_ty.apply_attrs_callsite(llret);
-
-        // If the function we just called does not use an outpointer,
-        // store the result into the rust outpointer. Cast the outpointer
-        // type to match because some ABIs will use a different type than
-        // the Rust type. e.g., a {u32,u32} struct could be returned as
-        // u64.
-        if !fn_ty.ret.is_indirect() {
-            if let Some(llretslot) = opt_llretslot {
-                fn_ty.ret.store(&bcx.build(), llret, llretslot);
-            }
-        }
-    }
-
-    if fn_ret.0.is_never() {
-        Unreachable(bcx);
-    }
-
-    Result::new(bcx, llret)
 }

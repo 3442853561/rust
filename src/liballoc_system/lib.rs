@@ -12,14 +12,14 @@
 #![crate_type = "rlib"]
 #![no_std]
 #![allocator]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 #![unstable(feature = "alloc_system",
             reason = "this library is unlikely to be stabilized in its current \
                       form or name",
             issue = "27783")]
 #![feature(allocator)]
 #![feature(staged_api)]
-#![cfg_attr(unix, feature(libc))]
+#![cfg_attr(any(unix, target_os = "redox"), feature(libc))]
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
@@ -35,7 +35,8 @@ const MIN_ALIGN: usize = 8;
 #[cfg(all(any(target_arch = "x86_64",
               target_arch = "aarch64",
               target_arch = "mips64",
-              target_arch = "s390x")))]
+              target_arch = "s390x",
+              target_arch = "sparc64")))]
 const MIN_ALIGN: usize = 16;
 
 #[no_mangle]
@@ -71,7 +72,7 @@ pub extern "C" fn __rust_usable_size(size: usize, align: usize) -> usize {
     imp::usable_size(size, align)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "redox"))]
 mod imp {
     extern crate libc;
 
@@ -87,7 +88,7 @@ mod imp {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_os = "redox"))]
     unsafe fn aligned_malloc(size: usize, align: usize) -> *mut u8 {
         // On android we currently target API level 9 which unfortunately
         // doesn't have the `posix_memalign` API used below. Instead we use
@@ -109,7 +110,7 @@ mod imp {
         libc::memalign(align as libc::size_t, size as libc::size_t) as *mut u8
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "redox")))]
     unsafe fn aligned_malloc(size: usize, align: usize) -> *mut u8 {
         let mut out = ptr::null_mut();
         let ret = libc::posix_memalign(&mut out, align as libc::size_t, size as libc::size_t);
@@ -166,6 +167,7 @@ mod imp {
         fn HeapAlloc(hHeap: HANDLE, dwFlags: DWORD, dwBytes: SIZE_T) -> LPVOID;
         fn HeapReAlloc(hHeap: HANDLE, dwFlags: DWORD, lpMem: LPVOID, dwBytes: SIZE_T) -> LPVOID;
         fn HeapFree(hHeap: HANDLE, dwFlags: DWORD, lpMem: LPVOID) -> BOOL;
+        fn GetLastError() -> DWORD;
     }
 
     #[repr(C)]
@@ -230,11 +232,11 @@ mod imp {
     pub unsafe fn deallocate(ptr: *mut u8, _old_size: usize, align: usize) {
         if align <= MIN_ALIGN {
             let err = HeapFree(GetProcessHeap(), 0, ptr as LPVOID);
-            debug_assert!(err != 0);
+            debug_assert!(err != 0, "Failed to free heap memory: {}", GetLastError());
         } else {
             let header = get_header(ptr);
             let err = HeapFree(GetProcessHeap(), 0, header.0 as LPVOID);
-            debug_assert!(err != 0);
+            debug_assert!(err != 0, "Failed to free heap memory: {}", GetLastError());
         }
     }
 

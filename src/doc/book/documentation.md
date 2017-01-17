@@ -28,7 +28,7 @@ code. You can use documentation comments for this purpose:
 /// let five = Rc::new(5);
 /// ```
 pub fn new(value: T) -> Rc<T> {
-    // implementation goes here
+    // Implementation goes here.
 }
 ```
 
@@ -460,8 +460,9 @@ not actually pass as a test.
 ```
 
 The `no_run` attribute will compile your code, but not run it. This is
-important for examples such as "Here's how to start up a network service,"
-which you would want to make sure compile, but might run in an infinite loop!
+important for examples such as "Here's how to retrieve a web page,"
+which you would want to ensure compiles, but might be run in a test
+environment that has no network access.
 
 ### Documenting modules
 
@@ -483,7 +484,7 @@ you have a module in `foo.rs`, you'll often open its code and see this:
 ```rust
 //! A module for using `foo`s.
 //!
-//! The `foo` module contains a lot of useful functionality blah blah blah
+//! The `foo` module contains a lot of useful functionality blah blah blah...
 ```
 
 ### Crate documentation

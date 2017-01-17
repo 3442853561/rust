@@ -35,15 +35,17 @@ enum Enum {
     Variant2(i32)
 }
 
-#[rustc_then_this_would_need(ItemSignature)] //~ ERROR OK
+#[rustc_then_this_would_need(ItemSignature)] //~ ERROR no path
 trait Trait {
+    #[rustc_then_this_would_need(ItemSignature)] //~ ERROR OK
     fn method(&self, _: TypeAlias);
 }
 
 struct SomeType;
 
-#[rustc_then_this_would_need(ItemSignature)] //~ ERROR OK
+#[rustc_then_this_would_need(ItemSignature)] //~ ERROR no path
 impl SomeType {
+    #[rustc_then_this_would_need(ItemSignature)] //~ ERROR OK
     fn method(&self, _: TypeAlias) {}
 }
 

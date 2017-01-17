@@ -15,11 +15,11 @@
 #![plugin(proc_macro_plugin)]
 
 extern crate rustc_plugin;
-extern crate proc_macro_plugin;
+extern crate proc_macro_tokens;
 extern crate syntax;
 
 use syntax::ext::proc_macro_shim::prelude::*;
-use proc_macro_plugin::prelude::*;
+use proc_macro_tokens::prelude::*;
 
 use rustc_plugin::Registry;
 
@@ -52,7 +52,7 @@ fn cond_rec(input: TokenStream) -> TokenStream {
   let test: TokenStream = clause.slice(0..1);
   let rhs: TokenStream = clause.slice_from(1..);
 
-  if ident_eq(&test[0], str_to_ident("else")) || rest.is_empty() {
+  if ident_eq(&test[0], Ident::from_str("else")) || rest.is_empty() {
     qquote!({unquote(rhs)})
   } else {
     qquote!({if unquote(test) { unquote(rhs) } else { cond!(unquote(rest)) } })

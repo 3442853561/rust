@@ -114,6 +114,17 @@ impl IntoInner<imp::Process> for Child {
     fn into_inner(self) -> imp::Process { self.handle }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Child {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Child")
+            .field("stdin", &self.stdin)
+            .field("stdout", &self.stdout)
+            .field("stderr", &self.stderr)
+            .finish()
+    }
+}
+
 /// A handle to a child process's stdin. This struct is used in the [`stdin`]
 /// field on [`Child`].
 ///
@@ -146,6 +157,13 @@ impl IntoInner<AnonPipe> for ChildStdin {
 impl FromInner<AnonPipe> for ChildStdin {
     fn from_inner(pipe: AnonPipe) -> ChildStdin {
         ChildStdin { inner: pipe }
+    }
+}
+
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for ChildStdin {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("ChildStdin { .. }")
     }
 }
 
@@ -183,6 +201,13 @@ impl FromInner<AnonPipe> for ChildStdout {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for ChildStdout {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("ChildStdout { .. }")
+    }
+}
+
 /// A handle to a child process's stderr. This struct is used in the [`stderr`]
 /// field on [`Child`].
 ///
@@ -217,6 +242,13 @@ impl FromInner<AnonPipe> for ChildStderr {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for ChildStderr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("ChildStderr { .. }")
+    }
+}
+
 /// A process builder, providing fine-grained control
 /// over how a new process should be spawned.
 ///
@@ -228,11 +260,18 @@ impl FromInner<AnonPipe> for ChildStderr {
 /// ```
 /// use std::process::Command;
 ///
-/// let output = Command::new("sh")
-///                      .arg("-c")
-///                      .arg("echo hello")
-///                      .output()
-///                      .expect("failed to execute process");
+/// let output = if cfg!(target_os = "windows") {
+///     Command::new("cmd")
+///             .args(&["/C", "echo hello"])
+///             .output()
+///             .expect("failed to execute process")
+/// } else {
+///     Command::new("sh")
+///             .arg("-c")
+///             .arg("echo hello")
+///             .output()
+///             .expect("failed to execute process")
+/// };
 ///
 /// let hello = output.stdout;
 /// ```
@@ -252,6 +291,14 @@ impl Command {
     ///
     /// Builder methods are provided to change these defaults and
     /// otherwise configure the process.
+    ///
+    /// If `program` is not an absolute path, the `PATH` will be searched in
+    /// an OS-defined way.
+    ///
+    /// The search path to be used may be controlled by setting the
+    /// `PATH` environment variable on the Command,
+    /// but this has some implementation limitations on Windows
+    /// (see https://github.com/rust-lang/rust/issues/37519).
     ///
     /// # Examples
     ///
@@ -614,6 +661,13 @@ impl FromInner<imp::Stdio> for Stdio {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Stdio {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Stdio { .. }")
+    }
+}
+
 /// Describes the result of a process after it has terminated.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[stable(feature = "process", since = "1.0.0")]
@@ -746,6 +800,48 @@ impl Child {
         self.handle.wait().map(ExitStatus)
     }
 
+    /// Attempts to collect the exit status of the child if it has already
+    /// exited.
+    ///
+    /// This function will not block the calling thread and will only advisorily
+    /// check to see if the child process has exited or not. If the child has
+    /// exited then on Unix the process id is reaped. This function is
+    /// guaranteed to repeatedly return a successful exit status so long as the
+    /// child has already exited.
+    ///
+    /// If the child has exited, then `Ok(status)` is returned. If the exit
+    /// status is not available at this time then an error is returned with the
+    /// error kind `WouldBlock`. If an error occurs, then that error is returned.
+    ///
+    /// Note that unlike `wait`, this function will not attempt to drop stdin.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```no_run
+    /// #![feature(process_try_wait)]
+    ///
+    /// use std::io;
+    /// use std::process::Command;
+    ///
+    /// let mut child = Command::new("ls").spawn().unwrap();
+    ///
+    /// match child.try_wait() {
+    ///     Ok(status) => println!("exited with: {}", status),
+    ///     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+    ///         println!("status not ready yet, let's really wait");
+    ///         let res = child.wait();
+    ///         println!("result: {:?}", res);
+    ///     }
+    ///     Err(e) => println!("error attempting to wait: {}", e),
+    /// }
+    /// ```
+    #[unstable(feature = "process_try_wait", issue = "38903")]
+    pub fn try_wait(&mut self) -> io::Result<ExitStatus> {
+        self.handle.try_wait().map(ExitStatus)
+    }
+
     /// Simultaneously waits for the child to exit and collect all remaining
     /// output on the stdout/stderr handles, returning an `Output`
     /// instance.
@@ -819,10 +915,50 @@ impl Child {
 /// will be run. If a clean shutdown is needed it is recommended to only call
 /// this function at a known point where there are no more destructors left
 /// to run.
+///
+/// ## Platform-specific behavior
+///
+/// **Unix**: On Unix-like platforms, it is unlikely that all 32 bits of `exit`
+/// will be visible to a parent process inspecting the exit code. On most
+/// Unix-like platforms, only the eight least-significant bits are considered.
+///
+/// # Examples
+///
+/// ```
+/// use std::process;
+///
+/// process::exit(0);
+/// ```
+///
+/// Due to [platform-specific behavior], the exit code for this example will be
+/// `0` on Linux, but `256` on Windows:
+///
+/// ```no_run
+/// use std::process;
+///
+/// process::exit(0x0f00);
+/// ```
+///
+/// [platform-specific behavior]: #platform-specific-behavior
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn exit(code: i32) -> ! {
     ::sys_common::cleanup();
     ::sys::os::exit(code)
+}
+
+/// Terminates the process in an abnormal fashion.
+///
+/// The function will never return and will immediately terminate the current
+/// process in a platform specific "abnormal" manner.
+///
+/// Note that because this function never returns, and that it terminates the
+/// process, no destructors on the current stack or any other thread's stack
+/// will be run. If a clean shutdown is needed it is recommended to only call
+/// this function at a known point where there are no more destructors left
+/// to run.
+#[unstable(feature = "process_abort", issue = "37838")]
+pub fn abort() -> ! {
+    unsafe { ::sys::abort_internal() };
 }
 
 #[cfg(all(test, not(target_os = "emscripten")))]
@@ -838,7 +974,11 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn smoke() {
-        let p = Command::new("true").spawn();
+        let p = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 0"]).spawn()
+        } else {
+            Command::new("true").spawn()
+        };
         assert!(p.is_ok());
         let mut p = p.unwrap();
         assert!(p.wait().unwrap().success());
@@ -856,7 +996,11 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn exit_reported_right() {
-        let p = Command::new("false").spawn();
+        let p = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 1"]).spawn()
+        } else {
+            Command::new("false").spawn()
+        };
         assert!(p.is_ok());
         let mut p = p.unwrap();
         assert!(p.wait().unwrap().code() == Some(1));
@@ -895,9 +1039,15 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn stdout_works() {
-        let mut cmd = Command::new("echo");
-        cmd.arg("foobar").stdout(Stdio::piped());
-        assert_eq!(run_output(cmd), "foobar\n");
+        if cfg!(target_os = "windows") {
+            let mut cmd = Command::new("cmd");
+            cmd.args(&["/C", "echo foobar"]).stdout(Stdio::piped());
+            assert_eq!(run_output(cmd), "foobar\r\n");
+        } else {
+            let mut cmd = Command::new("echo");
+            cmd.arg("foobar").stdout(Stdio::piped());
+            assert_eq!(run_output(cmd), "foobar\n");
+        }
     }
 
     #[test]
@@ -957,10 +1107,18 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn test_process_status() {
-        let mut status = Command::new("false").status().unwrap();
+        let mut status = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 1"]).status().unwrap()
+        } else {
+            Command::new("false").status().unwrap()
+        };
         assert!(status.code() == Some(1));
 
-        status = Command::new("true").status().unwrap();
+        status = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 0"]).status().unwrap()
+        } else {
+            Command::new("true").status().unwrap()
+        };
         assert!(status.success());
     }
 
@@ -976,7 +1134,11 @@ mod tests {
     #[cfg_attr(target_os = "android", ignore)]
     fn test_process_output_output() {
         let Output {status, stdout, stderr}
-             = Command::new("echo").arg("hello").output().unwrap();
+             = if cfg!(target_os = "windows") {
+                 Command::new("cmd").args(&["/C", "echo hello"]).output().unwrap()
+             } else {
+                 Command::new("echo").arg("hello").output().unwrap()
+             };
         let output_str = str::from_utf8(&stdout).unwrap();
 
         assert!(status.success());
@@ -988,7 +1150,11 @@ mod tests {
     #[cfg_attr(target_os = "android", ignore)]
     fn test_process_output_error() {
         let Output {status, stdout, stderr}
-             = Command::new("mkdir").arg(".").output().unwrap();
+             = if cfg!(target_os = "windows") {
+                 Command::new("cmd").args(&["/C", "mkdir ."]).output().unwrap()
+             } else {
+                 Command::new("mkdir").arg(".").output().unwrap()
+             };
 
         assert!(status.code() == Some(1));
         assert_eq!(stdout, Vec::new());
@@ -998,14 +1164,22 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn test_finish_once() {
-        let mut prog = Command::new("false").spawn().unwrap();
+        let mut prog = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 1"]).spawn().unwrap()
+        } else {
+            Command::new("false").spawn().unwrap()
+        };
         assert!(prog.wait().unwrap().code() == Some(1));
     }
 
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn test_finish_twice() {
-        let mut prog = Command::new("false").spawn().unwrap();
+        let mut prog = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "exit 1"]).spawn().unwrap()
+        } else {
+            Command::new("false").spawn().unwrap()
+        };
         assert!(prog.wait().unwrap().code() == Some(1));
         assert!(prog.wait().unwrap().code() == Some(1));
     }
@@ -1013,8 +1187,12 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "android", ignore)]
     fn test_wait_with_output_once() {
-        let prog = Command::new("echo").arg("hello").stdout(Stdio::piped())
-            .spawn().unwrap();
+        let prog = if cfg!(target_os = "windows") {
+            Command::new("cmd").args(&["/C", "echo hello"]).stdout(Stdio::piped()).spawn().unwrap()
+        } else {
+            Command::new("echo").arg("hello").stdout(Stdio::piped()).spawn().unwrap()
+        };
+
         let Output {status, stdout, stderr} = prog.wait_with_output().unwrap();
         let output_str = str::from_utf8(&stdout).unwrap();
 
@@ -1143,5 +1321,63 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), ErrorKind::InvalidInput),
             Ok(_) => panic!(),
         }
+    }
+
+    /// Test that process creation flags work by debugging a process.
+    /// Other creation flags make it hard or impossible to detect
+    /// behavioral changes in the process.
+    #[test]
+    #[cfg(windows)]
+    fn test_creation_flags() {
+        use os::windows::process::CommandExt;
+        use sys::c::{BOOL, DWORD, INFINITE};
+        #[repr(C, packed)]
+        struct DEBUG_EVENT {
+            pub event_code: DWORD,
+            pub process_id: DWORD,
+            pub thread_id: DWORD,
+            // This is a union in the real struct, but we don't
+            // need this data for the purposes of this test.
+            pub _junk: [u8; 164],
+        }
+
+        extern "system" {
+            fn WaitForDebugEvent(lpDebugEvent: *mut DEBUG_EVENT, dwMilliseconds: DWORD) -> BOOL;
+            fn ContinueDebugEvent(dwProcessId: DWORD, dwThreadId: DWORD,
+                                  dwContinueStatus: DWORD) -> BOOL;
+        }
+
+        const DEBUG_PROCESS: DWORD = 1;
+        const EXIT_PROCESS_DEBUG_EVENT: DWORD = 5;
+        const DBG_EXCEPTION_NOT_HANDLED: DWORD = 0x80010001;
+
+        let mut child = Command::new("cmd")
+            .creation_flags(DEBUG_PROCESS)
+            .stdin(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(b"exit\r\n").unwrap();
+        let mut events = 0;
+        let mut event = DEBUG_EVENT {
+            event_code: 0,
+            process_id: 0,
+            thread_id: 0,
+            _junk: [0; 164],
+        };
+        loop {
+            if unsafe { WaitForDebugEvent(&mut event as *mut DEBUG_EVENT, INFINITE) } == 0 {
+                panic!("WaitForDebugEvent failed!");
+            }
+            events += 1;
+
+            if event.event_code == EXIT_PROCESS_DEBUG_EVENT {
+                break;
+            }
+
+            if unsafe { ContinueDebugEvent(event.process_id,
+                                           event.thread_id,
+                                           DBG_EXCEPTION_NOT_HANDLED) } == 0 {
+                panic!("ContinueDebugEvent failed!");
+            }
+        }
+        assert!(events > 0);
     }
 }

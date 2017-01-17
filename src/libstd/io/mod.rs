@@ -21,7 +21,7 @@
 //! of other types, and you can implement them for your types too. As such,
 //! you'll see a few different types of I/O throughout the documentation in
 //! this module: [`File`]s, [`TcpStream`]s, and sometimes even [`Vec<T>`]s. For
-//! example, `Read` adds a `read()` method, which we can use on `File`s:
+//! example, [`Read`] adds a [`read()`] method, which we can use on `File`s:
 //!
 //! ```
 //! use std::io;
@@ -251,11 +251,12 @@
 //! [`Lines`]: struct.Lines.html
 //! [`io::Result`]: type.Result.html
 //! [`try!`]: ../macro.try.html
+//! [`read()`]: trait.Read.html#tymethod.read
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use cmp;
-use rustc_unicode::str as core_str;
+use std_unicode::str as core_str;
 use error as std_error;
 use fmt;
 use result;
@@ -289,7 +290,7 @@ mod lazy;
 mod util;
 mod stdio;
 
-const DEFAULT_BUF_SIZE: usize = 8 * 1024;
+const DEFAULT_BUF_SIZE: usize = ::sys_common::io::DEFAULT_BUF_SIZE;
 
 // A few methods below (read_to_string, read_line) will append data into a
 // `String` buffer, but we need to be pretty careful when doing this. The
@@ -814,18 +815,22 @@ pub trait Read {
 ///
 /// Implementors of the `Write` trait are sometimes called 'writers'.
 ///
-/// Writers are defined by two required methods, `write()` and `flush()`:
+/// Writers are defined by two required methods, [`write()`] and [`flush()`]:
 ///
-/// * The `write()` method will attempt to write some data into the object,
+/// * The [`write()`] method will attempt to write some data into the object,
 ///   returning how many bytes were successfully written.
 ///
-/// * The `flush()` method is useful for adaptors and explicit buffers
+/// * The [`flush()`] method is useful for adaptors and explicit buffers
 ///   themselves for ensuring that all buffered data has been pushed out to the
 ///   'true sink'.
 ///
 /// Writers are intended to be composable with one another. Many implementors
-/// throughout `std::io` take and provide types which implement the `Write`
+/// throughout [`std::io`] take and provide types which implement the `Write`
 /// trait.
+///
+/// [`write()`]: #tymethod.write
+/// [`flush()`]: #tymethod.flush
+/// [`std::io`]: index.html
 ///
 /// # Examples
 ///
@@ -1420,6 +1425,12 @@ pub trait BufRead: Read {
     ///     println!("{}", line.unwrap());
     /// }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Each line of the iterator has the same error semantics as [`BufRead::read_line()`].
+    ///
+    /// [`BufRead::read_line()`]: trait.BufRead.html#method.read_line
     #[stable(feature = "rust1", since = "1.0.0")]
     fn lines(self) -> Lines<Self> where Self: Sized {
         Lines { buf: self }
@@ -1437,6 +1448,16 @@ pub struct Chain<T, U> {
     first: T,
     second: U,
     done_first: bool,
+}
+
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl<T: fmt::Debug, U: fmt::Debug> fmt::Debug for Chain<T, U> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Chain")
+            .field("t", &self.first)
+            .field("u", &self.second)
+            .finish()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1475,11 +1496,12 @@ impl<T: BufRead, U: BufRead> BufRead for Chain<T, U> {
 
 /// Reader adaptor which limits the bytes read from an underlying reader.
 ///
-/// This struct is generally created by calling [`take()`][take] on a reader.
-/// Please see the documentation of `take()` for more details.
+/// This struct is generally created by calling [`take()`] on a reader.
+/// Please see the documentation of [`take()`] for more details.
 ///
-/// [take]: trait.Read.html#method.take
+/// [`take()`]: trait.Read.html#method.take
 #[stable(feature = "rust1", since = "1.0.0")]
+#[derive(Debug)]
 pub struct Take<T> {
     inner: T,
     limit: u64,
@@ -1491,8 +1513,10 @@ impl<T> Take<T> {
     ///
     /// # Note
     ///
-    /// This instance may reach EOF after reading fewer bytes than indicated by
-    /// this method if the underlying `Read` instance reaches EOF.
+    /// This instance may reach `EOF` after reading fewer bytes than indicated by
+    /// this method if the underlying [`Read`] instance reaches EOF.
+    ///
+    /// [`Read`]: ../../std/io/trait.Read.html
     ///
     /// # Examples
     ///
@@ -1519,8 +1543,6 @@ impl<T> Take<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(io_take_into_inner)]
-    ///
     /// use std::io;
     /// use std::io::prelude::*;
     /// use std::fs::File;
@@ -1536,7 +1558,7 @@ impl<T> Take<T> {
     /// # Ok(())
     /// # }
     /// ```
-    #[unstable(feature = "io_take_into_inner", issue = "23755")]
+    #[stable(feature = "io_take_into_inner", since = "1.15.0")]
     pub fn into_inner(self) -> T {
         self.inner
     }
@@ -1597,6 +1619,7 @@ fn read_one_byte(reader: &mut Read) -> Option<Result<u8>> {
 ///
 /// [`bytes()`]: trait.Read.html#method.bytes
 #[stable(feature = "rust1", since = "1.0.0")]
+#[derive(Debug)]
 pub struct Bytes<R> {
     inner: R,
 }
@@ -1618,6 +1641,7 @@ impl<R: Read> Iterator for Bytes<R> {
 /// [chars]: trait.Read.html#method.chars
 #[unstable(feature = "io", reason = "awaiting stability of Read::chars",
            issue = "27802")]
+#[derive(Debug)]
 pub struct Chars<R> {
     inner: R,
 }
@@ -1707,6 +1731,7 @@ impl fmt::Display for CharsError {
 ///
 /// [split]: trait.BufRead.html#method.split
 #[stable(feature = "rust1", since = "1.0.0")]
+#[derive(Debug)]
 pub struct Split<B> {
     buf: B,
     delim: u8,
@@ -1738,6 +1763,7 @@ impl<B: BufRead> Iterator for Split<B> {
 ///
 /// [lines]: trait.BufRead.html#method.lines
 #[stable(feature = "rust1", since = "1.0.0")]
+#[derive(Debug)]
 pub struct Lines<B> {
     buf: B,
 }

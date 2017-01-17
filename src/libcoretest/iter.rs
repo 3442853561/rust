@@ -274,6 +274,74 @@ fn test_iterator_peekable_last() {
     let mut it = ys.iter().peekable();
     assert_eq!(it.peek(), Some(&&0));
     assert_eq!(it.last(), Some(&0));
+
+    let mut it = ys.iter().peekable();
+    assert_eq!(it.next(), Some(&0));
+    assert_eq!(it.peek(), None);
+    assert_eq!(it.last(), None);
+}
+
+/// This is an iterator that follows the Iterator contract,
+/// but it is not fused. After having returned None once, it will start
+/// producing elements if .next() is called again.
+pub struct CycleIter<'a, T: 'a> {
+    index: usize,
+    data: &'a [T],
+}
+
+pub fn cycle<T>(data: &[T]) -> CycleIter<T> {
+    CycleIter {
+        index: 0,
+        data: data,
+    }
+}
+
+impl<'a, T> Iterator for CycleIter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> {
+        let elt = self.data.get(self.index);
+        self.index += 1;
+        self.index %= 1 + self.data.len();
+        elt
+    }
+}
+
+#[test]
+fn test_iterator_peekable_remember_peek_none_1() {
+    // Check that the loop using .peek() terminates
+    let data = [1, 2, 3];
+    let mut iter = cycle(&data).peekable();
+
+    let mut n = 0;
+    while let Some(_) = iter.next() {
+        let is_the_last = iter.peek().is_none();
+        assert_eq!(is_the_last, n == data.len() - 1);
+        n += 1;
+        if n > data.len() { break; }
+    }
+    assert_eq!(n, data.len());
+}
+
+#[test]
+fn test_iterator_peekable_remember_peek_none_2() {
+    let data = [0];
+    let mut iter = cycle(&data).peekable();
+    iter.next();
+    assert_eq!(iter.peek(), None);
+    assert_eq!(iter.last(), None);
+}
+
+#[test]
+fn test_iterator_peekable_remember_peek_none_3() {
+    let data = [0];
+    let mut iter = cycle(&data).peekable();
+    iter.peek();
+    assert_eq!(iter.nth(0), Some(&0));
+
+    let mut iter = cycle(&data).peekable();
+    iter.next();
+    assert_eq!(iter.peek(), None);
+    assert_eq!(iter.nth(0), None);
 }
 
 #[test]
@@ -547,11 +615,27 @@ fn test_iterator_sum() {
 }
 
 #[test]
+fn test_iterator_sum_result() {
+    let v: &[Result<i32, ()>] = &[Ok(1), Ok(2), Ok(3), Ok(4)];
+    assert_eq!(v.iter().cloned().sum::<Result<i32, _>>(), Ok(10));
+    let v: &[Result<i32, ()>] = &[Ok(1), Err(()), Ok(3), Ok(4)];
+    assert_eq!(v.iter().cloned().sum::<Result<i32, _>>(), Err(()));
+}
+
+#[test]
 fn test_iterator_product() {
     let v: &[i32] = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     assert_eq!(v[..4].iter().cloned().product::<i32>(), 0);
     assert_eq!(v[1..5].iter().cloned().product::<i32>(), 24);
     assert_eq!(v[..0].iter().cloned().product::<i32>(), 1);
+}
+
+#[test]
+fn test_iterator_product_result() {
+    let v: &[Result<i32, ()>] = &[Ok(1), Ok(2), Ok(3), Ok(4)];
+    assert_eq!(v.iter().cloned().product::<Result<i32, _>>(), Ok(24));
+    let v: &[Result<i32, ()>] = &[Ok(1), Err(()), Ok(3), Ok(4)];
+    assert_eq!(v.iter().cloned().product::<Result<i32, _>>(), Err(()));
 }
 
 #[test]

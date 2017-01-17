@@ -8,16 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![allow(non_camel_case_types)]
-
-use rustc::hir::def_id::DefId;
 use abi::FnType;
 use adt;
 use common::*;
 use machine;
 use rustc::ty::{self, Ty, TypeFoldable};
-use rustc::ty::subst::Substs;
-
+use trans_item::DefPathBasedNames;
 use type_::Type;
 
 use syntax::ast;
@@ -43,7 +39,7 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
     let _recursion_lock = cx.enter_type_of(t);
 
     let llsizingty = match t.sty {
-        _ if !type_is_sized(cx.tcx(), t) => {
+        _ if !cx.shared().type_is_sized(t) => {
             Type::struct_(cx, &[Type::i8p(cx), unsized_info_ty(cx, t)], false)
         }
 
@@ -57,7 +53,7 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
         ty::TyBox(ty) |
         ty::TyRef(_, ty::TypeAndMut{ty, ..}) |
         ty::TyRawPtr(ty::TypeAndMut{ty, ..}) => {
-            if type_is_sized(cx.tcx(), ty) {
+            if cx.shared().type_is_sized(ty) {
                 Type::i8p(cx)
             } else {
                 Type::struct_(cx, &[Type::i8p(cx), unsized_info_ty(cx, ty)], false)
@@ -97,7 +93,7 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
         ty::TyAnon(..) | ty::TyError => {
             bug!("fictitious type {:?} in sizing_type_of()", t)
         }
-        ty::TySlice(_) | ty::TyTrait(..) | ty::TyStr => bug!()
+        ty::TySlice(_) | ty::TyDynamic(..) | ty::TyStr => bug!()
     };
 
     debug!("--> mapped t={:?} to llsizingty={:?}", t, llsizingty);
@@ -106,7 +102,7 @@ pub fn sizing_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> Typ
 
     // FIXME(eddyb) Temporary sanity check for ty::layout.
     let layout = cx.layout_of(t);
-    if !type_is_sized(cx.tcx(), t) {
+    if !cx.shared().type_is_sized(t) {
         if !layout.is_unsized() {
             bug!("layout should be unsized for type `{}` / {:#?}",
                  t, layout);
@@ -137,7 +133,7 @@ pub fn fat_ptr_base_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> 
     match ty.sty {
         ty::TyBox(t) |
         ty::TyRef(_, ty::TypeAndMut { ty: t, .. }) |
-        ty::TyRawPtr(ty::TypeAndMut { ty: t, .. }) if !type_is_sized(ccx.tcx(), t) => {
+        ty::TyRawPtr(ty::TypeAndMut { ty: t, .. }) if !ccx.shared().type_is_sized(t) => {
             in_memory_type_of(ccx, t).ptr_to()
         }
         _ => bug!("expected fat ptr ty but got {:?}", ty)
@@ -150,7 +146,7 @@ fn unsized_info_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> Type
         ty::TyStr | ty::TyArray(..) | ty::TySlice(_) => {
             Type::uint_from_ty(ccx, ast::UintTy::Us)
         }
-        ty::TyTrait(_) => Type::vtable_ptr(ccx),
+        ty::TyDynamic(..) => Type::vtable_ptr(ccx),
         _ => bug!("Unexpected tail in unsized_info_ty: {:?} for ty={:?}",
                           unsized_part, ty)
     }
@@ -174,7 +170,7 @@ pub fn immediate_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
 /// is too large for it to be placed in SSA value (by our rules).
 /// For the raw type without far pointer indirection, see `in_memory_type_of`.
 pub fn type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> Type {
-    let ty = if !type_is_sized(cx.tcx(), ty) {
+    let ty = if !cx.shared().type_is_sized(ty) {
         cx.tcx().mk_imm_ptr(ty)
     } else {
         ty
@@ -234,11 +230,11 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
       ty::TyBox(ty) |
       ty::TyRef(_, ty::TypeAndMut{ty, ..}) |
       ty::TyRawPtr(ty::TypeAndMut{ty, ..}) => {
-          if !type_is_sized(cx.tcx(), ty) {
+          if !cx.shared().type_is_sized(ty) {
               if let ty::TyStr = ty.sty {
                   // This means we get a nicer name in the output (str is always
                   // unsized).
-                  cx.tn().find_type("str_slice").unwrap()
+                  cx.str_slice_type()
               } else {
                   let ptr_ty = in_memory_type_of(cx, ty).ptr_to();
                   let info_ty = unsized_info_ty(cx, ty);
@@ -260,7 +256,7 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
       // fat pointers is of the right type (e.g. for array accesses), even
       // when taking the address of an unsized field in a struct.
       ty::TySlice(ty) => in_memory_type_of(cx, ty),
-      ty::TyStr | ty::TyTrait(..) => Type::i8(cx),
+      ty::TyStr | ty::TyDynamic(..) => Type::i8(cx),
 
       ty::TyFnDef(..) => Type::nil(cx),
       ty::TyFnPtr(f) => {
@@ -282,12 +278,12 @@ pub fn in_memory_type_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>) -> 
           let n = t.simd_size(cx.tcx()) as u64;
           Type::vector(&llet, n)
       }
-      ty::TyAdt(def, substs) => {
+      ty::TyAdt(..) => {
           // Only create the named struct, but don't fill it in. We
           // fill it in *after* placing it into the type cache. This
           // avoids creating more than one copy of the enum when one
           // of the enum's variants refers to the enum itself.
-          let name = llvm_type_name(cx, def.did, substs);
+          let name = llvm_type_name(cx, t);
           adt::incomplete_type_of(cx, t, &name[..])
       }
 
@@ -319,21 +315,9 @@ pub fn align_of<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, t: Ty<'tcx>)
     layout.align(&cx.tcx().data_layout).abi() as machine::llalign
 }
 
-fn llvm_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
-                            did: DefId,
-                            substs: &Substs<'tcx>)
-                            -> String {
-    let base = cx.tcx().item_path_str(did);
-    let strings: Vec<String> = substs.types().map(|t| t.to_string()).collect();
-    let tstr = if strings.is_empty() {
-        base
-    } else {
-        format!("{}<{}>", base, strings.join(", "))
-    };
-
-    if did.is_local() {
-        tstr
-    } else {
-        format!("{}.{}", did.krate, tstr)
-    }
+fn llvm_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> String {
+    let mut name = String::with_capacity(32);
+    let printer = DefPathBasedNames::new(cx.tcx(), true, true);
+    printer.push_type_name(ty, &mut name);
+    name
 }

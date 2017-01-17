@@ -22,19 +22,18 @@ use self::source_loc::InternalDebugLocation::{self, UnknownLocation};
 
 use llvm;
 use llvm::{ModuleRef, ContextRef, ValueRef};
-use llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilderRef, DISubprogram, DIArray,
-                      FlagPrototyped};
+use llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilderRef, DISubprogram, DIArray, DIFlags};
 use rustc::hir::def_id::DefId;
-use rustc::hir::map::DefPathData;
 use rustc::ty::subst::Substs;
 
 use abi::Abi;
-use common::{CrateContext, FunctionContext, Block, BlockAndBuilder};
+use common::CrateContext;
+use builder::Builder;
 use monomorphize::{self, Instance};
 use rustc::ty::{self, Ty};
-use rustc::mir::repr as mir;
+use rustc::mir;
 use session::config::{self, FullDebugInfo, LimitedDebugInfo, NoDebugInfo};
-use util::nodemap::{DefIdMap, FnvHashMap, FnvHashSet};
+use util::nodemap::{DefIdMap, FxHashMap, FxHashSet};
 
 use libc::c_uint;
 use std::cell::{Cell, RefCell};
@@ -57,6 +56,7 @@ pub use self::create_scope_map::{create_mir_scopes, MirDebugScope};
 pub use self::source_loc::start_emitting_source_locations;
 pub use self::metadata::create_global_var_metadata;
 pub use self::metadata::extend_scope_to_file;
+pub use self::source_loc::set_source_location;
 
 #[allow(non_upper_case_globals)]
 const DW_TAG_auto_variable: c_uint = 0x100;
@@ -67,16 +67,15 @@ const DW_TAG_arg_variable: c_uint = 0x101;
 pub struct CrateDebugContext<'tcx> {
     llcontext: ContextRef,
     builder: DIBuilderRef,
-    current_debug_location: Cell<InternalDebugLocation>,
-    created_files: RefCell<FnvHashMap<String, DIFile>>,
-    created_enum_disr_types: RefCell<FnvHashMap<(DefId, layout::Integer), DIType>>,
+    created_files: RefCell<FxHashMap<String, DIFile>>,
+    created_enum_disr_types: RefCell<FxHashMap<(DefId, layout::Integer), DIType>>,
 
     type_map: RefCell<TypeMap<'tcx>>,
     namespace_map: RefCell<DefIdMap<DIScope>>,
 
     // This collection is used to assert that composite types (structs, enums,
     // ...) have their members only set once:
-    composite_types_completed: RefCell<FnvHashSet<DIType>>,
+    composite_types_completed: RefCell<FxHashSet<DIType>>,
 }
 
 impl<'tcx> CrateDebugContext<'tcx> {
@@ -85,40 +84,33 @@ impl<'tcx> CrateDebugContext<'tcx> {
         let builder = unsafe { llvm::LLVMRustDIBuilderCreate(llmod) };
         // DIBuilder inherits context from the module, so we'd better use the same one
         let llcontext = unsafe { llvm::LLVMGetModuleContext(llmod) };
-        return CrateDebugContext {
+        CrateDebugContext {
             llcontext: llcontext,
             builder: builder,
-            current_debug_location: Cell::new(InternalDebugLocation::UnknownLocation),
-            created_files: RefCell::new(FnvHashMap()),
-            created_enum_disr_types: RefCell::new(FnvHashMap()),
+            created_files: RefCell::new(FxHashMap()),
+            created_enum_disr_types: RefCell::new(FxHashMap()),
             type_map: RefCell::new(TypeMap::new()),
             namespace_map: RefCell::new(DefIdMap()),
-            composite_types_completed: RefCell::new(FnvHashSet()),
-        };
+            composite_types_completed: RefCell::new(FxHashSet()),
+        }
     }
 }
 
 pub enum FunctionDebugContext {
-    RegularContext(Box<FunctionDebugContextData>),
+    RegularContext(FunctionDebugContextData),
     DebugInfoDisabled,
     FunctionWithoutDebugInfo,
 }
 
 impl FunctionDebugContext {
-    fn get_ref<'a>(&'a self,
-                   span: Span)
-                   -> &'a FunctionDebugContextData {
+    fn get_ref<'a>(&'a self, span: Span) -> &'a FunctionDebugContextData {
         match *self {
-            FunctionDebugContext::RegularContext(box ref data) => data,
+            FunctionDebugContext::RegularContext(ref data) => data,
             FunctionDebugContext::DebugInfoDisabled => {
-                span_bug!(span,
-                          "{}",
-                          FunctionDebugContext::debuginfo_disabled_message());
+                span_bug!(span, "{}", FunctionDebugContext::debuginfo_disabled_message());
             }
             FunctionDebugContext::FunctionWithoutDebugInfo => {
-                span_bug!(span,
-                          "{}",
-                          FunctionDebugContext::should_be_ignored_message());
+                span_bug!(span, "{}", FunctionDebugContext::should_be_ignored_message());
             }
         }
     }
@@ -136,7 +128,6 @@ impl FunctionDebugContext {
 pub struct FunctionDebugContextData {
     fn_metadata: DISubprogram,
     source_locations_enabled: Cell<bool>,
-    source_location_override: Cell<bool>,
 }
 
 pub enum VariableAccess<'a> {
@@ -199,18 +190,6 @@ pub fn finalize(cx: &CrateContext) {
     };
 }
 
-/// Creates a function-specific debug context for a function w/o debuginfo.
-pub fn empty_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>)
-                                              -> FunctionDebugContext {
-    if cx.sess().opts.debuginfo == NoDebugInfo {
-        return FunctionDebugContext::DebugInfoDisabled;
-    }
-
-    // Clear the debug location so we don't assign them in the function prelude.
-    source_loc::set_debug_location(cx, None, UnknownLocation);
-    FunctionDebugContext::FunctionWithoutDebugInfo
-}
-
 /// Creates the function-specific debug context.
 ///
 /// Returns the FunctionDebugContext for the function which holds state needed
@@ -227,15 +206,18 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         return FunctionDebugContext::DebugInfoDisabled;
     }
 
-    // Clear the debug location so we don't assign them in the function prelude.
-    // Do this here already, in case we do an early exit from this function.
-    source_loc::set_debug_location(cx, None, UnknownLocation);
+    for attr in cx.tcx().get_attrs(instance.def).iter() {
+        if attr.check_name("no_debug") {
+            return FunctionDebugContext::FunctionWithoutDebugInfo;
+        }
+    }
 
     let containing_scope = get_containing_scope(cx, instance);
     let span = mir.span;
 
     // This can be the case for functions inlined from another crate
     if span == syntax_pos::DUMMY_SP {
+        // FIXME(simulacrum): Probably can't happen; remove.
         return FunctionDebugContext::FunctionWithoutDebugInfo;
     }
 
@@ -248,21 +230,19 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     };
 
     // Find the enclosing function, in case this is a closure.
-    let mut fn_def_id = instance.def;
-    let mut def_key = cx.tcx().def_key(fn_def_id);
+    let def_key = cx.tcx().def_key(instance.def);
     let mut name = def_key.disambiguated_data.data.to_string();
     let name_len = name.len();
-    while def_key.disambiguated_data.data == DefPathData::ClosureExpr {
-        fn_def_id.index = def_key.parent.expect("closure without a parent?");
-        def_key = cx.tcx().def_key(fn_def_id);
-    }
+
+    let fn_def_id = cx.tcx().closure_base_def_id(instance.def);
 
     // Get_template_parameters() will append a `<...>` clause to the function
     // name if necessary.
-    let generics = cx.tcx().lookup_generics(fn_def_id);
+    let generics = cx.tcx().item_generics(fn_def_id);
+    let substs = instance.substs.truncate_to(cx.tcx(), generics);
     let template_parameters = get_template_parameters(cx,
                                                       &generics,
-                                                      instance.substs,
+                                                      substs,
                                                       file_metadata,
                                                       &mut name);
 
@@ -289,7 +269,7 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             is_local_to_unit,
             true,
             scope_line as c_uint,
-            FlagPrototyped as c_uint,
+            DIFlags::FlagPrototyped,
             cx.sess().opts.optimize != config::OptLevel::No,
             llfn,
             template_parameters,
@@ -297,10 +277,9 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     };
 
     // Initialize fn debug context (including scope map and namespace map)
-    let fn_debug_context = box FunctionDebugContextData {
+    let fn_debug_context = FunctionDebugContextData {
         fn_metadata: fn_metadata,
         source_locations_enabled: Cell::new(false),
-        source_location_override: Cell::new(false),
     };
 
     return FunctionDebugContext::RegularContext(fn_debug_context);
@@ -312,18 +291,18 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             return create_DIArray(DIB(cx), &[]);
         }
 
-        let mut signature = Vec::with_capacity(sig.inputs.len() + 1);
+        let mut signature = Vec::with_capacity(sig.inputs().len() + 1);
 
         // Return type -- llvm::DIBuilder wants this at index 0
-        signature.push(match sig.output.sty {
+        signature.push(match sig.output().sty {
             ty::TyTuple(ref tys) if tys.is_empty() => ptr::null_mut(),
-            _ => type_metadata(cx, sig.output, syntax_pos::DUMMY_SP)
+            _ => type_metadata(cx, sig.output(), syntax_pos::DUMMY_SP)
         });
 
         let inputs = if abi == Abi::RustCall {
-            &sig.inputs[..sig.inputs.len()-1]
+            &sig.inputs()[..sig.inputs().len() - 1]
         } else {
-            &sig.inputs[..]
+            sig.inputs()
         };
 
         // Arguments types
@@ -331,8 +310,8 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             signature.push(type_metadata(cx, argument_type, syntax_pos::DUMMY_SP));
         }
 
-        if abi == Abi::RustCall && !sig.inputs.is_empty() {
-            if let ty::TyTuple(args) = sig.inputs[sig.inputs.len() - 1].sty {
+        if abi == Abi::RustCall && !sig.inputs().is_empty() {
+            if let ty::TyTuple(args) = sig.inputs()[sig.inputs().len() - 1].sty {
                 for &argument_type in args {
                     signature.push(type_metadata(cx, argument_type, syntax_pos::DUMMY_SP));
                 }
@@ -397,7 +376,7 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                           generics: &ty::Generics<'tcx>)
                                           -> Vec<ast::Name> {
         let mut names = generics.parent.map_or(vec![], |def_id| {
-            get_type_parameter_names(cx, cx.tcx().lookup_generics(def_id))
+            get_type_parameter_names(cx, cx.tcx().item_generics(def_id))
         });
         names.extend(generics.types.iter().map(|param| param.name));
         names
@@ -412,7 +391,7 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         let self_type = cx.tcx().impl_of_method(instance.def).and_then(|impl_def_id| {
             // If the method does *not* belong to a trait, proceed
             if cx.tcx().trait_id_of_impl(impl_def_id).is_none() {
-                let impl_self_ty = cx.tcx().lookup_item_type(impl_def_id).ty;
+                let impl_self_ty = cx.tcx().item_type(impl_def_id);
                 let impl_self_ty = cx.tcx().erase_regions(&impl_self_ty);
                 let impl_self_ty = monomorphize::apply_param_substs(cx.shared(),
                                                                     instance.substs,
@@ -445,14 +424,15 @@ pub fn create_function_debug_context<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     }
 }
 
-pub fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                 variable_name: ast::Name,
-                                 variable_type: Ty<'tcx>,
-                                 scope_metadata: DIScope,
-                                 variable_access: VariableAccess,
-                                 variable_kind: VariableKind,
-                                 span: Span) {
-    let cx: &CrateContext = bcx.ccx();
+pub fn declare_local<'a, 'tcx>(bcx: &Builder<'a, 'tcx>,
+                               dbg_context: &FunctionDebugContext,
+                               variable_name: ast::Name,
+                               variable_type: Ty<'tcx>,
+                               scope_metadata: DIScope,
+                               variable_access: VariableAccess,
+                               variable_kind: VariableKind,
+                               span: Span) {
+    let cx = bcx.ccx;
 
     let file = span_start(cx, span).file;
     let filename = file.name.clone();
@@ -466,6 +446,7 @@ pub fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         LocalVariable    |
         CapturedVariable => (0, DW_TAG_auto_variable)
     };
+    let align = ::type_of::align_of(cx, variable_type);
 
     let name = CString::new(variable_name.as_str().as_bytes()).unwrap();
     match (variable_access, &[][..]) {
@@ -481,13 +462,15 @@ pub fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     loc.line as c_uint,
                     type_metadata,
                     cx.sess().opts.optimize != config::OptLevel::No,
-                    0,
-                    argument_index)
+                    DIFlags::FlagZero,
+                    argument_index,
+                    align as u64,
+                )
             };
-            source_loc::set_debug_location(cx, None,
+            source_loc::set_debug_location(bcx,
                 InternalDebugLocation::new(scope_metadata, loc.line, loc.col.to_usize()));
             unsafe {
-                let debug_loc = llvm::LLVMGetCurrentDebugLocation(cx.raw_builder());
+                let debug_loc = llvm::LLVMGetCurrentDebugLocation(bcx.llbuilder);
                 let instr = llvm::LLVMRustDIBuilderInsertDeclareAtEnd(
                     DIB(cx),
                     alloca,
@@ -495,38 +478,18 @@ pub fn declare_local<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
                     address_operations.as_ptr(),
                     address_operations.len() as c_uint,
                     debug_loc,
-                    bcx.llbb);
+                    bcx.llbb());
 
-                llvm::LLVMSetInstDebugLocation(::build::B(bcx).llbuilder, instr);
+                llvm::LLVMSetInstDebugLocation(bcx.llbuilder, instr);
             }
         }
     }
 
     match variable_kind {
         ArgumentVariable(_) | CapturedVariable => {
-            assert!(!bcx.fcx
-                        .debug_context
-                        .get_ref(span)
-                        .source_locations_enabled
-                        .get());
-            source_loc::set_debug_location(cx, None, UnknownLocation);
+            assert!(!dbg_context.get_ref(span).source_locations_enabled.get());
+            source_loc::set_debug_location(bcx, UnknownLocation);
         }
         _ => { /* nothing to do */ }
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum DebugLoc {
-    ScopeAt(DIScope, Span),
-    None
-}
-
-impl DebugLoc {
-    pub fn apply(self, fcx: &FunctionContext) {
-        source_loc::set_source_location(fcx, None, self);
-    }
-
-    pub fn apply_to_bcx(self, bcx: &BlockAndBuilder) {
-        source_loc::set_source_location(bcx.fcx(), Some(bcx), self);
     }
 }

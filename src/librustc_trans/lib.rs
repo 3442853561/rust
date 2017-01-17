@@ -21,13 +21,13 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
+#![feature(associated_consts)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(const_fn)]
 #![feature(custom_attribute)]
-#![feature(dotdot_in_tuple_patterns)]
 #![allow(unused_attributes)]
 #![feature(libc)]
 #![feature(quote)]
@@ -36,7 +36,7 @@
 #![feature(slice_patterns)]
 #![feature(staged_api)]
 #![feature(unicode)]
-#![cfg_attr(stage0, feature(question_mark))]
+#![feature(conservative_impl_trait)]
 
 use rustc::dep_graph::WorkProduct;
 
@@ -54,6 +54,10 @@ extern crate rustc_platform_intrinsics as intrinsics;
 extern crate serialize;
 extern crate rustc_const_math;
 extern crate rustc_const_eval;
+#[macro_use]
+#[no_link]
+extern crate rustc_bitflags;
+extern crate rustc_i128;
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
@@ -75,6 +79,7 @@ pub mod back {
     pub mod linker;
     pub mod link;
     pub mod lto;
+    pub mod symbol_export;
     pub mod symbol_names;
     pub mod write;
     pub mod msvc;
@@ -92,23 +97,25 @@ mod asm;
 mod assert_module_sources;
 mod attributes;
 mod base;
-mod basic_block;
-mod build;
 mod builder;
 mod cabi_aarch64;
 mod cabi_arm;
 mod cabi_asmjs;
 mod cabi_mips;
 mod cabi_mips64;
+mod cabi_msp430;
+mod cabi_nvptx;
+mod cabi_nvptx64;
 mod cabi_powerpc;
 mod cabi_powerpc64;
 mod cabi_s390x;
+mod cabi_sparc;
+mod cabi_sparc64;
 mod cabi_x86;
 mod cabi_x86_64;
 mod cabi_x86_win64;
 mod callee;
 mod cleanup;
-mod closure;
 mod collector;
 mod common;
 mod consts;
@@ -166,8 +173,9 @@ pub struct CrateTranslation {
     pub metadata_module: ModuleTranslation,
     pub link: middle::cstore::LinkMeta,
     pub metadata: Vec<u8>,
-    pub reachable: Vec<String>,
+    pub exported_symbols: back::symbol_export::ExportedSymbols,
     pub no_builtins: bool,
+    pub windows_subsystem: Option<String>,
     pub linker_info: back::linker::LinkerInfo
 }
 

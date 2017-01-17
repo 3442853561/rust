@@ -10,7 +10,6 @@
 
 // force-host
 
-#![feature(dotdot_in_tuple_patterns)]
 #![feature(plugin_registrar, quote, rustc_private)]
 
 extern crate syntax;
@@ -24,6 +23,7 @@ use syntax::ext::base::*;
 use syntax::ext::quote::rt::ToTokens;
 use syntax::parse::{self, token};
 use syntax::ptr::P;
+use syntax::symbol::Symbol;
 use syntax::tokenstream::TokenTree;
 use syntax_pos::Span;
 use rustc_plugin::Registry;
@@ -37,15 +37,15 @@ pub fn plugin_registrar(reg: &mut Registry) {
     reg.register_macro("make_a_1", expand_make_a_1);
     reg.register_macro("identity", expand_identity);
     reg.register_syntax_extension(
-        token::intern("into_multi_foo"),
+        Symbol::intern("into_multi_foo"),
         // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
         MultiModifier(Box::new(expand_into_foo_multi)));
     reg.register_syntax_extension(
-        token::intern("duplicate"),
+        Symbol::intern("duplicate"),
         // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
         MultiDecorator(Box::new(expand_duplicate)));
     reg.register_syntax_extension(
-        token::intern("caller"),
+        Symbol::intern("caller"),
         // FIXME (#22405): Replace `Box::new` with `box` here when/if possible.
         MultiDecorator(Box::new(expand_caller)));
 }
@@ -60,7 +60,7 @@ fn expand_make_a_1(cx: &mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Box<MacResu
 // See Issue #15750
 fn expand_identity(cx: &mut ExtCtxt, _span: Span, tts: &[TokenTree]) -> Box<MacResult + 'static> {
     // Parse an expression and emit it unchanged.
-    let mut parser = parse::new_parser_from_tts(cx.parse_sess(), cx.cfg().clone(), tts.to_vec());
+    let mut parser = parse::new_parser_from_tts(cx.parse_sess(), tts.to_vec());
     let expr = parser.parse_expr().unwrap();
     MacEager::expr(quote_expr!(&mut *cx, $expr))
 }
@@ -109,9 +109,9 @@ fn expand_duplicate(cx: &mut ExtCtxt,
                     it: &Annotatable,
                     push: &mut FnMut(Annotatable)) {
     let copy_name = match mi.node {
-        ast::MetaItemKind::List(_, ref xs) => {
+        ast::MetaItemKind::List(ref xs) => {
             if let Some(word) = xs[0].word() {
-                token::str_to_ident(&word.name())
+                ast::Ident::with_empty_ctxt(word.name())
             } else {
                 cx.span_err(mi.span, "Expected word");
                 return;
@@ -180,7 +180,7 @@ fn expand_caller(cx: &mut ExtCtxt,
         }
 
         let fn_name = match list[0].name() {
-            Some(name) => token::str_to_ident(&name),
+            Some(name) => ast::Ident::with_empty_ctxt(name),
             None => cx.span_fatal(list[0].span(), "First parameter must be an ident.")
         };
 

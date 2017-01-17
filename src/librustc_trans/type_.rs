@@ -15,7 +15,6 @@ use llvm::{TypeRef, Bool, False, True, TypeKind};
 use llvm::{Float, Double, X86_FP80, PPC_FP128, FP128};
 
 use context::CrateContext;
-use util::nodemap::FnvHashMap;
 
 use syntax::ast;
 use rustc::ty::layout;
@@ -24,7 +23,6 @@ use std::ffi::CString;
 use std::fmt;
 use std::mem;
 use std::ptr;
-use std::cell::RefCell;
 
 use libc::c_uint;
 
@@ -96,6 +94,10 @@ impl Type {
         ty!(llvm::LLVMInt64TypeInContext(ccx.llcx()))
     }
 
+    pub fn i128(ccx: &CrateContext) -> Type {
+        ty!(llvm::LLVMIntTypeInContext(ccx.llcx(), 128))
+    }
+
     // Creates an integer type with the given number of bits, e.g. i24
     pub fn ix(ccx: &CrateContext, num_bits: u64) -> Type {
         ty!(llvm::LLVMIntTypeInContext(ccx.llcx(), num_bits as c_uint))
@@ -136,7 +138,8 @@ impl Type {
             ast::IntTy::I8 => Type::i8(ccx),
             ast::IntTy::I16 => Type::i16(ccx),
             ast::IntTy::I32 => Type::i32(ccx),
-            ast::IntTy::I64 => Type::i64(ccx)
+            ast::IntTy::I64 => Type::i64(ccx),
+            ast::IntTy::I128 => Type::i128(ccx),
         }
     }
 
@@ -146,7 +149,8 @@ impl Type {
             ast::UintTy::U8 => Type::i8(ccx),
             ast::UintTy::U16 => Type::i16(ccx),
             ast::UintTy::U32 => Type::i32(ccx),
-            ast::UintTy::U64 => Type::i64(ccx)
+            ast::UintTy::U64 => Type::i64(ccx),
+            ast::UintTy::U128 => Type::i128(ccx),
         }
     }
 
@@ -309,6 +313,7 @@ impl Type {
             I16 => Type::i16(cx),
             I32 => Type::i32(cx),
             I64 => Type::i64(cx),
+            I128 => Type::i128(cx),
         }
     }
 
@@ -319,28 +324,5 @@ impl Type {
             layout::F64 => Type::f64(ccx),
             layout::Pointer => bug!("It is not possible to convert Pointer directly to Type.")
         }
-    }
-}
-
-/* Memory-managed object interface to type handles. */
-
-pub struct TypeNames {
-    named_types: RefCell<FnvHashMap<String, TypeRef>>,
-}
-
-impl TypeNames {
-    pub fn new() -> TypeNames {
-        TypeNames {
-            named_types: RefCell::new(FnvHashMap())
-        }
-    }
-
-    pub fn associate_type(&self, s: &str, t: &Type) {
-        assert!(self.named_types.borrow_mut().insert(s.to_string(),
-                                                     t.to_ref()).is_none());
-    }
-
-    pub fn find_type(&self, s: &str) -> Option<Type> {
-        self.named_types.borrow().get(s).map(|x| Type::from_ref(*x))
     }
 }

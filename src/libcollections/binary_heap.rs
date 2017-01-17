@@ -153,8 +153,7 @@
 
 use core::ops::{Deref, DerefMut};
 use core::iter::{FromIterator, FusedIterator};
-use core::mem::swap;
-use core::mem::size_of;
+use core::mem::{swap, size_of};
 use core::ptr;
 use core::fmt;
 
@@ -225,13 +224,16 @@ pub struct BinaryHeap<T> {
 /// [`peek_mut()`]: struct.BinaryHeap.html#method.peek_mut
 #[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
 pub struct PeekMut<'a, T: 'a + Ord> {
-    heap: &'a mut BinaryHeap<T>
+    heap: &'a mut BinaryHeap<T>,
+    sift: bool,
 }
 
 #[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
 impl<'a, T: Ord> Drop for PeekMut<'a, T> {
     fn drop(&mut self) {
-        self.heap.sift_down(0);
+        if self.sift {
+            self.heap.sift_down(0);
+        }
     }
 }
 
@@ -247,6 +249,16 @@ impl<'a, T: Ord> Deref for PeekMut<'a, T> {
 impl<'a, T: Ord> DerefMut for PeekMut<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.heap.data[0]
+    }
+}
+
+impl<'a, T: Ord> PeekMut<'a, T> {
+    /// Removes the peeked value from the heap and returns it.
+    #[unstable(feature = "binary_heap_peek_mut_pop", issue = "38863")]
+    pub fn pop(mut this: PeekMut<'a, T>) -> T {
+        let value = this.heap.pop().unwrap();
+        this.sift = false;
+        value
     }
 }
 
@@ -386,7 +398,8 @@ impl<T: Ord> BinaryHeap<T> {
             None
         } else {
             Some(PeekMut {
-                heap: self
+                heap: self,
+                sift: true,
             })
         }
     }
@@ -986,7 +999,11 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, T> FusedIterator for Iter<'a, T> {}
@@ -1022,7 +1039,11 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> ExactSizeIterator for IntoIter<T> {}
+impl<T> ExactSizeIterator for IntoIter<T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<T> FusedIterator for IntoIter<T> {}
@@ -1057,7 +1078,11 @@ impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {}
+impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, T: 'a> FusedIterator for Drain<'a, T> {}
@@ -1114,7 +1139,9 @@ impl<T: Ord> IntoIterator for BinaryHeap<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> IntoIterator for &'a BinaryHeap<T> where T: Ord {
+impl<'a, T> IntoIterator for &'a BinaryHeap<T>
+    where T: Ord
+{
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;
 

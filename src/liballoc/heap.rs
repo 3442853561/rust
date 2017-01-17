@@ -17,7 +17,7 @@
 
 use core::{isize, usize};
 #[cfg(not(test))]
-use core::intrinsics::{min_align_of, size_of};
+use core::intrinsics::{min_align_of_val, size_of_val};
 
 #[allow(improper_ctypes)]
 extern "C" {
@@ -127,6 +127,7 @@ pub fn usable_size(size: usize, align: usize) -> usize {
 pub const EMPTY: *mut () = 0x1 as *mut ();
 
 /// The allocator for unique pointers.
+// This function must not unwind. If it does, MIR trans will fail.
 #[cfg(not(test))]
 #[lang = "exchange_malloc"]
 #[inline]
@@ -143,6 +144,7 @@ unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
 }
 
 #[cfg(not(test))]
+#[cfg(stage0)]
 #[lang = "exchange_free"]
 #[inline]
 unsafe fn exchange_free(ptr: *mut u8, old_size: usize, align: usize) {
@@ -152,11 +154,12 @@ unsafe fn exchange_free(ptr: *mut u8, old_size: usize, align: usize) {
 #[cfg(not(test))]
 #[lang = "box_free"]
 #[inline]
-unsafe fn box_free<T>(ptr: *mut T) {
-    let size = size_of::<T>();
+unsafe fn box_free<T: ?Sized>(ptr: *mut T) {
+    let size = size_of_val(&*ptr);
+    let align = min_align_of_val(&*ptr);
     // We do not allocate for Box<T> when T is ZST, so deallocation is also not necessary.
     if size != 0 {
-        deallocate(ptr as *mut u8, size, min_align_of::<T>());
+        deallocate(ptr as *mut u8, size, align);
     }
 }
 

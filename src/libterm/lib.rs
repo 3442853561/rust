@@ -52,14 +52,13 @@
        html_playground_url = "https://play.rust-lang.org/",
        test(attr(deny(warnings))))]
 #![deny(missing_docs)]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(box_syntax)]
 #![feature(staged_api)]
 #![cfg_attr(windows, feature(libc))]
 // Handle rustfmt skips
 #![feature(custom_attribute)]
-#![cfg_attr(stage0, feature(question_mark))]
 #![allow(unused_attributes)]
 
 use std::io::prelude::*;

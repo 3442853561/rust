@@ -66,7 +66,7 @@ pub struct DirEntry {
     name: Box<[u8]>
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct OpenOptions {
     // generic
     read: bool,
@@ -86,6 +86,7 @@ pub struct FilePermissions { mode: mode_t }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FileType { mode: mode_t }
 
+#[derive(Debug)]
 pub struct DirBuilder { mode: mode_t }
 
 impl FileAttr {
@@ -526,6 +527,11 @@ impl File {
     pub fn fd(&self) -> &FileDesc { &self.0 }
 
     pub fn into_fd(self) -> FileDesc { self.0 }
+
+    pub fn set_permissions(&self, perm: FilePermissions) -> io::Result<()> {
+        cvt_r(|| unsafe { libc::fchmod(self.0.raw(), perm.mode) })?;
+        Ok(())
+    }
 }
 
 impl DirBuilder {

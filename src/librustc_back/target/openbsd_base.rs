@@ -15,9 +15,11 @@ pub fn opts() -> TargetOptions {
     TargetOptions {
         dynamic_linking: true,
         executables: true,
+        target_family: Some("unix".to_string()),
         linker_is_gnu: true,
         has_rpath: true,
-        pre_link_args: vec!(
+        is_like_openbsd: true,
+        pre_link_args: vec![
             // GNU-style linkers will use this to omit linking to libraries
             // which don't actually fulfill any relocations, but only for
             // libraries which follow this flag.  Thus, use it before
@@ -26,7 +28,7 @@ pub fn opts() -> TargetOptions {
 
             // Always enable NX protection when it is available
             "-Wl,-z,noexecstack".to_string(),
-        ),
+        ],
         position_independent_executables: true,
         exe_allocation_crate: "alloc_system".to_string(),
         .. Default::default()

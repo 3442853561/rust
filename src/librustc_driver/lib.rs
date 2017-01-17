@@ -21,17 +21,15 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(box_syntax)]
-#![feature(dotdot_in_tuple_patterns)]
 #![feature(libc)]
 #![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_private)]
 #![feature(set_stdio)]
 #![feature(staged_api)]
-#![cfg_attr(stage0, feature(question_mark))]
 
 extern crate arena;
 extern crate flate;
@@ -42,6 +40,7 @@ extern crate rustc;
 extern crate rustc_back;
 extern crate rustc_borrowck;
 extern crate rustc_const_eval;
+extern crate rustc_data_structures;
 extern crate rustc_errors as errors;
 extern crate rustc_passes;
 extern crate rustc_lint;
@@ -74,12 +73,14 @@ use rustc::dep_graph::DepGraph;
 use rustc::session::{self, config, Session, build_session, CompileResult};
 use rustc::session::config::{Input, PrintRequest, OutputType, ErrorOutputType};
 use rustc::session::config::nightly_options;
-use rustc::session::early_error;
+use rustc::session::{early_error, early_warn};
 use rustc::lint::Lint;
 use rustc::lint;
 use rustc_metadata::locator;
 use rustc_metadata::cstore::CStore;
 use rustc::util::common::time;
+
+use serialize::json::ToJson;
 
 use std::cmp::max;
 use std::cmp::Ordering::Equal;
@@ -94,12 +95,11 @@ use std::str;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use syntax::{ast, json};
+use syntax::ast;
 use syntax::codemap::{CodeMap, FileLoader, RealFileLoader};
 use syntax::feature_gate::{GatedCfg, UnstableFeatures};
 use syntax::parse::{self, PResult};
-use syntax_pos::MultiSpan;
-use errors::emitter::Emitter;
+use syntax_pos::{DUMMY_SP, MultiSpan};
 
 #[cfg(test)]
 pub mod test;
@@ -205,24 +205,20 @@ pub fn run_compiler<'a>(args: &[String],
 
     let loader = file_loader.unwrap_or(box RealFileLoader);
     let codemap = Rc::new(CodeMap::with_file_loader(loader));
-    let sess = session::build_session_with_codemap(sopts,
-                                                   &dep_graph,
-                                                   input_file_path,
-                                                   descriptions,
-                                                   cstore.clone(),
-                                                   codemap,
-                                                   emitter_dest);
+    let mut sess = session::build_session_with_codemap(
+        sopts, &dep_graph, input_file_path, descriptions, cstore.clone(), codemap, emitter_dest,
+    );
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
+
     let mut cfg = config::build_configuration(&sess, cfg);
     target_features::add_configuration(&mut cfg, &sess);
+    sess.parse_sess.config = cfg;
 
-    do_or_return!(callbacks.late_callback(&matches, &sess, &cfg, &input, &odir, &ofile),
-                  Some(sess));
+    do_or_return!(callbacks.late_callback(&matches, &sess, &input, &odir, &ofile), Some(sess));
 
     let plugins = sess.opts.debugging_opts.extra_plugins.clone();
     let control = callbacks.build_controller(&sess, &matches);
-    (driver::compile_input(&sess, &cstore, cfg, &input, &odir, &ofile,
-                           Some(plugins), &control),
+    (driver::compile_input(&sess, &cstore, &input, &odir, &ofile, Some(plugins), &control),
      Some(sess))
 }
 
@@ -310,7 +306,6 @@ pub trait CompilerCalls<'a> {
     fn late_callback(&mut self,
                      _: &getopts::Matches,
                      _: &Session,
-                     _: &ast::CrateConfig,
                      _: &Input,
                      _: &Option<PathBuf>,
                      _: &Option<PathBuf>)
@@ -378,37 +373,11 @@ fn handle_explain(code: &str,
     }
 }
 
-fn check_cfg(cfg: &ast::CrateConfig,
-             output: ErrorOutputType) {
-    let emitter: Box<Emitter> = match output {
-        config::ErrorOutputType::HumanReadable(color_config) => {
-            Box::new(errors::emitter::EmitterWriter::stderr(color_config, None))
-        }
-        config::ErrorOutputType::Json => Box::new(json::JsonEmitter::basic()),
-    };
-    let handler = errors::Handler::with_emitter(true, false, emitter);
-
-    let mut saw_invalid_predicate = false;
-    for item in cfg.iter() {
-        if item.is_meta_item_list() {
-            saw_invalid_predicate = true;
-            handler.emit(&MultiSpan::new(),
-                         &format!("invalid predicate in --cfg command line argument: `{}`",
-                                  item.name()),
-                            errors::Level::Fatal);
-        }
-    }
-
-    if saw_invalid_predicate {
-        panic!(errors::FatalError);
-    }
-}
-
 impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
     fn early_callback(&mut self,
                       matches: &getopts::Matches,
                       _: &config::Options,
-                      cfg: &ast::CrateConfig,
+                      _: &ast::CrateConfig,
                       descriptions: &errors::registry::Registry,
                       output: ErrorOutputType)
                       -> Compilation {
@@ -417,7 +386,6 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
             return Compilation::Stop;
         }
 
-        check_cfg(cfg, output);
         Compilation::Continue
     }
 
@@ -439,7 +407,7 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 }
                 let dep_graph = DepGraph::new(sopts.build_dep_graph());
                 let cstore = Rc::new(CStore::new(&dep_graph));
-                let sess = build_session(sopts.clone(),
+                let mut sess = build_session(sopts.clone(),
                     &dep_graph,
                     None,
                     descriptions.clone(),
@@ -447,11 +415,10 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
                 let mut cfg = config::build_configuration(&sess, cfg.clone());
                 target_features::add_configuration(&mut cfg, &sess);
-                let should_stop = RustcDefaultCalls::print_crate_info(&sess,
-                                                                      &cfg,
-                                                                      None,
-                                                                      odir,
-                                                                      ofile);
+                sess.parse_sess.config = cfg;
+                let should_stop =
+                    RustcDefaultCalls::print_crate_info(&sess, None, odir, ofile);
+
                 if should_stop == Compilation::Stop {
                     return None;
                 }
@@ -460,19 +427,16 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
             1 => panic!("make_input should have provided valid inputs"),
             _ => early_error(sopts.error_format, "multiple input filenames provided"),
         }
-
-        None
     }
 
     fn late_callback(&mut self,
                      matches: &getopts::Matches,
                      sess: &Session,
-                     cfg: &ast::CrateConfig,
                      input: &Input,
                      odir: &Option<PathBuf>,
                      ofile: &Option<PathBuf>)
                      -> Compilation {
-        RustcDefaultCalls::print_crate_info(sess, cfg, Some(input), odir, ofile)
+        RustcDefaultCalls::print_crate_info(sess, Some(input), odir, ofile)
             .and_then(|| RustcDefaultCalls::list_metadata(sess, matches, input))
     }
 
@@ -498,6 +462,7 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                                                      &state.expanded_crate.take().unwrap(),
                                                      state.crate_name.unwrap(),
                                                      ppm,
+                                                     state.arena.unwrap(),
                                                      state.arenas.unwrap(),
                                                      opt_uii.clone(),
                                                      state.out_file);
@@ -529,7 +494,8 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
             control.after_hir_lowering.stop = Compilation::Stop;
         }
 
-        if !sess.opts.output_types.keys().any(|&i| i == OutputType::Exe) {
+        if !sess.opts.output_types.keys().any(|&i| i == OutputType::Exe ||
+                                                   i == OutputType::Metadata) {
             control.after_llvm.stop = Compilation::Stop;
         }
 
@@ -593,7 +559,6 @@ impl RustcDefaultCalls {
 
 
     fn print_crate_info(sess: &Session,
-                        cfg: &ast::CrateConfig,
                         input: Option<&Input>,
                         odir: &Option<PathBuf>,
                         ofile: &Option<PathBuf>)
@@ -623,6 +588,7 @@ impl RustcDefaultCalls {
                     println!("{}", targets.join("\n"));
                 },
                 PrintRequest::Sysroot => println!("{}", sess.sysroot().display()),
+                PrintRequest::TargetSpec => println!("{}", sess.target.target.to_json().pretty()),
                 PrintRequest::FileNames |
                 PrintRequest::CrateName => {
                     let input = match input {
@@ -649,24 +615,27 @@ impl RustcDefaultCalls {
                     let allow_unstable_cfg = UnstableFeatures::from_environment()
                         .is_nightly_build();
 
-                    for cfg in cfg {
-                        if !allow_unstable_cfg && GatedCfg::gate(&*cfg).is_some() {
+                    let mut cfgs = Vec::new();
+                    for &(name, ref value) in sess.parse_sess.config.iter() {
+                        let gated_cfg = GatedCfg::gate(&ast::MetaItem {
+                            name: name,
+                            node: ast::MetaItemKind::Word,
+                            span: DUMMY_SP,
+                        });
+                        if !allow_unstable_cfg && gated_cfg.is_some() {
                             continue;
                         }
 
-                        if cfg.is_word() {
-                            println!("{}", cfg.name());
-                        } else if let Some(s) = cfg.value_str() {
-                            println!("{}=\"{}\"", cfg.name(), s);
-                        } else if cfg.is_meta_item_list() {
-                            // Right now there are not and should not be any
-                            // MetaItemKind::List items in the configuration returned by
-                            // `build_configuration`.
-                            panic!("Found an unexpected list in cfg attribute '{}'!", cfg.name())
+                        cfgs.push(if let &Some(ref value) = value {
+                            format!("{}=\"{}\"", name, value)
                         } else {
-                            // There also shouldn't be literals.
-                            panic!("Found an unexpected literal in cfg attribute '{}'!", cfg.name())
-                        }
+                            format!("{}", name)
+                        });
+                    }
+
+                    cfgs.sort();
+                    for cfg in cfgs {
+                        println!("{}", cfg);
                     }
                 }
                 PrintRequest::TargetCPUs => {
@@ -1018,6 +987,11 @@ pub fn handle_options(args: &[String]) -> Option<getopts::Matches> {
         return None;
     }
 
+    if cg_flags.iter().any(|x| *x == "no-stack-check") {
+        early_warn(ErrorOutputType::default(),
+                   "the --no-stack-check flag is deprecated and does nothing");
+    }
+
     if cg_flags.contains(&"passes=list".to_string()) {
         unsafe {
             ::llvm::LLVMRustPrintPasses();
@@ -1036,13 +1010,10 @@ pub fn handle_options(args: &[String]) -> Option<getopts::Matches> {
 fn parse_crate_attrs<'a>(sess: &'a Session, input: &Input) -> PResult<'a, Vec<ast::Attribute>> {
     match *input {
         Input::File(ref ifile) => {
-            parse::parse_crate_attrs_from_file(ifile, Vec::new(), &sess.parse_sess)
+            parse::parse_crate_attrs_from_file(ifile, &sess.parse_sess)
         }
         Input::Str { ref name, ref input } => {
-            parse::parse_crate_attrs_from_source_str(name.clone(),
-                                                     input.clone(),
-                                                     Vec::new(),
-                                                     &sess.parse_sess)
+            parse::parse_crate_attrs_from_source_str(name.clone(), input.clone(), &sess.parse_sess)
         }
     }
 }

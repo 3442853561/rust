@@ -14,11 +14,11 @@
 //! details.
 
 use build::{BlockAnd, BlockAndExtension, Builder};
-use rustc_data_structures::fnv::FnvHashMap;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::bitvec::BitVector;
 use rustc::middle::const_val::ConstVal;
 use rustc::ty::{AdtDef, Ty};
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use hair::*;
 use syntax::ast::{Name, NodeId};
 use syntax_pos::Span;
@@ -301,7 +301,7 @@ pub struct MatchPair<'pat, 'tcx:'pat> {
 enum TestKind<'tcx> {
     // test the branches of enum
     Switch {
-        adt_def: AdtDef<'tcx>,
+        adt_def: &'tcx AdtDef,
         variants: BitVector,
     },
 
@@ -309,7 +309,7 @@ enum TestKind<'tcx> {
     SwitchInt {
         switch_ty: Ty<'tcx>,
         options: Vec<ConstVal>,
-        indices: FnvHashMap<ConstVal, usize>,
+        indices: FxHashMap<ConstVal, usize>,
     },
 
     // test for equality
@@ -729,7 +729,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             name: Some(name),
             source_info: Some(source_info),
         });
-        let extent = self.extent_of_innermost_scope();
+        let extent = self.hir.tcx().region_maps.var_scope(var_id);
         self.schedule_drop(source_info.span, extent, &Lvalue::Local(var), var_ty);
         self.var_indices.insert(var_id, var);
 

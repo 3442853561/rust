@@ -17,10 +17,8 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
-#![feature(dotdot_in_tuple_patterns)]
-#![cfg_attr(stage0, feature(question_mark))]
 #![feature(rustc_private)]
 #![feature(staged_api)]
 #![feature(rand)]
@@ -34,6 +32,8 @@ extern crate serialize as rustc_serialize;
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
 extern crate syntax_pos;
+
+extern crate rustc_i128;
 
 const ATTR_DIRTY: &'static str = "rustc_dirty";
 const ATTR_CLEAN: &'static str = "rustc_clean";
@@ -50,6 +50,7 @@ pub mod ich;
 pub use assert_dep_graph::assert_dep_graph;
 pub use calculate_svh::compute_incremental_hashes_map;
 pub use calculate_svh::IncrementalHashesMap;
+pub use calculate_svh::IchHasher;
 pub use persist::load_dep_graph;
 pub use persist::save_dep_graph;
 pub use persist::save_trans_partition;

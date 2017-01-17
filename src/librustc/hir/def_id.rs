@@ -34,6 +34,10 @@ impl Idx for CrateNum {
 /// LOCAL_CRATE in their DefId.
 pub const LOCAL_CRATE: CrateNum = CrateNum(0);
 
+/// Virtual crate for builtin macros
+// FIXME(jseyfried): this is also used for custom derives until proc-macro crates get `CrateNum`s.
+pub const BUILTIN_MACROS_CRATE: CrateNum = CrateNum(!0);
+
 impl CrateNum {
     pub fn new(x: usize) -> CrateNum {
         assert!(x < (u32::MAX as usize));
@@ -116,9 +120,7 @@ impl fmt::Debug for DefId {
 
         ty::tls::with_opt(|opt_tcx| {
             if let Some(tcx) = opt_tcx {
-                if let Some(def_path) = tcx.opt_def_path(*self) {
-                    write!(f, " => {}", def_path.to_string(tcx))?;
-                }
+                write!(f, " => {}", tcx.def_path(*self).to_string(tcx))?;
             }
             Ok(())
         })?;

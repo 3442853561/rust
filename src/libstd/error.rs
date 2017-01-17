@@ -69,7 +69,9 @@ pub trait Error: Debug + Display {
     /// It should not contain newlines or sentence-ending punctuation,
     /// to facilitate embedding in larger user-facing strings.
     /// For showing formatted error messages with more information see
-    /// [Display](https://doc.rust-lang.org/std/fmt/trait.Display.html).
+    /// [`Display`].
+    ///
+    /// [`Display`]: ../fmt/trait.Display.html
     ///
     /// # Examples
     ///
@@ -107,7 +109,7 @@ pub trait Error: Debug + Display {
     ///
     /// impl Error for SuperError {
     ///     fn description(&self) -> &str {
-    ///         "I'm the superhero of errors!"
+    ///         "I'm the superhero of errors"
     ///     }
     ///
     ///     fn cause(&self) -> Option<&Error> {
@@ -126,7 +128,7 @@ pub trait Error: Debug + Display {
     ///
     /// impl Error for SuperErrorSideKick {
     ///     fn description(&self) -> &str {
-    ///         "I'm SuperError side kick!"
+    ///         "I'm SuperError side kick"
     ///     }
     /// }
     ///

@@ -16,7 +16,7 @@
             reason = "this library is unlikely to be stabilized in its current \
                       form or name",
             issue = "27783")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 #![feature(allocator)]
 #![feature(libc)]
 #![feature(staged_api)]
@@ -84,7 +84,8 @@ mod imp {
                   target_arch = "aarch64",
                   target_arch = "powerpc64",
                   target_arch = "mips64",
-                  target_arch = "s390x")))]
+                  target_arch = "s390x",
+                  target_arch = "sparc64")))]
     const MIN_ALIGN: usize = 16;
 
     // MALLOCX_ALIGN(a) macro

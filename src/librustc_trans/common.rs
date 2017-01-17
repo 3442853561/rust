@@ -12,87 +12,63 @@
 
 //! Code that is useful in various trans modules.
 
-use session::Session;
 use llvm;
-use llvm::{ValueRef, BasicBlockRef, BuilderRef, ContextRef, TypeKind};
+use llvm::{ValueRef, ContextRef, TypeKind};
 use llvm::{True, False, Bool, OperandBundleDef};
-use rustc::hir::def::Def;
 use rustc::hir::def_id::DefId;
-use rustc::infer::TransNormalize;
+use rustc::hir::map::DefPathData;
 use rustc::util::common::MemoizationMap;
 use middle::lang_items::LangItem;
-use rustc::ty::subst::Substs;
-use abi::{Abi, FnType};
 use base;
-use build;
 use builder::Builder;
-use callee::Callee;
-use cleanup;
 use consts;
-use debuginfo::{self, DebugLoc};
 use declare;
 use machine;
-use mir::CachedMir;
 use monomorphize;
 use type_::Type;
 use value::Value;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::layout::Layout;
 use rustc::traits::{self, SelectionContext, Reveal};
-use rustc::ty::fold::TypeFoldable;
 use rustc::hir;
 
-use arena::TypedArena;
 use libc::{c_uint, c_char};
-use std::ops::Deref;
-use std::ffi::CString;
-use std::cell::{Cell, RefCell};
+use std::borrow::Cow;
+use std::iter;
 
 use syntax::ast;
-use syntax::parse::token::InternedString;
-use syntax::parse::token;
-use syntax_pos::{DUMMY_SP, Span};
+use syntax::symbol::InternedString;
+use syntax_pos::Span;
+
+use rustc_i128::u128;
 
 pub use context::{CrateContext, SharedCrateContext};
 
-/// Is the type's representation size known at compile time?
-pub fn type_is_sized<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
-    ty.is_sized(tcx, &tcx.empty_parameter_environment(), DUMMY_SP)
-}
-
-pub fn type_is_fat_ptr<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
-    match ty.sty {
-        ty::TyRawPtr(ty::TypeAndMut{ty, ..}) |
-        ty::TyRef(_, ty::TypeAndMut{ty, ..}) |
-        ty::TyBox(ty) => {
-            !type_is_sized(tcx, ty)
-        }
-        _ => {
-            false
-        }
+pub fn type_is_fat_ptr<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
+    if let Layout::FatPointer { .. } = *ccx.layout_of(ty) {
+        true
+    } else {
+        false
     }
 }
 
 pub fn type_is_immediate<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
-    use machine::llsize_of_alloc;
-    use type_of::sizing_type_of;
+    let layout = ccx.layout_of(ty);
+    match *layout {
+        Layout::CEnum { .. } |
+        Layout::Scalar { .. } |
+        Layout::Vector { .. } => true,
 
-    let tcx = ccx.tcx();
-    let simple = ty.is_scalar() ||
-        ty.is_unique() || ty.is_region_ptr() ||
-        ty.is_simd();
-    if simple && !type_is_fat_ptr(tcx, ty) {
-        return true;
-    }
-    if !type_is_sized(tcx, ty) {
-        return false;
-    }
-    match ty.sty {
-        ty::TyAdt(..) | ty::TyTuple(..) | ty::TyArray(..) | ty::TyClosure(..) => {
-            let llty = sizing_type_of(ccx, ty);
-            llsize_of_alloc(ccx, llty) <= llsize_of_alloc(ccx, ccx.int_type())
+        Layout::FatPointer { .. } => false,
+
+        Layout::Array { .. } |
+        Layout::Univariant { .. } |
+        Layout::General { .. } |
+        Layout::UntaggedUnion { .. } |
+        Layout::RawNullablePointer { .. } |
+        Layout::StructWrappedNullablePointer { .. } => {
+            !layout.is_unsized() && layout.size(&ccx.tcx().data_layout).bytes() == 0
         }
-        _ => type_is_zero_size(ccx, ty)
     }
 }
 
@@ -109,7 +85,16 @@ pub fn type_pair_fields<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>)
             Some([monomorphize::field_ty(ccx.tcx(), substs, &fields[0]),
                   monomorphize::field_ty(ccx.tcx(), substs, &fields[1])])
         }
-        ty::TyClosure(_, ty::ClosureSubsts { upvar_tys: tys, .. }) |
+        ty::TyClosure(def_id, substs) => {
+            let mut tys = substs.upvar_tys(def_id, ccx.tcx());
+            tys.next().and_then(|first_ty| tys.next().and_then(|second_ty| {
+                if tys.next().is_some() {
+                    None
+                } else {
+                    Some([first_ty, second_ty])
+                }
+            }))
+        }
         ty::TyTuple(tys) => {
             if tys.len() != 2 {
                 return None;
@@ -176,470 +161,6 @@ pub fn type_is_zero_size<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -
 *
 */
 
-use Disr;
-
-/// The concrete version of ty::FieldDef. The name is the field index if
-/// the field is numeric.
-pub struct Field<'tcx>(pub ast::Name, pub Ty<'tcx>);
-
-/// The concrete version of ty::VariantDef
-pub struct VariantInfo<'tcx> {
-    pub discr: Disr,
-    pub fields: Vec<Field<'tcx>>
-}
-
-impl<'a, 'tcx> VariantInfo<'tcx> {
-    pub fn from_ty(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                   ty: Ty<'tcx>,
-                   opt_def: Option<Def>)
-                   -> Self
-    {
-        match ty.sty {
-            ty::TyAdt(adt, substs) => {
-                let variant = match opt_def {
-                    None => adt.struct_variant(),
-                    Some(def) => adt.variant_of_def(def)
-                };
-
-                VariantInfo {
-                    discr: Disr::from(variant.disr_val),
-                    fields: variant.fields.iter().map(|f| {
-                        Field(f.name, monomorphize::field_ty(tcx, substs, f))
-                    }).collect()
-                }
-            }
-
-            ty::TyTuple(ref v) => {
-                VariantInfo {
-                    discr: Disr(0),
-                    fields: v.iter().enumerate().map(|(i, &t)| {
-                        Field(token::intern(&i.to_string()), t)
-                    }).collect()
-                }
-            }
-
-            _ => {
-                bug!("cannot get field types from the type {:?}", ty);
-            }
-        }
-    }
-}
-
-pub struct BuilderRef_res {
-    pub b: BuilderRef,
-}
-
-impl Drop for BuilderRef_res {
-    fn drop(&mut self) {
-        unsafe {
-            llvm::LLVMDisposeBuilder(self.b);
-        }
-    }
-}
-
-pub fn BuilderRef_res(b: BuilderRef) -> BuilderRef_res {
-    BuilderRef_res {
-        b: b
-    }
-}
-
-pub fn validate_substs(substs: &Substs) {
-    assert!(!substs.needs_infer());
-}
-
-// Function context.  Every LLVM function we create will have one of
-// these.
-pub struct FunctionContext<'a, 'tcx: 'a> {
-    // The MIR for this function. At present, this is optional because
-    // we only have MIR available for things that are local to the
-    // crate.
-    pub mir: Option<CachedMir<'a, 'tcx>>,
-
-    // The ValueRef returned from a call to llvm::LLVMAddFunction; the
-    // address of the first instruction in the sequence of
-    // instructions for this function that will go in the .text
-    // section of the executable we're generating.
-    pub llfn: ValueRef,
-
-    // always an empty parameter-environment NOTE: @jroesch another use of ParamEnv
-    pub param_env: ty::ParameterEnvironment<'tcx>,
-
-    // A pointer to where to store the return value. If the return type is
-    // immediate, this points to an alloca in the function. Otherwise, it's a
-    // pointer to the hidden first parameter of the function. After function
-    // construction, this should always be Some.
-    pub llretslotptr: Cell<Option<ValueRef>>,
-
-    // These pub elements: "hoisted basic blocks" containing
-    // administrative activities that have to happen in only one place in
-    // the function, due to LLVM's quirks.
-    // A marker for the place where we want to insert the function's static
-    // allocas, so that LLVM will coalesce them into a single alloca call.
-    pub alloca_insert_pt: Cell<Option<ValueRef>>,
-
-    // When working with landingpad-based exceptions this value is alloca'd and
-    // later loaded when using the resume instruction. This ends up being
-    // critical to chaining landing pads and resuing already-translated
-    // cleanups.
-    //
-    // Note that for cleanuppad-based exceptions this is not used.
-    pub landingpad_alloca: Cell<Option<ValueRef>>,
-
-    // Describes the return/argument LLVM types and their ABI handling.
-    pub fn_ty: FnType,
-
-    // If this function is being monomorphized, this contains the type
-    // substitutions used.
-    pub param_substs: &'tcx Substs<'tcx>,
-
-    // The source span and nesting context where this function comes from, for
-    // error reporting and symbol generation.
-    pub span: Option<Span>,
-
-    // The arena that blocks are allocated from.
-    pub block_arena: &'a TypedArena<BlockS<'a, 'tcx>>,
-
-    // The arena that landing pads are allocated from.
-    pub lpad_arena: TypedArena<LandingPad>,
-
-    // This function's enclosing crate context.
-    pub ccx: &'a CrateContext<'a, 'tcx>,
-
-    // Used and maintained by the debuginfo module.
-    pub debug_context: debuginfo::FunctionDebugContext,
-
-    // Cleanup scopes.
-    pub scopes: RefCell<Vec<cleanup::CleanupScope<'tcx>>>,
-}
-
-impl<'a, 'tcx> FunctionContext<'a, 'tcx> {
-    pub fn mir(&self) -> CachedMir<'a, 'tcx> {
-        self.mir.clone().expect("fcx.mir was empty")
-    }
-
-    pub fn cleanup(&self) {
-        unsafe {
-            llvm::LLVMInstructionEraseFromParent(self.alloca_insert_pt
-                                                     .get()
-                                                     .unwrap());
-        }
-    }
-
-    pub fn new_block(&'a self,
-                     name: &str)
-                     -> Block<'a, 'tcx> {
-        unsafe {
-            let name = CString::new(name).unwrap();
-            let llbb = llvm::LLVMAppendBasicBlockInContext(self.ccx.llcx(),
-                                                           self.llfn,
-                                                           name.as_ptr());
-            BlockS::new(llbb, self)
-        }
-    }
-
-    pub fn monomorphize<T>(&self, value: &T) -> T
-        where T: TransNormalize<'tcx>
-    {
-        monomorphize::apply_param_substs(self.ccx.shared(),
-                                         self.param_substs,
-                                         value)
-    }
-
-    /// This is the same as `common::type_needs_drop`, except that it
-    /// may use or update caches within this `FunctionContext`.
-    pub fn type_needs_drop(&self, ty: Ty<'tcx>) -> bool {
-        self.ccx.tcx().type_needs_drop_given_env(ty, &self.param_env)
-    }
-
-    pub fn eh_personality(&self) -> ValueRef {
-        // The exception handling personality function.
-        //
-        // If our compilation unit has the `eh_personality` lang item somewhere
-        // within it, then we just need to translate that. Otherwise, we're
-        // building an rlib which will depend on some upstream implementation of
-        // this function, so we just codegen a generic reference to it. We don't
-        // specify any of the types for the function, we just make it a symbol
-        // that LLVM can later use.
-        //
-        // Note that MSVC is a little special here in that we don't use the
-        // `eh_personality` lang item at all. Currently LLVM has support for
-        // both Dwarf and SEH unwind mechanisms for MSVC targets and uses the
-        // *name of the personality function* to decide what kind of unwind side
-        // tables/landing pads to emit. It looks like Dwarf is used by default,
-        // injecting a dependency on the `_Unwind_Resume` symbol for resuming
-        // an "exception", but for MSVC we want to force SEH. This means that we
-        // can't actually have the personality function be our standard
-        // `rust_eh_personality` function, but rather we wired it up to the
-        // CRT's custom personality function, which forces LLVM to consider
-        // landing pads as "landing pads for SEH".
-        let ccx = self.ccx;
-        let tcx = ccx.tcx();
-        match tcx.lang_items.eh_personality() {
-            Some(def_id) if !base::wants_msvc_seh(ccx.sess()) => {
-                Callee::def(ccx, def_id, tcx.intern_substs(&[])).reify(ccx)
-            }
-            _ => {
-                if let Some(llpersonality) = ccx.eh_personality().get() {
-                    return llpersonality
-                }
-                let name = if base::wants_msvc_seh(ccx.sess()) {
-                    "__CxxFrameHandler3"
-                } else {
-                    "rust_eh_personality"
-                };
-                let fty = Type::variadic_func(&[], &Type::i32(ccx));
-                let f = declare::declare_cfn(ccx, name, fty);
-                ccx.eh_personality().set(Some(f));
-                f
-            }
-        }
-    }
-
-    // Returns a ValueRef of the "eh_unwind_resume" lang item if one is defined,
-    // otherwise declares it as an external function.
-    pub fn eh_unwind_resume(&self) -> Callee<'tcx> {
-        use attributes;
-        let ccx = self.ccx;
-        let tcx = ccx.tcx();
-        assert!(ccx.sess().target.target.options.custom_unwind_resume);
-        if let Some(def_id) = tcx.lang_items.eh_unwind_resume() {
-            return Callee::def(ccx, def_id, tcx.intern_substs(&[]));
-        }
-
-        let ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(ty::BareFnTy {
-            unsafety: hir::Unsafety::Unsafe,
-            abi: Abi::C,
-            sig: ty::Binder(ty::FnSig {
-                inputs: vec![tcx.mk_mut_ptr(tcx.types.u8)],
-                output: tcx.types.never,
-                variadic: false
-            }),
-        }));
-
-        let unwresume = ccx.eh_unwind_resume();
-        if let Some(llfn) = unwresume.get() {
-            return Callee::ptr(llfn, ty);
-        }
-        let llfn = declare::declare_fn(ccx, "rust_eh_unwind_resume", ty);
-        attributes::unwind(llfn, true);
-        unwresume.set(Some(llfn));
-        Callee::ptr(llfn, ty)
-    }
-}
-
-// Basic block context.  We create a block context for each basic block
-// (single-entry, single-exit sequence of instructions) we generate from Rust
-// code.  Each basic block we generate is attached to a function, typically
-// with many basic blocks per function.  All the basic blocks attached to a
-// function are organized as a directed graph.
-pub struct BlockS<'blk, 'tcx: 'blk> {
-    // The BasicBlockRef returned from a call to
-    // llvm::LLVMAppendBasicBlock(llfn, name), which adds a basic
-    // block to the function pointed to by llfn.  We insert
-    // instructions into that block by way of this block context.
-    // The block pointing to this one in the function's digraph.
-    pub llbb: BasicBlockRef,
-    pub terminated: Cell<bool>,
-    pub unreachable: Cell<bool>,
-
-    // If this block part of a landing pad, then this is `Some` indicating what
-    // kind of landing pad its in, otherwise this is none.
-    pub lpad: Cell<Option<&'blk LandingPad>>,
-
-    // The function context for the function to which this block is
-    // attached.
-    pub fcx: &'blk FunctionContext<'blk, 'tcx>,
-}
-
-pub type Block<'blk, 'tcx> = &'blk BlockS<'blk, 'tcx>;
-
-impl<'blk, 'tcx> BlockS<'blk, 'tcx> {
-    pub fn new(llbb: BasicBlockRef,
-               fcx: &'blk FunctionContext<'blk, 'tcx>)
-               -> Block<'blk, 'tcx> {
-        fcx.block_arena.alloc(BlockS {
-            llbb: llbb,
-            terminated: Cell::new(false),
-            unreachable: Cell::new(false),
-            lpad: Cell::new(None),
-            fcx: fcx
-        })
-    }
-
-    pub fn ccx(&self) -> &'blk CrateContext<'blk, 'tcx> {
-        self.fcx.ccx
-    }
-    pub fn fcx(&self) -> &'blk FunctionContext<'blk, 'tcx> {
-        self.fcx
-    }
-    pub fn tcx(&self) -> TyCtxt<'blk, 'tcx, 'tcx> {
-        self.fcx.ccx.tcx()
-    }
-    pub fn sess(&self) -> &'blk Session { self.fcx.ccx.sess() }
-
-    pub fn lpad(&self) -> Option<&'blk LandingPad> {
-        self.lpad.get()
-    }
-
-    pub fn set_lpad_ref(&self, lpad: Option<&'blk LandingPad>) {
-        // FIXME: use an IVar?
-        self.lpad.set(lpad);
-    }
-
-    pub fn set_lpad(&self, lpad: Option<LandingPad>) {
-        self.set_lpad_ref(lpad.map(|p| &*self.fcx().lpad_arena.alloc(p)))
-    }
-
-    pub fn mir(&self) -> CachedMir<'blk, 'tcx> {
-        self.fcx.mir()
-    }
-
-    pub fn name(&self, name: ast::Name) -> String {
-        name.to_string()
-    }
-
-    pub fn node_id_to_string(&self, id: ast::NodeId) -> String {
-        self.tcx().map.node_to_string(id).to_string()
-    }
-
-    pub fn to_str(&self) -> String {
-        format!("[block {:p}]", self)
-    }
-
-    pub fn monomorphize<T>(&self, value: &T) -> T
-        where T: TransNormalize<'tcx>
-    {
-        monomorphize::apply_param_substs(self.fcx.ccx.shared(),
-                                         self.fcx.param_substs,
-                                         value)
-    }
-
-    pub fn build(&'blk self) -> BlockAndBuilder<'blk, 'tcx> {
-        BlockAndBuilder::new(self, OwnedBuilder::new_with_ccx(self.ccx()))
-    }
-}
-
-pub struct OwnedBuilder<'blk, 'tcx: 'blk> {
-    builder: Builder<'blk, 'tcx>
-}
-
-impl<'blk, 'tcx> OwnedBuilder<'blk, 'tcx> {
-    pub fn new_with_ccx(ccx: &'blk CrateContext<'blk, 'tcx>) -> Self {
-        // Create a fresh builder from the crate context.
-        let llbuilder = unsafe {
-            llvm::LLVMCreateBuilderInContext(ccx.llcx())
-        };
-        OwnedBuilder {
-            builder: Builder {
-                llbuilder: llbuilder,
-                ccx: ccx,
-            }
-        }
-    }
-}
-
-impl<'blk, 'tcx> Drop for OwnedBuilder<'blk, 'tcx> {
-    fn drop(&mut self) {
-        unsafe {
-            llvm::LLVMDisposeBuilder(self.builder.llbuilder);
-        }
-    }
-}
-
-pub struct BlockAndBuilder<'blk, 'tcx: 'blk> {
-    bcx: Block<'blk, 'tcx>,
-    owned_builder: OwnedBuilder<'blk, 'tcx>,
-}
-
-impl<'blk, 'tcx> BlockAndBuilder<'blk, 'tcx> {
-    pub fn new(bcx: Block<'blk, 'tcx>, owned_builder: OwnedBuilder<'blk, 'tcx>) -> Self {
-        // Set the builder's position to this block's end.
-        owned_builder.builder.position_at_end(bcx.llbb);
-        BlockAndBuilder {
-            bcx: bcx,
-            owned_builder: owned_builder,
-        }
-    }
-
-    pub fn with_block<F, R>(&self, f: F) -> R
-        where F: FnOnce(Block<'blk, 'tcx>) -> R
-    {
-        let result = f(self.bcx);
-        self.position_at_end(self.bcx.llbb);
-        result
-    }
-
-    pub fn map_block<F>(self, f: F) -> Self
-        where F: FnOnce(Block<'blk, 'tcx>) -> Block<'blk, 'tcx>
-    {
-        let BlockAndBuilder { bcx, owned_builder } = self;
-        let bcx = f(bcx);
-        BlockAndBuilder::new(bcx, owned_builder)
-    }
-
-    pub fn at_start<F, R>(&self, f: F) -> R
-        where F: FnOnce(&BlockAndBuilder<'blk, 'tcx>) -> R
-    {
-        self.position_at_start(self.bcx.llbb);
-        let r = f(self);
-        self.position_at_end(self.bcx.llbb);
-        r
-    }
-
-    // Methods delegated to bcx
-
-    pub fn is_unreachable(&self) -> bool {
-        self.bcx.unreachable.get()
-    }
-
-    pub fn ccx(&self) -> &'blk CrateContext<'blk, 'tcx> {
-        self.bcx.ccx()
-    }
-    pub fn fcx(&self) -> &'blk FunctionContext<'blk, 'tcx> {
-        self.bcx.fcx()
-    }
-    pub fn tcx(&self) -> TyCtxt<'blk, 'tcx, 'tcx> {
-        self.bcx.tcx()
-    }
-    pub fn sess(&self) -> &'blk Session {
-        self.bcx.sess()
-    }
-
-    pub fn llbb(&self) -> BasicBlockRef {
-        self.bcx.llbb
-    }
-
-    pub fn mir(&self) -> CachedMir<'blk, 'tcx> {
-        self.bcx.mir()
-    }
-
-    pub fn monomorphize<T>(&self, value: &T) -> T
-        where T: TransNormalize<'tcx>
-    {
-        self.bcx.monomorphize(value)
-    }
-
-    pub fn set_lpad(&self, lpad: Option<LandingPad>) {
-        self.bcx.set_lpad(lpad)
-    }
-
-    pub fn set_lpad_ref(&self, lpad: Option<&'blk LandingPad>) {
-        // FIXME: use an IVar?
-        self.bcx.set_lpad_ref(lpad);
-    }
-
-    pub fn lpad(&self) -> Option<&'blk LandingPad> {
-        self.bcx.lpad()
-    }
-}
-
-impl<'blk, 'tcx> Deref for BlockAndBuilder<'blk, 'tcx> {
-    type Target = Builder<'blk, 'tcx>;
-    fn deref(&self) -> &Self::Target {
-        &self.owned_builder.builder
-    }
-}
-
 /// A structure representing an active landing pad for the duration of a basic
 /// block.
 ///
@@ -654,53 +175,33 @@ impl<'blk, 'tcx> Deref for BlockAndBuilder<'blk, 'tcx> {
 /// When inside of a landing pad, each function call in LLVM IR needs to be
 /// annotated with which landing pad it's a part of. This is accomplished via
 /// the `OperandBundleDef` value created for MSVC landing pads.
-pub struct LandingPad {
-    cleanuppad: Option<ValueRef>,
-    operand: Option<OperandBundleDef>,
+pub struct Funclet {
+    cleanuppad: ValueRef,
+    operand: OperandBundleDef,
 }
 
-impl LandingPad {
-    pub fn gnu() -> LandingPad {
-        LandingPad { cleanuppad: None, operand: None }
-    }
-
-    pub fn msvc(cleanuppad: ValueRef) -> LandingPad {
-        LandingPad {
-            cleanuppad: Some(cleanuppad),
-            operand: Some(OperandBundleDef::new("funclet", &[cleanuppad])),
+impl Funclet {
+    pub fn new(cleanuppad: ValueRef) -> Funclet {
+        Funclet {
+            cleanuppad: cleanuppad,
+            operand: OperandBundleDef::new("funclet", &[cleanuppad]),
         }
     }
 
-    pub fn bundle(&self) -> Option<&OperandBundleDef> {
-        self.operand.as_ref()
-    }
-
-    pub fn cleanuppad(&self) -> Option<ValueRef> {
+    pub fn cleanuppad(&self) -> ValueRef {
         self.cleanuppad
     }
-}
 
-impl Clone for LandingPad {
-    fn clone(&self) -> LandingPad {
-        LandingPad {
-            cleanuppad: self.cleanuppad,
-            operand: self.cleanuppad.map(|p| {
-                OperandBundleDef::new("funclet", &[p])
-            }),
-        }
+    pub fn bundle(&self) -> &OperandBundleDef {
+        &self.operand
     }
 }
 
-pub struct Result<'blk, 'tcx: 'blk> {
-    pub bcx: Block<'blk, 'tcx>,
-    pub val: ValueRef
-}
-
-impl<'b, 'tcx> Result<'b, 'tcx> {
-    pub fn new(bcx: Block<'b, 'tcx>, val: ValueRef) -> Result<'b, 'tcx> {
-        Result {
-            bcx: bcx,
-            val: val,
+impl Clone for Funclet {
+    fn clone(&self) -> Funclet {
+        Funclet {
+            cleanuppad: self.cleanuppad,
+            operand: OperandBundleDef::new("funclet", &[self.cleanuppad]),
         }
     }
 }
@@ -727,6 +228,17 @@ pub fn C_undef(t: Type) -> ValueRef {
 pub fn C_integral(t: Type, u: u64, sign_extend: bool) -> ValueRef {
     unsafe {
         llvm::LLVMConstInt(t.to_ref(), u, sign_extend as Bool)
+    }
+}
+
+pub fn C_big_integral(t: Type, u: u128, sign_extend: bool) -> ValueRef {
+    if ::std::mem::size_of::<u128>() == 16 {
+        unsafe {
+            llvm::LLVMConstIntOfArbitraryPrecision(t.to_ref(), 2, &u as *const u128 as *const u64)
+        }
+    } else {
+        // SNAP: remove after snapshot
+        C_integral(t, u as u64, sign_extend)
     }
 }
 
@@ -817,7 +329,7 @@ pub fn C_cstr(cx: &CrateContext, s: InternedString, null_terminated: bool) -> Va
 pub fn C_str_slice(cx: &CrateContext, s: InternedString) -> ValueRef {
     let len = s.len();
     let cs = consts::ptrcast(C_cstr(cx, s, false), Type::i8p(cx));
-    C_named_struct(cx.tn().find_type("str_slice").unwrap(), &[cs, C_uint(cx, len)])
+    C_named_struct(cx.str_slice_type(), &[cs, C_uint(cx, len)])
 }
 
 pub fn C_struct(cx: &CrateContext, elts: &[ValueRef], packed: bool) -> ValueRef {
@@ -885,20 +397,29 @@ fn is_const_integral(v: ValueRef) -> bool {
     }
 }
 
-pub fn const_to_opt_int(v: ValueRef) -> Option<i64> {
-    unsafe {
-        if is_const_integral(v) {
-            Some(llvm::LLVMConstIntGetSExtValue(v))
-        } else {
-            None
-        }
-    }
+#[inline]
+#[cfg(stage0)]
+fn hi_lo_to_u128(lo: u64, _: u64) -> u128 {
+    lo as u128
 }
 
-pub fn const_to_opt_uint(v: ValueRef) -> Option<u64> {
+#[inline]
+#[cfg(not(stage0))]
+fn hi_lo_to_u128(lo: u64, hi: u64) -> u128 {
+    ((hi as u128) << 64) | (lo as u128)
+}
+
+pub fn const_to_opt_u128(v: ValueRef, sign_ext: bool) -> Option<u128> {
     unsafe {
         if is_const_integral(v) {
-            Some(llvm::LLVMConstIntGetZExtValue(v))
+            let (mut lo, mut hi) = (0u64, 0u64);
+            let success = llvm::LLVMRustConstInt128Get(v, sign_ext,
+                                                       &mut hi as *mut u64, &mut lo as *mut u64);
+            if success {
+                Some(hi_lo_to_u128(lo, hi))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -937,7 +458,7 @@ pub fn fulfill_obligation<'a, 'tcx>(scx: &SharedCrateContext<'a, 'tcx>,
 
         // Do the initial selection for the obligation. This yields the
         // shallow result we are looking for -- that is, what specific impl.
-        tcx.infer_ctxt(None, None, Reveal::All).enter(|infcx| {
+        tcx.infer_ctxt((), Reveal::All).enter(|infcx| {
             let mut selcx = SelectionContext::new(&infcx);
 
             let obligation_cause = traits::ObligationCause::misc(span,
@@ -1007,43 +528,42 @@ pub fn langcall(tcx: TyCtxt,
 // all shifts). For 32- and 64-bit types, this matches the semantics
 // of Java. (See related discussion on #1877 and #10183.)
 
-pub fn build_unchecked_lshift<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                          lhs: ValueRef,
-                                          rhs: ValueRef,
-                                          binop_debug_loc: DebugLoc) -> ValueRef {
+pub fn build_unchecked_lshift<'a, 'tcx>(
+    bcx: &Builder<'a, 'tcx>,
+    lhs: ValueRef,
+    rhs: ValueRef
+) -> ValueRef {
     let rhs = base::cast_shift_expr_rhs(bcx, hir::BinOp_::BiShl, lhs, rhs);
     // #1877, #10183: Ensure that input is always valid
-    let rhs = shift_mask_rhs(bcx, rhs, binop_debug_loc);
-    build::Shl(bcx, lhs, rhs, binop_debug_loc)
+    let rhs = shift_mask_rhs(bcx, rhs);
+    bcx.shl(lhs, rhs)
 }
 
-pub fn build_unchecked_rshift<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                                          lhs_t: Ty<'tcx>,
-                                          lhs: ValueRef,
-                                          rhs: ValueRef,
-                                          binop_debug_loc: DebugLoc) -> ValueRef {
+pub fn build_unchecked_rshift<'a, 'tcx>(
+    bcx: &Builder<'a, 'tcx>, lhs_t: Ty<'tcx>, lhs: ValueRef, rhs: ValueRef
+) -> ValueRef {
     let rhs = base::cast_shift_expr_rhs(bcx, hir::BinOp_::BiShr, lhs, rhs);
     // #1877, #10183: Ensure that input is always valid
-    let rhs = shift_mask_rhs(bcx, rhs, binop_debug_loc);
+    let rhs = shift_mask_rhs(bcx, rhs);
     let is_signed = lhs_t.is_signed();
     if is_signed {
-        build::AShr(bcx, lhs, rhs, binop_debug_loc)
+        bcx.ashr(lhs, rhs)
     } else {
-        build::LShr(bcx, lhs, rhs, binop_debug_loc)
+        bcx.lshr(lhs, rhs)
     }
 }
 
-fn shift_mask_rhs<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                              rhs: ValueRef,
-                              debug_loc: DebugLoc) -> ValueRef {
+fn shift_mask_rhs<'a, 'tcx>(bcx: &Builder<'a, 'tcx>, rhs: ValueRef) -> ValueRef {
     let rhs_llty = val_ty(rhs);
-    build::And(bcx, rhs, shift_mask_val(bcx, rhs_llty, rhs_llty, false), debug_loc)
+    bcx.and(rhs, shift_mask_val(bcx, rhs_llty, rhs_llty, false))
 }
 
-pub fn shift_mask_val<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
-                              llty: Type,
-                              mask_llty: Type,
-                              invert: bool) -> ValueRef {
+pub fn shift_mask_val<'a, 'tcx>(
+    bcx: &Builder<'a, 'tcx>,
+    llty: Type,
+    mask_llty: Type,
+    invert: bool
+) -> ValueRef {
     let kind = llty.kind();
     match kind {
         TypeKind::Integer => {
@@ -1057,8 +577,42 @@ pub fn shift_mask_val<'blk, 'tcx>(bcx: Block<'blk, 'tcx>,
         },
         TypeKind::Vector => {
             let mask = shift_mask_val(bcx, llty.element_type(), mask_llty.element_type(), invert);
-            build::VectorSplat(bcx, mask_llty.vector_length(), mask)
+            bcx.vector_splat(mask_llty.vector_length(), mask)
         },
         _ => bug!("shift_mask_val: expected Integer or Vector, found {:?}", kind),
     }
+}
+
+pub fn ty_fn_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                          ty: Ty<'tcx>)
+                          -> Cow<'tcx, ty::BareFnTy<'tcx>>
+{
+    match ty.sty {
+        ty::TyFnDef(_, _, fty) => Cow::Borrowed(fty),
+        // Shims currently have type TyFnPtr. Not sure this should remain.
+        ty::TyFnPtr(fty) => Cow::Borrowed(fty),
+        ty::TyClosure(def_id, substs) => {
+            let tcx = ccx.tcx();
+            let ty::ClosureTy { unsafety, abi, sig } = tcx.closure_type(def_id, substs);
+
+            let env_region = ty::ReLateBound(ty::DebruijnIndex::new(1), ty::BrEnv);
+            let env_ty = match tcx.closure_kind(def_id) {
+                ty::ClosureKind::Fn => tcx.mk_imm_ref(tcx.mk_region(env_region), ty),
+                ty::ClosureKind::FnMut => tcx.mk_mut_ref(tcx.mk_region(env_region), ty),
+                ty::ClosureKind::FnOnce => ty,
+            };
+
+            let sig = sig.map_bound(|sig| tcx.mk_fn_sig(
+                iter::once(env_ty).chain(sig.inputs().iter().cloned()),
+                sig.output(),
+                sig.variadic
+            ));
+            Cow::Owned(ty::BareFnTy { unsafety: unsafety, abi: abi, sig: sig })
+        }
+        _ => bug!("unexpected type {:?} to ty_fn_sig", ty)
+    }
+}
+
+pub fn is_closure(tcx: TyCtxt, def_id: DefId) -> bool {
+    tcx.def_key(def_id).disambiguated_data.data == DefPathData::ClosureExpr
 }

@@ -1,33 +1,142 @@
-language: generic
+language: minimal
 sudo: required
+dist: trusty
 services:
   - docker
 
-# LLVM takes awhile to check out and otherwise we'll manage the submodules in
-# our configure script, so disable auto submodule management.
 git:
-  submodules: false
   depth: 1
+  submodules: false
 
-before_install:
-  - docker build -t rust -f src/etc/Dockerfile src/etc
+osx_image: xcode8.2
+
+matrix:
+  include:
+    # Linux builders, all docker images
+    - env: IMAGE=arm-android DEPLOY=1
+    - env: IMAGE=cross DEPLOY=1
+    - env: IMAGE=dist-arm-linux DEPLOY=1
+    - env: IMAGE=dist-armv7-aarch64-linux DEPLOY=1
+    - env: IMAGE=dist-freebsd DEPLOY=1
+    - env: IMAGE=dist-mips-linux DEPLOY=1
+    - env: IMAGE=dist-mips64-linux DEPLOY=1
+    - env: IMAGE=dist-powerpc-linux DEPLOY=1
+    - env: IMAGE=dist-powerpc64-linux DEPLOY=1
+    - env: IMAGE=dist-s390x-linux-netbsd DEPLOY=1
+    - env: IMAGE=i686-gnu DEPLOY=1
+    - env: IMAGE=i686-gnu-nopt
+    - env: IMAGE=x86_64-gnu DEPLOY=1
+    - env: IMAGE=x86_64-gnu-full-bootstrap
+    - env: IMAGE=x86_64-gnu-aux
+    - env: IMAGE=x86_64-gnu-debug
+    - env: IMAGE=x86_64-gnu-nopt
+    - env: IMAGE=x86_64-gnu-make
+    - env: IMAGE=x86_64-gnu-llvm-3.7 ALLOW_PR=1 RUST_BACKTRACE=1
+    - env: IMAGE=x86_64-musl DEPLOY=1
+    - env: IMAGE=x86_64-gnu-distcheck
+
+    # OSX builders
+    - env: >
+        RUST_CHECK_TARGET=check
+        RUST_CONFIGURE_ARGS=--build=x86_64-apple-darwin
+        SRC=.
+      os: osx
+      before_script: &osx_before_script >
+        ulimit -c unlimited
+      install: &osx_install_sccache >
+        curl -L https://api.pub.build.mozilla.org/tooltool/sha512/d0025b286468cc5ada83b23d3fafbc936b9f190eaa7d4a981715b18e8e3bf720a7bcee7bfe758cfdeb8268857f6098fd52dcdd8818232692a30ce91039936596 |
+          tar xJf - -C /usr/local/bin --strip-components=1
+      after_failure: &osx_after_failure >
+        echo 'bt all' > cmds;
+        for file in $(ls /cores); do
+          echo core file $file;
+          lldb -c $file `which ld` -b -s cmds;
+        done
+
+    - env: >
+        SCRIPT="./x.py test && ./x.py dist"
+        RUST_CONFIGURE_ARGS=--build=i686-apple-darwin
+        SRC=.
+        DEPLOY=1
+      os: osx
+      before_script: *osx_before_script
+      install: *osx_install_sccache
+      after_failure: *osx_after_failure
+    - env: >
+        RUST_CHECK_TARGET=check
+        RUST_CONFIGURE_ARGS=--build=x86_64-apple-darwin --disable-rustbuild
+        SRC=.
+      os: osx
+      before_script: *osx_before_script
+      install: *osx_install_sccache
+      after_failure: *osx_after_failure
+    - env: >
+        RUST_CHECK_TARGET=dist
+        RUST_CONFIGURE_ARGS=--target=aarch64-apple-ios,armv7-apple-ios,armv7s-apple-ios,i386-apple-ios,x86_64-apple-ios
+        SRC=.
+        DEPLOY=1
+      os: osx
+      before_script: *osx_before_script
+      install: *osx_install_sccache
+      after_failure: *osx_after_failure
+
+env:
+  global:
+    - SCCACHE_BUCKET=rust-lang-ci-sccache
+    - AWS_ACCESS_KEY_ID=AKIAIMX7VLAS3PZAVLUQ
+    # AWS_SECRET_ACCESS_KEY=...
+    - secure: "Pixhh0hXDqGCdOyLtGFjli3J2AtDWIpyb2btIrLe956nCBDRutRoMm6rv5DI9sFZN07Mms7VzNNvhc9wCW1y63JAm414d2Co7Ob8kWMZlz9l9t7ACHuktUiis8yr+S4Quq1Vqd6pqi7pf2J++UxC8R/uLeqVrubzr6+X7AbmEFE="
 
 script:
-  - docker run -v `pwd`:/build rust
-    sh -c "
-      ./configure --enable-rustbuild --llvm-root=/usr/lib/llvm-3.7 &&
-      make tidy &&
-      make check -j4
-    "
+  - >
+      if [ "$ALLOW_PR" = "" ] && [ "$TRAVIS_BRANCH" != "auto" ]; then
+          echo skipping, not a full build;
+      elif [ "$TRAVIS_OS_NAME" = "osx" ]; then
+          travis_retry sh -c 'git submodule deinit -f . && git submodule update --init' &&
+          src/ci/run.sh;
+      else
+          travis_retry sh -c 'git submodule deinit -f . && git submodule update --init' &&
+          src/ci/docker/run.sh $IMAGE;
+      fi
 
-# Real testing happens on http://buildbot.rust-lang.org/
-#
-# See https://github.com/rust-lang/rust-buildbot
-#     CONTRIBUTING.md#pull-requests
+# Save tagged docker images we created and load them if they're available
+before_cache:
+  - docker history -q rust-ci |
+    grep -v missing |
+    xargs docker save |
+    gzip > $HOME/docker/rust-ci.tar.gz
+before_install:
+  - zcat $HOME/docker/rust-ci.tar.gz | docker load || true
 
 notifications:
   email: false
 
-branches:
-  only:
-    - master
+cache:
+  directories:
+    - $HOME/docker
+
+before_deploy:
+  - mkdir -p deploy/$TRAVIS_COMMIT
+  - >
+      if [ "$TRAVIS_OS_NAME" == "osx" ]; then
+          cp build/dist/*.tar.gz deploy/$TRAVIS_COMMIT &&
+          find "deploy/$TRAVIS_COMMIT" -maxdepth 1 -type f -exec sh -c 'shasum -a 256 -b "{}" > "{}.sha256"' \;;
+      else
+          cp obj/build/dist/*.tar.gz deploy/$TRAVIS_COMMIT &&
+          find "deploy/$TRAVIS_COMMIT" -maxdepth 1 -type f -exec sh -c 'sha256sum -b "{}" > "{}.sha256"' \;;
+      fi
+
+deploy:
+  - provider: s3
+    bucket: rust-lang-ci
+    skip_cleanup: true
+    local_dir: deploy
+    upload_dir: rustc-builds
+    acl: public_read
+    region: us-east-1
+    access_key_id: AKIAIPQVNYF2T3DTYIWQ
+    secret_access_key:
+      secure: "FBqDqOTeIPMu6v/WYPf4CFSlh9rLRZGKVtpLa5KkyuOhXRTrnEzBduEtS8/FMIxdQImvurhSvxWvqRybMOi4qoVfjMqqpHAI7uBbidbrvAcJoHNsx6BgUNVCIoH6a0UsAjTUtm6/YPIpzbHoLZXPL0GrHPMk6Mu04qVSmcYNWn4="
+    on:
+      branch: auto
+      condition: $DEPLOY = 1

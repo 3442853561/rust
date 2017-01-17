@@ -16,20 +16,20 @@ extern crate syntax;
 extern crate syntax_pos;
 
 use syntax::print::pprust::*;
-use syntax::parse::token::intern;
+use syntax::symbol::Symbol;
 use syntax_pos::DUMMY_SP;
 
 fn main() {
     let ps = syntax::parse::ParseSess::new();
     let mut resolver = syntax::ext::base::DummyResolver;
     let mut cx = syntax::ext::base::ExtCtxt::new(
-        &ps, vec![],
+        &ps,
         syntax::ext::expand::ExpansionConfig::default("qquote".to_string()),
         &mut resolver);
     cx.bt_push(syntax::codemap::ExpnInfo {
         call_site: DUMMY_SP,
         callee: syntax::codemap::NameAndSpan {
-            format: syntax::codemap::MacroBang(intern("")),
+            format: syntax::codemap::MacroBang(Symbol::intern("")),
             allow_internal_unstable: false,
             span: None,
         }
@@ -97,7 +97,7 @@ fn main() {
     // quote_meta_item!
 
     let meta = quote_meta_item!(cx, cfg(foo = "bar"));
-    check!(meta_item_to_string, meta, *quote_meta_item!(cx, $meta); r#"cfg(foo = "bar")"#);
+    check!(meta_item_to_string, meta, quote_meta_item!(cx, $meta); r#"cfg(foo = "bar")"#);
 
     let attr = quote_attr!(cx, #![$meta]);
     check!(attribute_to_string, attr; r#"#![cfg(foo = "bar")]"#);

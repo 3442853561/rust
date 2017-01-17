@@ -75,16 +75,16 @@ use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{self, Hash};
 use core::intrinsics::{arith_offset, assume};
-use core::iter::{FromIterator, FusedIterator};
+use core::iter::{FromIterator, FusedIterator, TrustedLen};
 use core::mem;
-use core::ops::{Index, IndexMut};
+use core::ops::{InPlace, Index, IndexMut, Place, Placer};
 use core::ops;
 use core::ptr;
 use core::ptr::Shared;
 use core::slice;
 
-use super::SpecExtend;
 use super::range::RangeArgument;
+use Bound::{Excluded, Included, Unbounded};
 
 /// A contiguous growable array type, written `Vec<T>` but pronounced 'vector'.
 ///
@@ -148,7 +148,7 @@ use super::range::RangeArgument;
 /// [`Index`] trait. An example will be more explicit:
 ///
 /// ```
-/// let v = vec!(0, 2, 4, 6);
+/// let v = vec![0, 2, 4, 6];
 /// println!("{}", v[1]); // it will display '2'
 /// ```
 ///
@@ -156,7 +156,7 @@ use super::range::RangeArgument;
 /// your software will panic! You cannot do this:
 ///
 /// ```ignore
-/// let v = vec!(0, 2, 4, 6);
+/// let v = vec![0, 2, 4, 6];
 /// println!("{}", v[6]); // it will panic!
 /// ```
 ///
@@ -173,7 +173,7 @@ use super::range::RangeArgument;
 ///     // ...
 /// }
 ///
-/// let v = vec!(0, 1);
+/// let v = vec![0, 1];
 /// read_slice(&v);
 ///
 /// // ... and that's all!
@@ -371,7 +371,8 @@ impl<T> Vec<T> {
     /// * `capacity` needs to be the capacity that the pointer was allocated with.
     ///
     /// Violating these may cause problems like corrupting the allocator's
-    /// internal datastructures.
+    /// internal datastructures. For example it is **not** safe
+    /// to build a `Vec<u8>` from a pointer to a C `char` array and a `size_t`.
     ///
     /// The ownership of `ptr` is effectively transferred to the
     /// `Vec<T>` which may then deallocate, reallocate or change the
@@ -1060,8 +1061,16 @@ impl<T> Vec<T> {
         // the hole, and the vector length is restored to the new length.
         //
         let len = self.len();
-        let start = *range.start().unwrap_or(&0);
-        let end = *range.end().unwrap_or(&len);
+        let start = match range.start() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded    => 0,
+        };
+        let end = match range.end() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded    => len,
+        };
         assert!(start <= end);
         assert!(end <= len);
 
@@ -1245,26 +1254,30 @@ impl<T: Clone> Vec<T> {
     /// ```
     #[stable(feature = "vec_extend_from_slice", since = "1.6.0")]
     pub fn extend_from_slice(&mut self, other: &[T]) {
-        self.reserve(other.len());
+        self.spec_extend(other.iter())
+    }
 
-        // Unsafe code so this can be optimised to a memcpy (or something
-        // similarly fast) when T is Copy. LLVM is easily confused, so any
-        // extra operations during the loop can prevent this optimisation.
-        unsafe {
-            let len = self.len();
-            let ptr = self.get_unchecked_mut(len) as *mut T;
-            // Use SetLenOnDrop to work around bug where compiler
-            // may not realize the store through `ptr` trough self.set_len()
-            // don't alias.
-            let mut local_len = SetLenOnDrop::new(&mut self.len);
-
-            for i in 0..other.len() {
-                ptr::write(ptr.offset(i as isize), other.get_unchecked(i).clone());
-                local_len.increment_len(1);
-            }
-
-            // len set by scope guard
-        }
+    /// Returns a place for insertion at the back of the `Vec`.
+    ///
+    /// Using this method with placement syntax is equivalent to [`push`](#method.push),
+    /// but may be more efficient.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(collection_placement)]
+    /// #![feature(placement_in_syntax)]
+    ///
+    /// let mut vec = vec![1, 2];
+    /// vec.place_back() <- 3;
+    /// vec.place_back() <- 4;
+    /// assert_eq!(&vec, &[1, 2, 3, 4]);
+    /// ```
+    #[unstable(feature = "collection_placement",
+               reason = "placement protocol is subject to change",
+               issue = "30172")]
+    pub fn place_back(&mut self) -> PlaceBack<T> {
+        PlaceBack { vec: self }
     }
 }
 
@@ -1519,26 +1532,7 @@ impl<T> ops::DerefMut for Vec<T> {
 impl<T> FromIterator<T> for Vec<T> {
     #[inline]
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Vec<T> {
-        // Unroll the first iteration, as the vector is going to be
-        // expanded on this iteration in every case when the iterable is not
-        // empty, but the loop in extend_desugared() is not going to see the
-        // vector being full in the few subsequent loop iterations.
-        // So we get better branch prediction.
-        let mut iterator = iter.into_iter();
-        let mut vector = match iterator.next() {
-            None => return Vec::new(),
-            Some(element) => {
-                let (lower, _) = iterator.size_hint();
-                let mut vector = Vec::with_capacity(lower.saturating_add(1));
-                unsafe {
-                    ptr::write(vector.get_unchecked_mut(0), element);
-                    vector.set_len(1);
-                }
-                vector
-            }
-        };
-        vector.extend_desugared(iterator);
-        vector
+        <Self as SpecExtend<_, _>>::from_iter(iter.into_iter())
     }
 }
 
@@ -1606,24 +1600,112 @@ impl<'a, T> IntoIterator for &'a mut Vec<T> {
 impl<T> Extend<T> for Vec<T> {
     #[inline]
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        <Self as SpecExtend<I>>::spec_extend(self, iter);
+        self.spec_extend(iter.into_iter())
     }
 }
 
-impl<I: IntoIterator> SpecExtend<I> for Vec<I::Item> {
+// Specialization trait used for Vec::from_iter and Vec::extend
+trait SpecExtend<T, I> {
+    fn from_iter(iter: I) -> Self;
+    fn spec_extend(&mut self, iter: I);
+}
+
+impl<T, I> SpecExtend<T, I> for Vec<T>
+    where I: Iterator<Item=T>,
+{
+    default fn from_iter(mut iterator: I) -> Self {
+        // Unroll the first iteration, as the vector is going to be
+        // expanded on this iteration in every case when the iterable is not
+        // empty, but the loop in extend_desugared() is not going to see the
+        // vector being full in the few subsequent loop iterations.
+        // So we get better branch prediction.
+        let mut vector = match iterator.next() {
+            None => return Vec::new(),
+            Some(element) => {
+                let (lower, _) = iterator.size_hint();
+                let mut vector = Vec::with_capacity(lower.saturating_add(1));
+                unsafe {
+                    ptr::write(vector.get_unchecked_mut(0), element);
+                    vector.set_len(1);
+                }
+                vector
+            }
+        };
+        vector.spec_extend(iterator);
+        vector
+    }
+
     default fn spec_extend(&mut self, iter: I) {
-        self.extend_desugared(iter.into_iter())
+        self.extend_desugared(iter)
     }
 }
 
-impl<T> SpecExtend<Vec<T>> for Vec<T> {
-    fn spec_extend(&mut self, ref mut other: Vec<T>) {
-        self.append(other);
+impl<T, I> SpecExtend<T, I> for Vec<T>
+    where I: TrustedLen<Item=T>,
+{
+    fn from_iter(iterator: I) -> Self {
+        let mut vector = Vec::new();
+        vector.spec_extend(iterator);
+        vector
+    }
+
+    fn spec_extend(&mut self, iterator: I) {
+        // This is the case for a TrustedLen iterator.
+        let (low, high) = iterator.size_hint();
+        if let Some(high_value) = high {
+            debug_assert_eq!(low, high_value,
+                             "TrustedLen iterator's size hint is not exact: {:?}",
+                             (low, high));
+        }
+        if let Some(additional) = high {
+            self.reserve(additional);
+            unsafe {
+                let mut ptr = self.as_mut_ptr().offset(self.len() as isize);
+                let mut local_len = SetLenOnDrop::new(&mut self.len);
+                for element in iterator {
+                    ptr::write(ptr, element);
+                    ptr = ptr.offset(1);
+                    // NB can't overflow since we would have had to alloc the address space
+                    local_len.increment_len(1);
+                }
+            }
+        } else {
+            self.extend_desugared(iterator)
+        }
+    }
+}
+
+impl<'a, T: 'a, I> SpecExtend<&'a T, I> for Vec<T>
+    where I: Iterator<Item=&'a T>,
+          T: Clone,
+{
+    default fn from_iter(iterator: I) -> Self {
+        SpecExtend::from_iter(iterator.cloned())
+    }
+
+    default fn spec_extend(&mut self, iterator: I) {
+        self.spec_extend(iterator.cloned())
+    }
+}
+
+impl<'a, T: 'a> SpecExtend<&'a T, slice::Iter<'a, T>> for Vec<T>
+    where T: Copy,
+{
+    fn spec_extend(&mut self, iterator: slice::Iter<'a, T>) {
+        let slice = iterator.as_slice();
+        self.reserve(slice.len());
+        unsafe {
+            let len = self.len();
+            self.set_len(len + slice.len());
+            self.get_unchecked_mut(len..).copy_from_slice(slice);
+        }
     }
 }
 
 impl<T> Vec<T> {
     fn extend_desugared<I: Iterator<Item = T>>(&mut self, mut iterator: I) {
+        // This is the case for a general iterator.
+        //
         // This function should be the moral equivalent of:
         //
         //      for item in iterator {
@@ -1647,24 +1729,7 @@ impl<T> Vec<T> {
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a, T: 'a + Copy> Extend<&'a T> for Vec<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
-        <I as SpecExtendVec<T>>::extend_vec(iter, self);
-    }
-}
-
-// helper trait for specialization of Vec's Extend impl
-trait SpecExtendVec<T> {
-    fn extend_vec(self, vec: &mut Vec<T>);
-}
-
-impl <'a, T: 'a + Copy, I: IntoIterator<Item=&'a T>> SpecExtendVec<T> for I {
-    default fn extend_vec(self, vec: &mut Vec<T>) {
-        vec.extend(self.into_iter().cloned());
-    }
-}
-
-impl<'a, T: Copy> SpecExtendVec<T> for &'a [T] {
-    fn extend_vec(self, vec: &mut Vec<T>) {
-        vec.extend_from_slice(self);
+        self.spec_extend(iter.into_iter())
     }
 }
 
@@ -1731,8 +1796,7 @@ impl<T: Ord> Ord for Vec<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Drop for Vec<T> {
-    #[unsafe_destructor_blind_to_params]
+unsafe impl<#[may_dangle] T> Drop for Vec<T> {
     fn drop(&mut self) {
         unsafe {
             // use drop for [T]
@@ -1870,14 +1934,13 @@ impl<T> IntoIter<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(vec_into_iter_as_slice)]
     /// let vec = vec!['a', 'b', 'c'];
     /// let mut into_iter = vec.into_iter();
     /// assert_eq!(into_iter.as_slice(), &['a', 'b', 'c']);
     /// let _ = into_iter.next().unwrap();
     /// assert_eq!(into_iter.as_slice(), &['b', 'c']);
     /// ```
-    #[unstable(feature = "vec_into_iter_as_slice", issue = "35601")]
+    #[stable(feature = "vec_into_iter_as_slice", since = "1.15.0")]
     pub fn as_slice(&self) -> &[T] {
         unsafe {
             slice::from_raw_parts(self.ptr, self.len())
@@ -1889,7 +1952,6 @@ impl<T> IntoIter<T> {
     /// # Examples
     ///
     /// ```
-    /// # #![feature(vec_into_iter_as_slice)]
     /// let vec = vec!['a', 'b', 'c'];
     /// let mut into_iter = vec.into_iter();
     /// assert_eq!(into_iter.as_slice(), &['a', 'b', 'c']);
@@ -1898,7 +1960,7 @@ impl<T> IntoIter<T> {
     /// assert_eq!(into_iter.next().unwrap(), 'b');
     /// assert_eq!(into_iter.next().unwrap(), 'z');
     /// ```
-    #[unstable(feature = "vec_into_iter_as_slice", issue = "35601")]
+    #[stable(feature = "vec_into_iter_as_slice", since = "1.15.0")]
     pub fn as_mut_slice(&self) -> &mut [T] {
         unsafe {
             slice::from_raw_parts_mut(self.ptr as *mut T, self.len())
@@ -1983,10 +2045,17 @@ impl<T> DoubleEndedIterator for IntoIter<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> ExactSizeIterator for IntoIter<T> {}
+impl<T> ExactSizeIterator for IntoIter<T> {
+    fn is_empty(&self) -> bool {
+        self.ptr == self.end
+    }
+}
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<T> FusedIterator for IntoIter<T> {}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<T> TrustedLen for IntoIter<T> {}
 
 #[stable(feature = "vec_into_iter_clone", since = "1.8.0")]
 impl<T: Clone> Clone for IntoIter<T> {
@@ -1996,8 +2065,7 @@ impl<T: Clone> Clone for IntoIter<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Drop for IntoIter<T> {
-    #[unsafe_destructor_blind_to_params]
+unsafe impl<#[may_dangle] T> Drop for IntoIter<T> {
     fn drop(&mut self) {
         // destroy the remaining elements
         for _x in self.by_ref() {}
@@ -2074,7 +2142,60 @@ impl<'a, T> Drop for Drain<'a, T> {
 
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T> ExactSizeIterator for Drain<'a, T> {}
+impl<'a, T> ExactSizeIterator for Drain<'a, T> {
+    fn is_empty(&self) -> bool {
+        self.iter.is_empty()
+    }
+}
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a, T> FusedIterator for Drain<'a, T> {}
+
+/// A place for insertion at the back of a `Vec`.
+///
+/// See [`Vec::place_back`](struct.Vec.html#method.place_back) for details.
+#[must_use = "places do nothing unless written to with `<-` syntax"]
+#[unstable(feature = "collection_placement",
+           reason = "struct name and placement protocol are subject to change",
+           issue = "30172")]
+pub struct PlaceBack<'a, T: 'a> {
+    vec: &'a mut Vec<T>,
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T> Placer<T> for PlaceBack<'a, T> {
+    type Place = PlaceBack<'a, T>;
+
+    fn make_place(self) -> Self {
+        // This will panic or abort if we would allocate > isize::MAX bytes
+        // or if the length increment would overflow for zero-sized types.
+        if self.vec.len == self.vec.buf.cap() {
+            self.vec.buf.double();
+        }
+        self
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T> Place<T> for PlaceBack<'a, T> {
+    fn pointer(&mut self) -> *mut T {
+        unsafe { self.vec.as_mut_ptr().offset(self.vec.len as isize) }
+    }
+}
+
+#[unstable(feature = "collection_placement",
+           reason = "placement protocol is subject to change",
+           issue = "30172")]
+impl<'a, T> InPlace<T> for PlaceBack<'a, T> {
+    type Owner = &'a mut T;
+
+    unsafe fn finalize(mut self) -> &'a mut T {
+        let ptr = self.pointer();
+        self.vec.len += 1;
+        &mut *ptr
+    }
+}

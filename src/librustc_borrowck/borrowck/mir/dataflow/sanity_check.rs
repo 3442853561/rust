@@ -13,13 +13,13 @@ use syntax::ast;
 use syntax_pos::Span;
 
 use rustc::ty::{self, TyCtxt};
-use rustc::mir::repr::{self, Mir};
+use rustc::mir::{self, Mir};
 use rustc_data_structures::indexed_vec::Idx;
 
 use super::super::gather_moves::{MovePathIndex, LookupResult};
-use super::super::MoveDataParamEnv;
 use super::BitDenotation;
 use super::DataflowResults;
+use super::super::gather_moves::HasMoveData;
 
 /// This function scans `mir` for all calls to the intrinsic
 /// `rustc_peek` that have the expression form `rustc_peek(&expr)`.
@@ -41,9 +41,8 @@ pub fn sanity_check_via_rustc_peek<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                                 mir: &Mir<'tcx>,
                                                 id: ast::NodeId,
                                                 _attributes: &[ast::Attribute],
-                                                flow_ctxt: &O::Ctxt,
                                                 results: &DataflowResults<O>)
-    where O: BitDenotation<Ctxt=MoveDataParamEnv<'tcx>, Idx=MovePathIndex>
+    where O: BitDenotation<Idx=MovePathIndex> + HasMoveData<'tcx>
 {
     debug!("sanity_check_via_rustc_peek id: {:?}", id);
     // FIXME: this is not DRY. Figure out way to abstract this and
@@ -51,21 +50,18 @@ pub fn sanity_check_via_rustc_peek<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // stuff, so such generalization may not be realistic.)
 
     for bb in mir.basic_blocks().indices() {
-        each_block(tcx, mir, flow_ctxt, results, bb);
+        each_block(tcx, mir, results, bb);
     }
 }
 
 fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                            mir: &Mir<'tcx>,
-                           ctxt: &O::Ctxt,
                            results: &DataflowResults<O>,
-                           bb: repr::BasicBlock) where
-    O: BitDenotation<Ctxt=MoveDataParamEnv<'tcx>, Idx=MovePathIndex>
+                           bb: mir::BasicBlock) where
+    O: BitDenotation<Idx=MovePathIndex> + HasMoveData<'tcx>
 {
-    let move_data = &ctxt.move_data;
-    let repr::BasicBlockData { ref statements,
-                               ref terminator,
-                               is_cleanup: _ } = mir[bb];
+    let move_data = results.0.operator.move_data();
+    let mir::BasicBlockData { ref statements, ref terminator, is_cleanup: _ } = mir[bb];
 
     let (args, span) = match is_rustc_peek(tcx, terminator) {
         Some(args_and_span) => args_and_span,
@@ -73,7 +69,7 @@ fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     };
     assert!(args.len() == 1);
     let peek_arg_lval = match args[0] {
-        repr::Operand::Consume(ref lval @ repr::Lvalue::Local(_)) => Some(lval),
+        mir::Operand::Consume(ref lval @ mir::Lvalue::Local(_)) => Some(lval),
         _ => None,
     };
 
@@ -103,21 +99,19 @@ fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     for (j, stmt) in statements.iter().enumerate() {
         debug!("rustc_peek: ({:?},{}) {:?}", bb, j, stmt);
         let (lvalue, rvalue) = match stmt.kind {
-            repr::StatementKind::Assign(ref lvalue, ref rvalue) => {
+            mir::StatementKind::Assign(ref lvalue, ref rvalue) => {
                 (lvalue, rvalue)
             }
-            repr::StatementKind::StorageLive(_) |
-            repr::StatementKind::StorageDead(_) |
-            repr::StatementKind::Nop => continue,
-            repr::StatementKind::SetDiscriminant{ .. } =>
+            mir::StatementKind::StorageLive(_) |
+            mir::StatementKind::StorageDead(_) |
+            mir::StatementKind::Nop => continue,
+            mir::StatementKind::SetDiscriminant{ .. } =>
                 span_bug!(stmt.source_info.span,
                           "sanity_check should run before Deaggregator inserts SetDiscriminant"),
         };
 
         if lvalue == peek_arg_lval {
-            if let repr::Rvalue::Ref(_,
-                                     repr::BorrowKind::Shared,
-                                     ref peeking_at_lval) = *rvalue {
+            if let mir::Rvalue::Ref(_, mir::BorrowKind::Shared, ref peeking_at_lval) = *rvalue {
                 // Okay, our search is over.
                 match move_data.rev_lookup.find(peeking_at_lval) {
                     LookupResult::Exact(peek_mpi) => {
@@ -150,7 +144,7 @@ fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         // reset GEN and KILL sets before emulating their effect.
         for e in sets.gen_set.words_mut() { *e = 0; }
         for e in sets.kill_set.words_mut() { *e = 0; }
-        results.0.operator.statement_effect(ctxt, &mut sets, bb, j);
+        results.0.operator.statement_effect(&mut sets, bb, j);
         sets.on_entry.union(sets.gen_set);
         sets.on_entry.subtract(sets.kill_set);
     }
@@ -162,18 +156,18 @@ fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 fn is_rustc_peek<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                           terminator: &'a Option<repr::Terminator<'tcx>>)
-                           -> Option<(&'a [repr::Operand<'tcx>], Span)> {
-    if let Some(repr::Terminator { ref kind, source_info, .. }) = *terminator {
-        if let repr::TerminatorKind::Call { func: ref oper, ref args, .. } = *kind
+                           terminator: &'a Option<mir::Terminator<'tcx>>)
+                           -> Option<(&'a [mir::Operand<'tcx>], Span)> {
+    if let Some(mir::Terminator { ref kind, source_info, .. }) = *terminator {
+        if let mir::TerminatorKind::Call { func: ref oper, ref args, .. } = *kind
         {
-            if let repr::Operand::Constant(ref func) = *oper
+            if let mir::Operand::Constant(ref func) = *oper
             {
                 if let ty::TyFnDef(def_id, _, &ty::BareFnTy { abi, .. }) = func.ty.sty
                 {
                     let name = tcx.item_name(def_id);
                     if abi == Abi::RustIntrinsic || abi == Abi::PlatformIntrinsic {
-                        if name.as_str() == "rustc_peek" {
+                        if name == "rustc_peek" {
                             return Some((args, source_info.span));
                         }
                     }

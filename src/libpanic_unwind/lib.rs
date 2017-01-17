@@ -30,7 +30,7 @@
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(alloc)]
 #![feature(core_intrinsics)]
@@ -69,6 +69,7 @@ mod imp;
 
 // i686-pc-windows-gnu and all others
 #[cfg(any(all(unix, not(target_os = "emscripten")),
+          target_os = "redox",
           all(windows, target_arch = "x86", target_env = "gnu")))]
 #[path = "gcc.rs"]
 mod imp;

@@ -16,18 +16,18 @@ function result.
 
 The most common case of coercion is removing mutability from a reference:
 
- * `&mut T` to `&T`
+* `&mut T` to `&T`
 
 An analogous conversion is to remove mutability from a
 [raw pointer](raw-pointers.md):
 
- * `*mut T` to `*const T`
+* `*mut T` to `*const T`
 
 References can also be coerced to raw pointers:
 
- * `&T` to `*const T`
+* `&T` to `*const T`
 
- * `&mut T` to `*mut T`
+* `&mut T` to `*mut T`
 
 Custom coercions may be defined using [`Deref`](deref-coercions.md).
 
@@ -59,11 +59,11 @@ A cast `e as U` is valid if `e` has type `T` and `T` *coerces* to `U`.
 
 A cast `e as U` is also valid in any of the following cases:
 
- * `e` has type `T` and `T` and `U` are any numeric types; *numeric-cast*
- * `e` is a C-like enum (with no data attached to the variants),
-    and `U` is an integer type; *enum-cast*
- * `e` has type `bool` or `char` and `U` is an integer type; *prim-int-cast*
- * `e` has type `u8` and `U` is `char`; *u8-char-cast*
+* `e` has type `T` and `T` and `U` are any numeric types; *numeric-cast*
+* `e` is a C-like enum (with no data attached to the variants),
+   and `U` is an integer type; *enum-cast*
+* `e` has type `bool` or `char` and `U` is an integer type; *prim-int-cast*
+* `e` has type `u8` and `U` is `char`; *u8-char-cast*
 
 For example
 
@@ -106,7 +106,7 @@ from integers, and to cast between pointers to different types subject to
 some constraints. It is only unsafe to dereference the pointer:
 
 ```rust
-let a = 300 as *const char; // a pointer to location 300
+let a = 300 as *const char; // `a` is a pointer to location 300.
 let b = a as u32;
 ```
 
@@ -135,14 +135,14 @@ cast four bytes into a `u32`:
 ```rust,ignore
 let a = [0u8, 0u8, 0u8, 0u8];
 
-let b = a as u32; // four u8s makes a u32
+let b = a as u32; // Four u8s makes a u32.
 ```
 
 This errors with:
 
 ```text
 error: non-scalar cast: `[u8; 4]` as `u32`
-let b = a as u32; // four u8s makes a u32
+let b = a as u32; // Four u8s makes a u32.
         ^~~~~~~~
 ```
 
@@ -170,7 +170,7 @@ fn main() {
         let a = [0u8, 1u8, 0u8, 0u8];
         let b = mem::transmute::<[u8; 4], u32>(a);
         println!("{}", b); // 256
-        // or, more concisely:
+        // Or, more concisely:
         let c: u32 = mem::transmute(a);
         println!("{}", c); // 256
     }

@@ -18,6 +18,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use filetime::FileTime;
 
@@ -40,6 +41,12 @@ pub fn mtime(path: &Path) -> FileTime {
 /// Copies a file from `src` to `dst`, attempting to use hard links and then
 /// falling back to an actually filesystem copy if necessary.
 pub fn copy(src: &Path, dst: &Path) {
+    // A call to `hard_link` will fail if `dst` exists, so remove it if it
+    // already exists so we can try to help `hard_link` succeed.
+    let _ = fs::remove_file(&dst);
+
+    // Attempt to "easy copy" by creating a hard link (symlinks don't work on
+    // windows), but if that fails just fall back to a slow `copy` operation.
     let res = fs::hard_link(src, dst);
     let res = res.or_else(|_| fs::copy(src, dst).map(|_| ()));
     if let Err(e) = res {
@@ -57,8 +64,7 @@ pub fn cp_r(src: &Path, dst: &Path) {
         let name = path.file_name().unwrap();
         let dst = dst.join(name);
         if t!(f.file_type()).is_dir() {
-            let _ = fs::remove_dir_all(&dst);
-            t!(fs::create_dir(&dst));
+            t!(fs::create_dir_all(&dst));
             cp_r(&path, &dst);
         } else {
             let _ = fs::remove_file(&dst);
@@ -70,9 +76,9 @@ pub fn cp_r(src: &Path, dst: &Path) {
 /// Copies the `src` directory recursively to `dst`. Both are assumed to exist
 /// when this function is called. Unwanted files or directories can be skipped
 /// by returning `false` from the filter function.
-pub fn cp_filtered<F: Fn(&Path) -> bool>(src: &Path, dst: &Path, filter: &F) {
+pub fn cp_filtered(src: &Path, dst: &Path, filter: &Fn(&Path) -> bool) {
     // Inner function does the actual work
-    fn recurse<F: Fn(&Path) -> bool>(src: &Path, dst: &Path, relative: &Path, filter: &F) {
+    fn recurse(src: &Path, dst: &Path, relative: &Path, filter: &Fn(&Path) -> bool) {
         for f in t!(fs::read_dir(src)) {
             let f = t!(f);
             let path = f.path();
@@ -171,4 +177,38 @@ pub fn dylib_path_var() -> &'static str {
 pub fn dylib_path() -> Vec<PathBuf> {
     env::split_paths(&env::var_os(dylib_path_var()).unwrap_or(OsString::new()))
         .collect()
+}
+
+/// `push` all components to `buf`. On windows, append `.exe` to the last component.
+pub fn push_exe_path(mut buf: PathBuf, components: &[&str]) -> PathBuf {
+    let (&file, components) = components.split_last().expect("at least one component required");
+    let mut file = file.to_owned();
+
+    if cfg!(windows) {
+        file.push_str(".exe");
+    }
+
+    for c in components {
+        buf.push(c);
+    }
+
+    buf.push(file);
+
+    buf
+}
+
+pub struct TimeIt(Instant);
+
+/// Returns an RAII structure that prints out how long it took to drop.
+pub fn timeit() -> TimeIt {
+    TimeIt(Instant::now())
+}
+
+impl Drop for TimeIt {
+    fn drop(&mut self) {
+        let time = self.0.elapsed();
+        println!("\tfinished in {}.{:03}",
+                 time.as_secs(),
+                 time.subsec_nanos() / 1_000_000);
+    }
 }

@@ -65,7 +65,7 @@
 #![no_core]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(allow_internal_unstable)]
 #![feature(asm)]
@@ -89,8 +89,8 @@
 #![feature(specialization)]
 #![feature(staged_api)]
 #![feature(unboxed_closures)]
-#![cfg_attr(stage0, feature(question_mark))]
 #![feature(never_type)]
+#![cfg_attr(not(stage0), feature(i128_type))]
 #![feature(prelude_import)]
 
 #[prelude_import]
@@ -99,6 +99,9 @@ use prelude::v1::*;
 
 #[macro_use]
 mod macros;
+
+#[macro_use]
+mod internal_macros;
 
 #[path = "num/float_macros.rs"]
 #[macro_use]
@@ -118,11 +121,19 @@ mod uint_macros;
 #[path = "num/i32.rs"]   pub mod i32;
 #[path = "num/i64.rs"]   pub mod i64;
 
+// SNAP
+#[cfg(not(stage0))]
+#[path = "num/i128.rs"]   pub mod i128;
+
 #[path = "num/usize.rs"] pub mod usize;
 #[path = "num/u8.rs"]    pub mod u8;
 #[path = "num/u16.rs"]   pub mod u16;
 #[path = "num/u32.rs"]   pub mod u32;
 #[path = "num/u64.rs"]   pub mod u64;
+
+// SNAP
+#[cfg(not(stage0))]
+#[path = "num/u128.rs"]   pub mod u128;
 
 #[path = "num/f32.rs"]   pub mod f32;
 #[path = "num/f64.rs"]   pub mod f64;

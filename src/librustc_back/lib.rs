@@ -28,7 +28,7 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(box_syntax)]
 #![feature(const_fn)]
@@ -36,9 +36,7 @@
 #![feature(rand)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
-#![feature(step_by)]
-#![cfg_attr(stage0, feature(question_mark))]
-#![cfg_attr(test, feature(test, rand))]
+#![cfg_attr(test, feature(rand))]
 
 extern crate syntax;
 extern crate libc;
@@ -48,7 +46,6 @@ extern crate serialize;
 extern crate serialize as rustc_serialize; // used by deriving
 
 pub mod tempdir;
-pub mod sha2;
 pub mod target;
 pub mod slice;
 pub mod dynamic_lib;

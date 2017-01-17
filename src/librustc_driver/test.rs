@@ -21,9 +21,10 @@ use rustc::middle::region::CodeExtentData;
 use rustc::middle::resolve_lifetime;
 use rustc::middle::stability;
 use rustc::ty::subst::{Kind, Subst};
-use rustc::traits::Reveal;
+use rustc::traits::{ObligationCause, Reveal};
 use rustc::ty::{self, Ty, TyCtxt, TypeFoldable};
-use rustc::infer::{self, InferOk, InferResult, TypeOrigin};
+use rustc::infer::{self, InferOk, InferResult};
+use rustc::infer::type_variable::TypeVariableOrigin;
 use rustc_metadata::cstore::CStore;
 use rustc::hir::map as hir_map;
 use rustc::session::{self, config};
@@ -34,13 +35,14 @@ use syntax::codemap::CodeMap;
 use errors;
 use errors::emitter::Emitter;
 use errors::{Level, DiagnosticBuilder};
-use syntax::parse::token;
 use syntax::feature_gate::UnstableFeatures;
+use syntax::symbol::Symbol;
 use syntax_pos::DUMMY_SP;
+use arena::DroplessArena;
 
 use rustc::hir;
 
-struct Env<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
+struct Env<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     infcx: &'a infer::InferCtxt<'a, 'gcx, 'tcx>,
 }
 
@@ -86,8 +88,7 @@ impl Emitter for ExpectErrorEmitter {
 
 fn errors(msgs: &[&str]) -> (Box<Emitter + Send>, usize) {
     let v = msgs.iter().map(|m| m.to_string()).collect();
-    (box ExpectErrorEmitter { messages: v } as Box<Emitter + Send>,
-     msgs.len())
+    (box ExpectErrorEmitter { messages: v } as Box<Emitter + Send>, msgs.len())
 }
 
 fn test_env<F>(source_string: &str,
@@ -103,44 +104,52 @@ fn test_env<F>(source_string: &str,
     let dep_graph = DepGraph::new(false);
     let _ignore = dep_graph.in_ignore();
     let cstore = Rc::new(CStore::new(&dep_graph));
-    let sess = session::build_session_(options, &dep_graph, None, diagnostic_handler,
-                                       Rc::new(CodeMap::new()), cstore.clone());
+    let sess = session::build_session_(options,
+                                       &dep_graph,
+                                       None,
+                                       diagnostic_handler,
+                                       Rc::new(CodeMap::new()),
+                                       cstore.clone());
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
-    let krate_config = Vec::new();
     let input = config::Input::Str {
         name: driver::anon_src(),
         input: source_string.to_string(),
     };
-    let krate = driver::phase_1_parse_input(&sess, krate_config, &input).unwrap();
+    let krate = driver::phase_1_parse_input(&sess, &input).unwrap();
     let driver::ExpansionResult { defs, resolutions, mut hir_forest, .. } = {
-        driver::phase_2_configure_and_expand(
-            &sess, &cstore, krate, None, "test", None, MakeGlobMap::No, |_| Ok(()),
-        ).expect("phase 2 aborted")
+        driver::phase_2_configure_and_expand(&sess,
+                                             &cstore,
+                                             krate,
+                                             None,
+                                             "test",
+                                             None,
+                                             MakeGlobMap::No,
+                                             |_| Ok(()))
+            .expect("phase 2 aborted")
     };
     let _ignore = dep_graph.in_ignore();
 
-    let arenas = ty::CtxtArenas::new();
+    let arena = DroplessArena::new();
+    let arenas = ty::GlobalArenas::new();
     let ast_map = hir_map::map_crate(&mut hir_forest, defs);
 
     // run just enough stuff to build a tcx:
     let lang_items = lang_items::collect_language_items(&sess, &ast_map);
-    let named_region_map = resolve_lifetime::krate(&sess, &ast_map, &resolutions.def_map);
+    let named_region_map = resolve_lifetime::krate(&sess, &ast_map);
     let region_map = region::resolve_crate(&sess, &ast_map);
     let index = stability::Index::new(&ast_map);
     TyCtxt::create_and_enter(&sess,
                              &arenas,
-                             resolutions.def_map,
-                             resolutions.trait_map,
+                             &arena,
+                             resolutions,
                              named_region_map.unwrap(),
                              ast_map,
-                             resolutions.freevars,
-                             resolutions.maybe_unused_trait_imports,
                              region_map,
                              lang_items,
                              index,
                              "test_crate",
                              |tcx| {
-        tcx.infer_ctxt(None, None, Reveal::NotSpecializable).enter(|infcx| {
+        tcx.infer_ctxt((), Reveal::NotSpecializable).enter(|infcx| {
 
             body(Env { infcx: &infcx });
             let free_regions = FreeRegionMap::new();
@@ -168,14 +177,22 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
 
         let node = ast::NodeId::from_u32;
         let dscope = self.infcx
-                         .tcx
-                         .region_maps
-                         .intern_code_extent(CodeExtentData::DestructionScope(node(1)),
-                                             region::ROOT_CODE_EXTENT);
+            .tcx
+            .region_maps
+            .intern_code_extent(CodeExtentData::DestructionScope(node(1)),
+                                region::ROOT_CODE_EXTENT);
         self.create_region_hierarchy(&RH {
-            id: node(1),
-            sub: &[RH { id: node(10), sub: &[] }, RH { id: node(11), sub: &[] }],
-        }, dscope);
+                                         id: node(1),
+                                         sub: &[RH {
+                                                    id: node(10),
+                                                    sub: &[],
+                                                },
+                                                RH {
+                                                    id: node(11),
+                                                    sub: &[],
+                                                }],
+                                     },
+                                     dscope);
     }
 
     #[allow(dead_code)] // this seems like it could be useful, even if we don't use it now
@@ -214,28 +231,22 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
                 hir::ItemStatic(..) |
                 hir::ItemFn(..) |
                 hir::ItemForeignMod(..) |
-                hir::ItemTy(..) => {
-                    None
-                }
+                hir::ItemTy(..) => None,
 
                 hir::ItemEnum(..) |
                 hir::ItemStruct(..) |
                 hir::ItemUnion(..) |
                 hir::ItemTrait(..) |
                 hir::ItemImpl(..) |
-                hir::ItemDefaultImpl(..) => {
-                    None
-                }
+                hir::ItemDefaultImpl(..) => None,
 
-                hir::ItemMod(ref m) => {
-                    search_mod(this, m, idx, names)
-                }
+                hir::ItemMod(ref m) => search_mod(this, m, idx, names),
             };
         }
     }
 
     pub fn make_subtype(&self, a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
-        match self.infcx.sub_types(true, TypeOrigin::Misc(DUMMY_SP), a, b) {
+        match self.infcx.sub_types(true, &ObligationCause::dummy(), a, b) {
             Ok(_) => true,
             Err(ref e) => panic!("Encountered error: {}", e),
         }
@@ -257,15 +268,10 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
     }
 
     pub fn t_fn(&self, input_tys: &[Ty<'tcx>], output_ty: Ty<'tcx>) -> Ty<'tcx> {
-        let input_args = input_tys.iter().cloned().collect();
         self.infcx.tcx.mk_fn_ptr(self.infcx.tcx.mk_bare_fn(ty::BareFnTy {
             unsafety: hir::Unsafety::Normal,
             abi: Abi::Rust,
-            sig: ty::Binder(ty::FnSig {
-                inputs: input_args,
-                output: output_ty,
-                variadic: false,
-            }),
+            sig: ty::Binder(self.infcx.tcx.mk_fn_sig(input_tys.iter().cloned(), output_ty, false)),
         }))
     }
 
@@ -279,21 +285,20 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
 
     pub fn t_param(&self, index: u32) -> Ty<'tcx> {
         let name = format!("T{}", index);
-        self.infcx.tcx.mk_param(index, token::intern(&name[..]))
+        self.infcx.tcx.mk_param(index, Symbol::intern(&name[..]))
     }
 
-    pub fn re_early_bound(&self,
-                          index: u32,
-                          name: &'static str)
-                          -> &'tcx ty::Region {
-        let name = token::intern(name);
+    pub fn re_early_bound(&self, index: u32, name: &'static str) -> &'tcx ty::Region {
+        let name = Symbol::intern(name);
         self.infcx.tcx.mk_region(ty::ReEarlyBound(ty::EarlyBoundRegion {
             index: index,
             name: name,
         }))
     }
 
-    pub fn re_late_bound_with_debruijn(&self, id: u32, debruijn: ty::DebruijnIndex)
+    pub fn re_late_bound_with_debruijn(&self,
+                                       id: u32,
+                                       debruijn: ty::DebruijnIndex)
                                        -> &'tcx ty::Region {
         self.infcx.tcx.mk_region(ty::ReLateBound(debruijn, ty::BrAnon(id)))
     }
@@ -395,9 +400,7 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
 
                 self.assert_eq(t, t_lub);
             }
-            Err(ref e) => {
-                panic!("unexpected error in LUB: {}", e)
-            }
+            Err(ref e) => panic!("unexpected error in LUB: {}", e),
         }
     }
 
@@ -405,9 +408,7 @@ impl<'a, 'gcx, 'tcx> Env<'a, 'gcx, 'tcx> {
     pub fn check_glb(&self, t1: Ty<'tcx>, t2: Ty<'tcx>, t_glb: Ty<'tcx>) {
         debug!("check_glb(t1={}, t2={}, t_glb={})", t1, t2, t_glb);
         match self.glb(t1, t2) {
-            Err(e) => {
-                panic!("unexpected error computing LUB: {:?}", e)
-            }
+            Err(e) => panic!("unexpected error computing LUB: {:?}", e),
             Ok(InferOk { obligations, value: t }) => {
                 // FIXME(#32730) once obligations are being propagated, assert the right thing.
                 assert!(obligations.is_empty());
@@ -491,7 +492,7 @@ fn sub_free_bound_false_infer() {
     //! does NOT hold for any instantiation of `_#1`.
 
     test_env(EMPTY_SOURCE_STR, errors(&[]), |env| {
-        let t_infer1 = env.infcx.next_ty_var();
+        let t_infer1 = env.infcx.next_ty_var(TypeVariableOrigin::MiscVariable(DUMMY_SP));
         let t_rptr_bound1 = env.t_rptr_late_bound(1);
         env.check_not_sub(env.t_fn(&[t_infer1], env.tcx().types.isize),
                           env.t_fn(&[t_rptr_bound1], env.tcx().types.isize));
@@ -510,7 +511,7 @@ fn lub_free_bound_infer() {
 
     test_env(EMPTY_SOURCE_STR, errors(&[]), |env| {
         env.create_simple_region_hierarchy();
-        let t_infer1 = env.infcx.next_ty_var();
+        let t_infer1 = env.infcx.next_ty_var(TypeVariableOrigin::MiscVariable(DUMMY_SP));
         let t_rptr_bound1 = env.t_rptr_late_bound(1);
         let t_rptr_free1 = env.t_rptr_free(1, 1);
         env.check_lub(env.t_fn(&[t_infer1], env.tcx().types.isize),
@@ -630,7 +631,7 @@ fn glb_bound_free() {
 fn glb_bound_free_infer() {
     test_env(EMPTY_SOURCE_STR, errors(&[]), |env| {
         let t_rptr_bound1 = env.t_rptr_late_bound(1);
-        let t_infer1 = env.infcx.next_ty_var();
+        let t_infer1 = env.infcx.next_ty_var(TypeVariableOrigin::MiscVariable(DUMMY_SP));
 
         // compute GLB(fn(_) -> isize, for<'b> fn(&'b isize) -> isize),
         // which should yield for<'b> fn(&'b isize) -> isize

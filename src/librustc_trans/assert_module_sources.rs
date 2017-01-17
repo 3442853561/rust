@@ -29,7 +29,6 @@
 
 use rustc::ty::TyCtxt;
 use syntax::ast;
-use syntax::parse::token::InternedString;
 
 use {ModuleSource, ModuleTranslation};
 
@@ -77,7 +76,7 @@ impl<'a, 'tcx> AssertModuleSource<'a, 'tcx> {
         }
 
         let mname = self.field(attr, MODULE);
-        let mtrans = self.modules.iter().find(|mtrans| &mtrans.name[..] == &mname[..]);
+        let mtrans = self.modules.iter().find(|mtrans| *mtrans.name == *mname.as_str());
         let mtrans = match mtrans {
             Some(m) => m,
             None => {
@@ -113,7 +112,7 @@ impl<'a, 'tcx> AssertModuleSource<'a, 'tcx> {
         }
     }
 
-    fn field(&self, attr: &ast::Attribute, name: &str) -> InternedString {
+    fn field(&self, attr: &ast::Attribute, name: &str) -> ast::Name {
         for item in attr.meta_item_list().unwrap_or(&[]) {
             if item.check_name(name) {
                 if let Some(value) = item.value_str() {
@@ -134,10 +133,10 @@ impl<'a, 'tcx> AssertModuleSource<'a, 'tcx> {
     /// Scan for a `cfg="foo"` attribute and check whether we have a
     /// cfg flag called `foo`.
     fn check_config(&self, attr: &ast::Attribute) -> bool {
-        let config = &self.tcx.map.krate().config;
+        let config = &self.tcx.sess.parse_sess.config;
         let value = self.field(attr, CFG);
         debug!("check_config(config={:?}, value={:?})", config, value);
-        if config.iter().any(|c| c.check_name(&value[..])) {
+        if config.iter().any(|&(name, _)| name == value) {
             debug!("check_config: matched");
             return true;
         }

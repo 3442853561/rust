@@ -132,7 +132,7 @@ impl Utf8Error {
     /// verified.
     ///
     /// It is the maximum index such that `from_utf8(input[..index])`
-    /// would return `Some(_)`.
+    /// would return `Ok(_)`.
     ///
     /// # Examples
     ///
@@ -425,12 +425,29 @@ impl<'a> Iterator for Chars<'a> {
     }
 
     #[inline]
+    fn count(self) -> usize {
+        // length in `char` is equal to the number of non-continuation bytes
+        let bytes_len = self.iter.len();
+        let mut cont_bytes = 0;
+        for &byte in self.iter {
+            cont_bytes += utf8_is_cont_byte(byte) as usize;
+        }
+        bytes_len - cont_bytes
+    }
+
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = self.iter.len();
         // `(len + 3)` can't overflow, because we know that the `slice::Iter`
         // belongs to a slice in memory which has a maximum length of
         // `isize::MAX` (that's well below `usize::MAX`).
         ((len + 3) / 4, Some(len))
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<char> {
+        // No need to go through the entire string.
+        self.next_back()
     }
 }
 
@@ -502,8 +519,19 @@ impl<'a> Iterator for CharIndices<'a> {
     }
 
     #[inline]
+    fn count(self) -> usize {
+        self.iter.count()
+    }
+
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<(usize, char)> {
+        // No need to go through the entire string.
+        self.next_back()
     }
 }
 
@@ -589,6 +617,11 @@ impl<'a> ExactSizeIterator for Bytes<'a> {
     #[inline]
     fn len(&self) -> usize {
         self.0.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -1199,10 +1232,15 @@ fn contains_nonascii(x: usize) -> bool {
 /// invalid sequence.
 #[inline(always)]
 fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
-    let mut offset = 0;
+    let mut index = 0;
     let len = v.len();
-    while offset < len {
-        let old_offset = offset;
+
+    let usize_bytes = mem::size_of::<usize>();
+    let ascii_block_size = 2 * usize_bytes;
+    let blocks_end = if len >= ascii_block_size { len - ascii_block_size + 1 } else { 0 };
+
+    while index < len {
+        let old_offset = index;
         macro_rules! err { () => {{
             return Err(Utf8Error {
                 valid_up_to: old_offset
@@ -1210,15 +1248,15 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
         }}}
 
         macro_rules! next { () => {{
-            offset += 1;
+            index += 1;
             // we needed data, but there was none: error!
-            if offset >= len {
+            if index >= len {
                 err!()
             }
-            v[offset]
+            v[index]
         }}}
 
-        let first = v[offset];
+        let first = v[index];
         if first >= 128 {
             let w = UTF8_CHAR_WIDTH[first as usize];
             let second = next!();
@@ -1261,38 +1299,32 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
                 }
                 _ => err!()
             }
-            offset += 1;
+            index += 1;
         } else {
             // Ascii case, try to skip forward quickly.
             // When the pointer is aligned, read 2 words of data per iteration
             // until we find a word containing a non-ascii byte.
-            let usize_bytes = mem::size_of::<usize>();
-            let bytes_per_iteration = 2 * usize_bytes;
             let ptr = v.as_ptr();
-            let align = (ptr as usize + offset) & (usize_bytes - 1);
+            let align = (ptr as usize + index) & (usize_bytes - 1);
             if align == 0 {
-                if len >= bytes_per_iteration {
-                    while offset <= len - bytes_per_iteration {
-                        unsafe {
-                            let u = *(ptr.offset(offset as isize) as *const usize);
-                            let v = *(ptr.offset((offset + usize_bytes) as isize) as *const usize);
-
-                            // break if there is a nonascii byte
-                            let zu = contains_nonascii(u);
-                            let zv = contains_nonascii(v);
-                            if zu || zv {
-                                break;
-                            }
+                while index < blocks_end {
+                    unsafe {
+                        let block = ptr.offset(index as isize) as *const usize;
+                        // break if there is a nonascii byte
+                        let zu = contains_nonascii(*block);
+                        let zv = contains_nonascii(*block.offset(1));
+                        if zu | zv {
+                            break;
                         }
-                        offset += bytes_per_iteration;
                     }
+                    index += ascii_block_size;
                 }
                 // step from the point where the wordwise loop stopped
-                while offset < len && v[offset] < 128 {
-                    offset += 1;
+                while index < len && v[index] < 128 {
+                    index += 1;
                 }
             } else {
-                offset += 1;
+                index += 1;
             }
         }
     }
@@ -1713,13 +1745,31 @@ fn truncate_to_char_boundary(s: &str, mut max: usize) -> (bool, &str) {
 #[cold]
 fn slice_error_fail(s: &str, begin: usize, end: usize) -> ! {
     const MAX_DISPLAY_LENGTH: usize = 256;
-    let (truncated, s) = truncate_to_char_boundary(s, MAX_DISPLAY_LENGTH);
+    let (truncated, s_trunc) = truncate_to_char_boundary(s, MAX_DISPLAY_LENGTH);
     let ellipsis = if truncated { "[...]" } else { "" };
 
+    // 1. out of bounds
+    if begin > s.len() || end > s.len() {
+        let oob_index = if begin > s.len() { begin } else { end };
+        panic!("byte index {} is out of bounds of `{}`{}", oob_index, s_trunc, ellipsis);
+    }
+
+    // 2. begin <= end
     assert!(begin <= end, "begin <= end ({} <= {}) when slicing `{}`{}",
-            begin, end, s, ellipsis);
-    panic!("index {} and/or {} in `{}`{} do not lie on character boundary",
-          begin, end, s, ellipsis);
+            begin, end, s_trunc, ellipsis);
+
+    // 3. character boundary
+    let index = if !s.is_char_boundary(begin) { begin } else { end };
+    // find the character
+    let mut char_start = index;
+    while !s.is_char_boundary(char_start) {
+        char_start -= 1;
+    }
+    // `char_start` must be less than len and a char boundary
+    let ch = s[char_start..].chars().next().unwrap();
+    let char_range = char_start .. char_start + ch.len_utf8();
+    panic!("byte index {} is not a char boundary; it is inside {:?} (bytes {:?}) of `{}`{}",
+           index, ch, char_range, s_trunc, ellipsis);
 }
 
 #[stable(feature = "core", since = "1.6.0")]

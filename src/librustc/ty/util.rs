@@ -11,23 +11,24 @@
 //! misc. type-system utilities too small to deserve their own file
 
 use hir::def_id::DefId;
+use hir::map::DefPathData;
 use infer::InferCtxt;
 use hir::map as ast_map;
-use hir::pat_util;
 use traits::{self, Reveal};
-use ty::{self, Ty, AdtKind, TyCtxt, TypeAndMut, TypeFlags, TypeFoldable};
+use ty::{self, Ty, TyCtxt, TypeAndMut, TypeFlags, TypeFoldable};
 use ty::{Disr, ParameterEnvironment};
 use ty::fold::TypeVisitor;
 use ty::layout::{Layout, LayoutError};
 use ty::TypeVariants::*;
-use util::nodemap::FnvHashMap;
+use util::nodemap::FxHashMap;
+use middle::lang_items;
 
 use rustc_const_math::{ConstInt, ConstIsize, ConstUsize};
+use rustc_data_structures::stable_hasher::{StableHasher, StableHasherResult};
 
 use std::cell::RefCell;
 use std::cmp;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
 use std::intrinsics;
 use syntax::ast::{self, Name};
 use syntax::attr::{self, SignedInt, UnsignedInt};
@@ -50,11 +51,13 @@ impl IntTypeExt for attr::IntType {
             SignedInt(ast::IntTy::I16)     => tcx.types.i16,
             SignedInt(ast::IntTy::I32)     => tcx.types.i32,
             SignedInt(ast::IntTy::I64)     => tcx.types.i64,
+            SignedInt(ast::IntTy::I128)     => tcx.types.i128,
             SignedInt(ast::IntTy::Is)   => tcx.types.isize,
             UnsignedInt(ast::UintTy::U8)    => tcx.types.u8,
             UnsignedInt(ast::UintTy::U16)   => tcx.types.u16,
             UnsignedInt(ast::UintTy::U32)   => tcx.types.u32,
             UnsignedInt(ast::UintTy::U64)   => tcx.types.u64,
+            UnsignedInt(ast::UintTy::U128)   => tcx.types.u128,
             UnsignedInt(ast::UintTy::Us) => tcx.types.usize,
         }
     }
@@ -65,6 +68,7 @@ impl IntTypeExt for attr::IntType {
             SignedInt(ast::IntTy::I16)   => ConstInt::I16(0),
             SignedInt(ast::IntTy::I32)   => ConstInt::I32(0),
             SignedInt(ast::IntTy::I64)   => ConstInt::I64(0),
+            SignedInt(ast::IntTy::I128)   => ConstInt::I128(0),
             SignedInt(ast::IntTy::Is) => match tcx.sess.target.int_type {
                 ast::IntTy::I16 => ConstInt::Isize(ConstIsize::Is16(0)),
                 ast::IntTy::I32 => ConstInt::Isize(ConstIsize::Is32(0)),
@@ -75,6 +79,7 @@ impl IntTypeExt for attr::IntType {
             UnsignedInt(ast::UintTy::U16) => ConstInt::U16(0),
             UnsignedInt(ast::UintTy::U32) => ConstInt::U32(0),
             UnsignedInt(ast::UintTy::U64) => ConstInt::U64(0),
+            UnsignedInt(ast::UintTy::U128) => ConstInt::U128(0),
             UnsignedInt(ast::UintTy::Us) => match tcx.sess.target.uint_type {
                 ast::UintTy::U16 => ConstInt::Usize(ConstUsize::Us16(0)),
                 ast::UintTy::U32 => ConstInt::Usize(ConstUsize::Us32(0)),
@@ -90,11 +95,13 @@ impl IntTypeExt for attr::IntType {
             (SignedInt(ast::IntTy::I16), ConstInt::I16(_)) => {},
             (SignedInt(ast::IntTy::I32), ConstInt::I32(_)) => {},
             (SignedInt(ast::IntTy::I64), ConstInt::I64(_)) => {},
+            (SignedInt(ast::IntTy::I128), ConstInt::I128(_)) => {},
             (SignedInt(ast::IntTy::Is), ConstInt::Isize(_)) => {},
             (UnsignedInt(ast::UintTy::U8), ConstInt::U8(_)) => {},
             (UnsignedInt(ast::UintTy::U16), ConstInt::U16(_)) => {},
             (UnsignedInt(ast::UintTy::U32), ConstInt::U32(_)) => {},
             (UnsignedInt(ast::UintTy::U64), ConstInt::U64(_)) => {},
+            (UnsignedInt(ast::UintTy::U128), ConstInt::U128(_)) => {},
             (UnsignedInt(ast::UintTy::Us), ConstInt::Usize(_)) => {},
             _ => bug!("disr type mismatch: {:?} vs {:?}", self, val),
         }
@@ -113,9 +120,8 @@ impl IntTypeExt for attr::IntType {
 
 
 #[derive(Copy, Clone)]
-pub enum CopyImplementationError {
-    InfrigingField(Name),
-    InfrigingVariant(Name),
+pub enum CopyImplementationError<'tcx> {
+    InfrigingField(&'tcx ty::FieldDef),
     NotAnAdt,
     HasDestructor
 }
@@ -138,36 +144,29 @@ pub enum Representability {
 impl<'tcx> ParameterEnvironment<'tcx> {
     pub fn can_type_implement_copy<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                        self_type: Ty<'tcx>, span: Span)
-                                       -> Result<(),CopyImplementationError> {
+                                       -> Result<(), CopyImplementationError> {
         // FIXME: (@jroesch) float this code up
-        tcx.infer_ctxt(None, Some(self.clone()), Reveal::ExactMatch).enter(|infcx| {
-            let adt = match self_type.sty {
-                ty::TyAdt(adt, substs) => match adt.adt_kind() {
-                    AdtKind::Struct | AdtKind::Union => {
-                        for field in adt.all_fields() {
-                            let field_ty = field.ty(tcx, substs);
-                            if infcx.type_moves_by_default(field_ty, span) {
-                                return Err(CopyImplementationError::InfrigingField(
-                                    field.name))
-                            }
-                        }
-                        adt
-                    }
-                    AdtKind::Enum => {
-                        for variant in &adt.variants {
-                            for field in &variant.fields {
-                                let field_ty = field.ty(tcx, substs);
-                                if infcx.type_moves_by_default(field_ty, span) {
-                                    return Err(CopyImplementationError::InfrigingVariant(
-                                        variant.name))
-                                }
-                            }
-                        }
-                        adt
-                    }
-                },
+        tcx.infer_ctxt(self.clone(), Reveal::NotSpecializable).enter(|infcx| {
+            let (adt, substs) = match self_type.sty {
+                ty::TyAdt(adt, substs) => (adt, substs),
                 _ => return Err(CopyImplementationError::NotAnAdt)
             };
+
+            let field_implements_copy = |field: &ty::FieldDef| {
+                let cause = traits::ObligationCause::dummy();
+                match traits::fully_normalize(&infcx, cause, &field.ty(tcx, substs)) {
+                    Ok(ty) => !infcx.type_moves_by_default(ty, span),
+                    Err(..) => false
+                }
+            };
+
+            for variant in &adt.variants {
+                for field in &variant.fields {
+                    if !field_implements_copy(field) {
+                        return Err(CopyImplementationError::InfrigingField(field));
+                    }
+                }
+            }
 
             if adt.has_dtor() {
                 return Err(CopyImplementationError::HasDestructor);
@@ -179,14 +178,6 @@ impl<'tcx> ParameterEnvironment<'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
-    pub fn pat_contains_ref_binding(self, pat: &hir::Pat) -> Option<hir::Mutability> {
-        pat_util::pat_contains_ref_binding(pat)
-    }
-
-    pub fn arm_contains_ref_binding(self, arm: &hir::Arm) -> Option<hir::Mutability> {
-        pat_util::arm_contains_ref_binding(arm)
-    }
-
     pub fn has_error_field(self, ty: Ty<'tcx>) -> bool {
         match ty.sty {
             ty::TyAdt(def, substs) => {
@@ -356,7 +347,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// Creates a hash of the type `Ty` which will be the same no matter what crate
     /// context it's calculated within. This is used by the `type_id` intrinsic.
     pub fn type_id_hash(self, ty: Ty<'tcx>) -> u64 {
-        let mut hasher = TypeIdHasher::new(self, DefaultHasher::default());
+        let mut hasher = TypeIdHasher::new(self);
         hasher.visit_ty(ty);
         hasher.finish()
     }
@@ -373,7 +364,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// `adt` that do not strictly outlive the adt value itself.
     /// (This allows programs to make cyclic structures without
     /// resorting to unasfe means; see RFCs 769 and 1238).
-    pub fn is_adt_dtorck(self, adt: ty::AdtDef) -> bool {
+    pub fn is_adt_dtorck(self, adt: &ty::AdtDef) -> bool {
         let dtor_method = match adt.destructor() {
             Some(dtor) => dtor,
             None => return false
@@ -390,91 +381,36 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         // (e.g. calling `foo.0.clone()` of `Foo<T:Clone>`).
         return !self.has_attr(dtor_method, "unsafe_destructor_blind_to_params");
     }
-}
 
-/// When hashing a type this ends up affecting properties like symbol names. We
-/// want these symbol names to be calculated independent of other factors like
-/// what architecture you're compiling *from*.
-///
-/// The hashing just uses the standard `Hash` trait, but the implementations of
-/// `Hash` for the `usize` and `isize` types are *not* architecture independent
-/// (e.g. they has 4 or 8 bytes). As a result we want to avoid `usize` and
-/// `isize` completely when hashing. To ensure that these don't leak in we use a
-/// custom hasher implementation here which inflates the size of these to a `u64`
-/// and `i64`.
-///
-/// The same goes for endianess: We always convert multi-byte integers to little
-/// endian before hashing.
-pub struct ArchIndependentHasher<H> {
-    inner: H,
-}
-
-impl<H> ArchIndependentHasher<H> {
-    pub fn new(inner: H) -> ArchIndependentHasher<H> {
-        ArchIndependentHasher { inner: inner }
-    }
-}
-
-impl<H: Hasher> Hasher for ArchIndependentHasher<H> {
-    fn write(&mut self, bytes: &[u8]) {
-        self.inner.write(bytes)
-    }
-
-    fn finish(&self) -> u64 {
-        self.inner.finish()
-    }
-
-    fn write_u8(&mut self, i: u8) {
-        self.inner.write_u8(i)
-    }
-    fn write_u16(&mut self, i: u16) {
-        self.inner.write_u16(i.to_le())
-    }
-    fn write_u32(&mut self, i: u32) {
-        self.inner.write_u32(i.to_le())
-    }
-    fn write_u64(&mut self, i: u64) {
-        self.inner.write_u64(i.to_le())
-    }
-    fn write_usize(&mut self, i: usize) {
-        self.inner.write_u64((i as u64).to_le())
-    }
-    fn write_i8(&mut self, i: i8) {
-        self.inner.write_i8(i)
-    }
-    fn write_i16(&mut self, i: i16) {
-        self.inner.write_i16(i.to_le())
-    }
-    fn write_i32(&mut self, i: i32) {
-        self.inner.write_i32(i.to_le())
-    }
-    fn write_i64(&mut self, i: i64) {
-        self.inner.write_i64(i.to_le())
-    }
-    fn write_isize(&mut self, i: isize) {
-        self.inner.write_i64((i as i64).to_le())
-    }
-}
-
-pub struct TypeIdHasher<'a, 'gcx: 'a+'tcx, 'tcx: 'a, H> {
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    state: ArchIndependentHasher<H>,
-}
-
-impl<'a, 'gcx, 'tcx, H: Hasher> TypeIdHasher<'a, 'gcx, 'tcx, H> {
-    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, state: H) -> Self {
-        TypeIdHasher {
-            tcx: tcx,
-            state: ArchIndependentHasher::new(state),
+    pub fn closure_base_def_id(&self, def_id: DefId) -> DefId {
+        let mut def_id = def_id;
+        while self.def_key(def_id).disambiguated_data.data == DefPathData::ClosureExpr {
+            def_id = self.parent_def_id(def_id).unwrap_or_else(|| {
+                bug!("closure {:?} has no parent", def_id);
+            });
         }
+        def_id
+    }
+}
+
+pub struct TypeIdHasher<'a, 'gcx: 'a+'tcx, 'tcx: 'a, W> {
+    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    state: StableHasher<W>,
+}
+
+impl<'a, 'gcx, 'tcx, W> TypeIdHasher<'a, 'gcx, 'tcx, W>
+    where W: StableHasherResult
+{
+    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Self {
+        TypeIdHasher { tcx: tcx, state: StableHasher::new() }
+    }
+
+    pub fn finish(self) -> W {
+        self.state.finish()
     }
 
     pub fn hash<T: Hash>(&mut self, x: T) {
         x.hash(&mut self.state);
-    }
-
-    pub fn finish(self) -> u64 {
-        self.state.finish()
     }
 
     fn hash_discriminant_u8<T>(&mut self, x: &T) {
@@ -496,13 +432,11 @@ impl<'a, 'gcx, 'tcx, H: Hasher> TypeIdHasher<'a, 'gcx, 'tcx, H> {
     pub fn def_path(&mut self, def_path: &ast_map::DefPath) {
         def_path.deterministic_hash_to(self.tcx, &mut self.state);
     }
-
-    pub fn into_inner(self) -> H {
-        self.state.inner
-    }
 }
 
-impl<'a, 'gcx, 'tcx, H: Hasher> TypeVisitor<'tcx> for TypeIdHasher<'a, 'gcx, 'tcx, H> {
+impl<'a, 'gcx, 'tcx, W> TypeVisitor<'tcx> for TypeIdHasher<'a, 'gcx, 'tcx, W>
+    where W: StableHasherResult
+{
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
         // Distinguish between the Ty variants uniformly.
         self.hash_discriminant_u8(&ty.sty);
@@ -522,11 +456,15 @@ impl<'a, 'gcx, 'tcx, H: Hasher> TypeVisitor<'tcx> for TypeIdHasher<'a, 'gcx, 'tc
                 self.hash(f.unsafety);
                 self.hash(f.abi);
                 self.hash(f.sig.variadic());
-                self.hash(f.sig.inputs().skip_binder().len());
+                self.hash(f.sig.skip_binder().inputs().len());
             }
-            TyTrait(ref data) => {
-                self.def_id(data.principal.def_id());
-                self.hash(data.builtin_bounds);
+            TyDynamic(ref data, ..) => {
+                if let Some(p) = data.principal() {
+                    self.def_id(p.def_id());
+                }
+                for d in data.auto_traits() {
+                    self.def_id(d);
+                }
             }
             TyTuple(tys) => {
                 self.hash(tys.len());
@@ -588,8 +526,8 @@ impl<'a, 'gcx, 'tcx, H: Hasher> TypeVisitor<'tcx> for TypeIdHasher<'a, 'gcx, 'tc
 impl<'a, 'tcx> ty::TyS<'tcx> {
     fn impls_bound(&'tcx self, tcx: TyCtxt<'a, 'tcx, 'tcx>,
                    param_env: &ParameterEnvironment<'tcx>,
-                   bound: ty::BuiltinBound,
-                   cache: &RefCell<FnvHashMap<Ty<'tcx>, bool>>,
+                   def_id: DefId,
+                   cache: &RefCell<FxHashMap<Ty<'tcx>, bool>>,
                    span: Span) -> bool
     {
         if self.has_param_types() || self.has_self_ty() {
@@ -598,9 +536,9 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
             }
         }
         let result =
-            tcx.infer_ctxt(None, Some(param_env.clone()), Reveal::ExactMatch)
+            tcx.infer_ctxt(param_env.clone(), Reveal::ExactMatch)
             .enter(|infcx| {
-                traits::type_known_to_meet_builtin_bound(&infcx, self, bound, span)
+                traits::type_known_to_meet_bound(&infcx, self, def_id, span)
             });
         if self.has_param_types() || self.has_self_ty() {
             cache.borrow_mut().insert(self, result);
@@ -629,12 +567,13 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
                 mutbl: hir::MutMutable, ..
             }) => Some(true),
 
-            TyArray(..) | TySlice(..) | TyTrait(..) | TyTuple(..) |
+            TyArray(..) | TySlice(..) | TyDynamic(..) | TyTuple(..) |
             TyClosure(..) | TyAdt(..) | TyAnon(..) |
             TyProjection(..) | TyParam(..) | TyInfer(..) | TyError => None
         }.unwrap_or_else(|| {
-            !self.impls_bound(tcx, param_env, ty::BoundCopy, &param_env.is_copy_cache, span)
-        });
+            !self.impls_bound(tcx, param_env,
+                              tcx.require_lang_item(lang_items::CopyTraitLangItem),
+                              &param_env.is_copy_cache, span) });
 
         if !self.has_param_types() && !self.has_self_ty() {
             self.flags.set(self.flags.get() | if result {
@@ -670,13 +609,13 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
             TyBox(..) | TyRawPtr(..) | TyRef(..) | TyFnDef(..) | TyFnPtr(_) |
             TyArray(..) | TyTuple(..) | TyClosure(..) | TyNever => Some(true),
 
-            TyStr | TyTrait(..) | TySlice(_) => Some(false),
+            TyStr | TyDynamic(..) | TySlice(_) => Some(false),
 
             TyAdt(..) | TyProjection(..) | TyParam(..) |
             TyInfer(..) | TyAnon(..) | TyError => None
         }.unwrap_or_else(|| {
-            self.impls_bound(tcx, param_env, ty::BoundSized, &param_env.is_sized_cache, span)
-        });
+            self.impls_bound(tcx, param_env, tcx.require_lang_item(lang_items::SizedTraitLangItem),
+                              &param_env.is_sized_cache, span) });
 
         if !self.has_param_types() && !self.has_self_ty() {
             self.flags.set(self.flags.get() | if result {
@@ -760,7 +699,7 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
             }
         }
 
-        fn same_struct_or_enum<'tcx>(ty: Ty<'tcx>, def: ty::AdtDef<'tcx>) -> bool {
+        fn same_struct_or_enum<'tcx>(ty: Ty<'tcx>, def: &'tcx ty::AdtDef) -> bool {
             match ty.sty {
                 TyAdt(ty_def, _) => {
                      ty_def == def

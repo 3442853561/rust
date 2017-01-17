@@ -14,9 +14,10 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 use rustc::hir::def_id::CrateNum;
+use rustc::middle::cstore::LibSource;
 
 pub struct RPathConfig<'a> {
-    pub used_crates: Vec<(CrateNum, Option<PathBuf>)>,
+    pub used_crates: Vec<(CrateNum, LibSource)>,
     pub out_filename: PathBuf,
     pub is_like_osx: bool,
     pub has_rpath: bool,
@@ -35,7 +36,7 @@ pub fn get_rpath_flags(config: &mut RPathConfig) -> Vec<String> {
     debug!("preparing the RPATH!");
 
     let libs = config.used_crates.clone();
-    let libs = libs.into_iter().filter_map(|(_, l)| l).collect::<Vec<_>>();
+    let libs = libs.into_iter().filter_map(|(_, l)| l.option()).collect::<Vec<_>>();
     let rpaths = get_rpaths(config, &libs[..]);
     flags.extend_from_slice(&rpaths_to_flags(&rpaths[..]));
 
@@ -50,7 +51,13 @@ pub fn get_rpath_flags(config: &mut RPathConfig) -> Vec<String> {
 fn rpaths_to_flags(rpaths: &[String]) -> Vec<String> {
     let mut ret = Vec::new();
     for rpath in rpaths {
-        ret.push(format!("-Wl,-rpath,{}", &(*rpath)));
+        if rpath.contains(',') {
+            ret.push("-Wl,-rpath".into());
+            ret.push("-Xlinker".into());
+            ret.push(rpath.clone());
+        } else {
+            ret.push(format!("-Wl,-rpath,{}", &(*rpath)));
+        }
     }
     return ret;
 }
@@ -68,7 +75,7 @@ fn get_rpaths(config: &mut RPathConfig, libs: &[PathBuf]) -> Vec<String> {
     let rel_rpaths = get_rpaths_relative_to_output(config, libs);
 
     // And a final backup rpath to the global library location.
-    let fallback_rpaths = vec!(get_install_prefix_rpath(config));
+    let fallback_rpaths = vec![get_install_prefix_rpath(config)];
 
     fn log_rpaths(desc: &str, rpaths: &[String]) {
         debug!("{} rpaths:", desc);
@@ -256,5 +263,20 @@ mod tests {
                                                    Path::new("lib/libstd.so"));
             assert_eq!(res, "$ORIGIN/../lib");
         }
+    }
+
+    #[test]
+    fn test_xlinker() {
+        let args = rpaths_to_flags(&[
+            "a/normal/path".to_string(),
+            "a,comma,path".to_string()
+        ]);
+
+        assert_eq!(args, vec![
+            "-Wl,-rpath,a/normal/path".to_string(),
+            "-Wl,-rpath".to_string(),
+            "-Xlinker".to_string(),
+            "a,comma,path".to_string()
+        ]);
     }
 }

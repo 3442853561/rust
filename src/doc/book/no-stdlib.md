@@ -37,14 +37,15 @@ The function marked `#[start]` is passed the command line parameters
 in the same format as C:
 
 ```rust,ignore
-#![feature(lang_items)]
+#![feature(lang_items, core_intrinsics)]
 #![feature(start)]
 #![no_std]
+use core::intrinsics;
 
-// Pull in the system libc library for what crt0.o likely requires
+// Pull in the system libc library for what crt0.o likely requires.
 extern crate libc;
 
-// Entry point for this program
+// Entry point for this program.
 #[start]
 fn start(_argc: isize, _argv: *const *const u8) -> isize {
     0
@@ -69,7 +70,7 @@ pub extern fn rust_eh_unwind_resume() {
 pub extern fn rust_begin_panic(_msg: core::fmt::Arguments,
                                _file: &'static str,
                                _line: u32) -> ! {
-    loop {}
+    unsafe { intrinsics::abort() }
 }
 ```
 
@@ -79,15 +80,16 @@ correct ABI and the correct name, which requires overriding the
 compiler's name mangling too:
 
 ```rust,ignore
-#![feature(lang_items)]
+#![feature(lang_items, core_intrinsics)]
 #![feature(start)]
 #![no_std]
 #![no_main]
+use core::intrinsics;
 
-// Pull in the system libc library for what crt0.o likely requires
+// Pull in the system libc library for what crt0.o likely requires.
 extern crate libc;
 
-// Entry point for this program
+// Entry point for this program.
 #[no_mangle] // ensure that this symbol is called `main` in the output
 pub extern fn main(_argc: i32, _argv: *const *const u8) -> i32 {
     0
@@ -112,7 +114,7 @@ pub extern fn rust_eh_unwind_resume() {
 pub extern fn rust_begin_panic(_msg: core::fmt::Arguments,
                                _file: &'static str,
                                _line: u32) -> ! {
-    loop {}
+    unsafe { intrinsics::abort() }
 }
 ```
 

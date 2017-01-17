@@ -70,16 +70,19 @@
        test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 #![no_std]
 #![needs_allocator]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
 #![feature(allocator)]
 #![feature(box_syntax)]
+#![feature(cfg_target_has_atomic)]
 #![feature(coerce_unsized)]
 #![feature(const_fn)]
 #![feature(core_intrinsics)]
 #![feature(custom_attribute)]
-#![feature(dropck_parametricity)]
+#![feature(dropck_eyepatch)]
+#![cfg_attr(not(test), feature(exact_size_is_empty))]
 #![feature(fundamental)]
+#![feature(generic_param_attrs)]
 #![feature(lang_items)]
 #![feature(needs_allocator)]
 #![feature(optin_builtin_traits)]
@@ -99,6 +102,10 @@
 #[macro_use]
 extern crate std;
 
+// Module with internal macros used by other modules (needs to be included before other modules).
+#[macro_use]
+mod macros;
+
 // Heaps provided for low-level allocation strategies
 
 pub mod heap;
@@ -117,6 +124,7 @@ mod boxed {
 }
 #[cfg(test)]
 mod boxed_test;
+#[cfg(target_has_atomic = "ptr")]
 pub mod arc;
 pub mod rc;
 pub mod raw_vec;

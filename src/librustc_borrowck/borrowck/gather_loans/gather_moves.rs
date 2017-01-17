@@ -18,7 +18,7 @@ use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::mem_categorization::InteriorOffsetKind as Kind;
-use rustc::ty;
+use rustc::ty::{self, Ty};
 
 use std::rc::Rc;
 use syntax::ast;
@@ -34,12 +34,10 @@ struct GatherMoveInfo<'tcx> {
 
 pub fn gather_decl<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                              move_data: &MoveData<'tcx>,
-                             decl_id: ast::NodeId,
-                             _decl_span: Span,
-                             var_id: ast::NodeId) {
-    let ty = bccx.tcx.node_id_to_type(var_id);
-    let loan_path = Rc::new(LoanPath::new(LpVar(var_id), ty));
-    move_data.add_move(bccx.tcx, loan_path, decl_id, Declared);
+                             var_id: ast::NodeId,
+                             var_ty: Ty<'tcx>) {
+    let loan_path = Rc::new(LoanPath::new(LpVar(var_id), var_ty));
+    move_data.add_move(bccx.tcx, loan_path, var_id, Declared);
 }
 
 pub fn gather_move_from_expr<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
@@ -98,7 +96,7 @@ pub fn gather_move_from_pat<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                       move_pat: &hir::Pat,
                                       cmt: mc::cmt<'tcx>) {
     let pat_span_path_opt = match move_pat.node {
-        PatKind::Binding(_, ref path1, _) => {
+        PatKind::Binding(_, _, ref path1, _) => {
             Some(MoveSpanAndPath{span: move_pat.span,
                                  name: path1.node})
         },

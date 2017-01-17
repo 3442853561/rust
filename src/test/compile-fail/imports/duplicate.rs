@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(item_like_imports)]
-
 mod a {
     pub fn foo() {}
 }
@@ -34,21 +32,21 @@ mod e {
 }
 
 mod f {
-    pub use a::*; //~ NOTE `foo` could resolve to the name imported here
-    pub use b::*; //~ NOTE `foo` could also resolve to the name imported here
+    pub use a::*; //~ NOTE `foo` could refer to the name imported here
+    pub use b::*; //~ NOTE `foo` could also refer to the name imported here
 }
 
 mod g {
-    pub use a::*; //~ NOTE `foo` could resolve to the name imported here
-    pub use f::*; //~ NOTE `foo` could also resolve to the name imported here
+    pub use a::*; //~ NOTE `foo` could refer to the name imported here
+    pub use f::*; //~ NOTE `foo` could also refer to the name imported here
 }
 
 fn main() {
     e::foo();
     f::foo(); //~ ERROR `foo` is ambiguous
-              //~| NOTE Consider adding an explicit import of `foo` to disambiguate
+              //~| NOTE consider adding an explicit import of `foo` to disambiguate
     g::foo(); //~ ERROR `foo` is ambiguous
-              //~| NOTE Consider adding an explicit import of `foo` to disambiguate
+              //~| NOTE consider adding an explicit import of `foo` to disambiguate
 }
 
 mod ambiguous_module_errors {

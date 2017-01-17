@@ -59,6 +59,7 @@
 #![unstable(feature = "rand", issue = "0")]
 
 use cell::RefCell;
+use fmt;
 use io;
 use mem;
 use rc::Rc;
@@ -141,6 +142,12 @@ type ThreadRngInner = reseeding::ReseedingRng<StdRng, ThreadRngReseeder>;
 #[derive(Clone)]
 pub struct ThreadRng {
     rng: Rc<RefCell<ThreadRngInner>>,
+}
+
+impl fmt::Debug for ThreadRng {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("ThreadRng { .. }")
+    }
 }
 
 /// Retrieve the lazily-initialized thread-local random number
@@ -245,7 +252,7 @@ mod tests {
     #[cfg_attr(target_os = "emscripten", ignore)]
     fn test_os_rng_tasks() {
 
-        let mut txs = vec!();
+        let mut txs = vec![];
         for _ in 0..20 {
             let (tx, rx) = channel();
             txs.push(tx);

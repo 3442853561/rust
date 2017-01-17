@@ -23,8 +23,11 @@
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://www.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![cfg_attr(not(stage0), deny(warnings))]
+#![deny(warnings)]
 
+#![feature(shared)]
+#![feature(collections_range)]
+#![feature(collections_bound)]
 #![feature(nonzero)]
 #![feature(rustc_private)]
 #![feature(staged_api)]
@@ -44,11 +47,18 @@ extern crate serialize as rustc_serialize; // used by deriving
 #[cfg(unix)]
 extern crate libc;
 
+extern crate rustc_i128;
+
+pub use rustc_serialize::hex::ToHex;
+
 pub mod array_vec;
 pub mod accumulate_vec;
+pub mod small_vec;
+pub mod base_n;
 pub mod bitslice;
 pub mod blake2b;
 pub mod bitvec;
+pub mod fmt_wrap;
 pub mod graph;
 pub mod ivar;
 pub mod indexed_set;
@@ -56,9 +66,11 @@ pub mod indexed_vec;
 pub mod obligation_forest;
 pub mod snapshot_map;
 pub mod snapshot_vec;
+pub mod stable_hasher;
 pub mod transitive_relation;
 pub mod unify;
 pub mod fnv;
+pub mod fx;
 pub mod tuple_slice;
 pub mod veccell;
 pub mod control_flow_graph;

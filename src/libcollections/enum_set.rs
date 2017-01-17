@@ -16,7 +16,7 @@
 #![unstable(feature = "enumset",
             reason = "matches collection reform specification, \
                       waiting for dust to settle",
-            issue = "0")]
+            issue = "37966")]
 
 use core::marker;
 use core::fmt;
@@ -276,7 +276,8 @@ impl<E: CLike> FromIterator<E> for EnumSet<E> {
     }
 }
 
-impl<'a, E> IntoIterator for &'a EnumSet<E> where E: CLike
+impl<'a, E> IntoIterator for &'a EnumSet<E>
+    where E: CLike
 {
     type Item = E;
     type IntoIter = Iter<E>;

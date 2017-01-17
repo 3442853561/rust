@@ -458,7 +458,7 @@ Rust only supports variadic parameters for interoperability with C code in its
 FFI. As such, variadic parameters can only be used with functions which are
 using the C ABI. Examples of erroneous code:
 
-```compile_fail,E0045
+```compile_fail
 #![feature(unboxed_closures)]
 
 extern "rust-call" { fn foo(x: u8, ...); }
@@ -895,17 +895,14 @@ fn some_func(x: &mut i32) {
 
 E0071: r##"
 You tried to use structure-literal syntax to create an item that is
-not a struct-style structure or enum variant.
+not a structure or enum variant.
 
 Example of erroneous code:
 
 ```compile_fail,E0071
-enum Foo { FirstValue(i32) };
-
-let u = Foo::FirstValue { value: 0 }; // error: Foo::FirstValue
-                                         // isn't a structure!
-// or even simpler, if the name doesn't refer to a structure at all.
-let t = u32 { value: 4 }; // error: `u32` does not name a structure.
+type U32 = u32;
+let t = U32 { value: 4 }; // error: expected struct, variant or union type,
+                          // found builtin type `u32`
 ```
 
 To fix this, ensure that the name was correctly spelled, and that
@@ -1358,7 +1355,7 @@ extern "rust-intrinsic" {
 }
 ```
 
-Please check that you provided the right number of lifetime parameters
+Please check that you provided the right number of type parameters
 and verify with the function declaration in the Rust source code.
 Example:
 
@@ -1380,8 +1377,9 @@ let x = |_| {}; // error: cannot determine a type for this expression
 ```
 
 You have two possibilities to solve this situation:
- * Give an explicit definition of the expression
- * Infer the expression
+
+* Give an explicit definition of the expression
+* Infer the expression
 
 Examples:
 
@@ -1866,55 +1864,6 @@ fn bar(foo: Foo) -> u32 {
 ```
 "##,
 
-E0172: r##"
-This error means that an attempt was made to specify the type of a variable with
-a combination of a concrete type and a trait. Consider the following example:
-
-```compile_fail,E0172
-fn foo(bar: i32+std::fmt::Display) {}
-```
-
-The code is trying to specify that we want to receive a signed 32-bit integer
-which also implements `Display`. This doesn't make sense: when we pass `i32`, a
-concrete type, it implicitly includes all of the traits that it implements.
-This includes `Display`, `Debug`, `Clone`, and a host of others.
-
-If `i32` implements the trait we desire, there's no need to specify the trait
-separately. If it does not, then we need to `impl` the trait for `i32` before
-passing it into `foo`. Either way, a fixed definition for `foo` will look like
-the following:
-
-```
-fn foo(bar: i32) {}
-```
-
-To learn more about traits, take a look at the Book:
-
-https://doc.rust-lang.org/book/traits.html
-"##,
-
-E0178: r##"
-In types, the `+` type operator has low precedence, so it is often necessary
-to use parentheses.
-
-For example:
-
-```compile_fail,E0178
-trait Foo {}
-
-struct Bar<'a> {
-    w: &'a Foo + Copy,   // error, use &'a (Foo + Copy)
-    x: &'a Foo + 'a,     // error, use &'a (Foo + 'a)
-    y: &'a mut Foo + 'a, // error, use &'a mut (Foo + 'a)
-    z: fn() -> Foo + 'a, // error, use fn() -> (Foo + 'a)
-}
-```
-
-More details can be found in [RFC 438].
-
-[RFC 438]: https://github.com/rust-lang/rfcs/pull/438
-"##,
-
 E0182: r##"
 You bound an associated type in an expression path which is not
 allowed.
@@ -2302,6 +2251,7 @@ This fails because `&mut T` is not `Copy`, even when `T` is `Copy` (this
 differs from the behavior for `&T`, which is always `Copy`).
 "##,
 
+/*
 E0205: r##"
 An attempt to implement the `Copy` trait for an enum failed because one of the
 variants does not implement `Copy`. To fix this, you must implement `Copy` for
@@ -2331,6 +2281,7 @@ enum Foo<'a> {
 This fails because `&mut T` is not `Copy`, even when `T` is `Copy` (this
 differs from the behavior for `&T`, which is always `Copy`).
 "##,
+*/
 
 E0206: r##"
 You can only implement `Copy` for a struct or enum. Both of the following
@@ -2780,8 +2731,8 @@ fn main() {
 }
 ```
 
-Builtin traits are an exception to this rule: it's possible to have bounds of
-one non-builtin type, plus any number of builtin types. For example, the
+Send and Sync are an exception to this rule: it's possible to have bounds of
+one non-builtin trait, plus either or both of Send and Sync. For example, the
 following compiles correctly:
 
 ```
@@ -2861,25 +2812,6 @@ struct Foo { x: bool }
 
 struct Bar<S, T> { x: Foo<S, T> }
 ```
-"##,
-
-E0248: r##"
-This error indicates an attempt to use a value where a type is expected. For
-example:
-
-```compile_fail,E0248
-enum Foo {
-    Bar(u32)
-}
-
-fn do_something(x: Foo::Bar) { }
-```
-
-In this example, we're attempting to take a type of `Foo::Bar` in the
-do_something function. This is not legal: `Foo::Bar` is a value of type `Foo`,
-not a distinct static type. Likewise, it's not legal to attempt to
-`impl Foo::Bar`: instead, you must `impl Foo` and then pattern match to specify
-behavior for specific enum variants.
 "##,
 
 E0569: r##"
@@ -3887,45 +3819,6 @@ extern "platform-intrinsic" {
 ```
 "##,
 
-E0513: r##"
-The type of the variable couldn't be found out.
-
-Erroneous code example:
-
-```compile_fail,E0513
-use std::mem;
-
-unsafe {
-    let size = mem::size_of::<u32>();
-    mem::transmute_copy::<u32, [u8; size]>(&8_8);
-    // error: no type for local variable
-}
-```
-
-To fix this error, please use a constant size instead of `size`. To make
-this error more obvious, you could run:
-
-```compile_fail,E0080
-use std::mem;
-
-unsafe {
-    mem::transmute_copy::<u32, [u8; mem::size_of::<u32>()]>(&8_8);
-    // error: constant evaluation error
-}
-```
-
-So now, you can fix your code by setting the size directly:
-
-```
-use std::mem;
-
-unsafe {
-    mem::transmute_copy::<u32, [u8; 4]>(&8_8);
-    // `u32` is 4 bytes so we replace the `mem::size_of` call with its size
-}
-```
-"##,
-
 E0516: r##"
 The `typeof` keyword is currently reserved but unimplemented.
 Erroneous code example:
@@ -4166,6 +4059,33 @@ target / ABI combination is currently unsupported by llvm.
 If necessary, you can circumvent this check using custom target specifications.
 "##,
 
+E0572: r##"
+A return statement was found outside of a function body.
+
+Erroneous code example:
+
+```compile_fail,E0572
+const FOO: u32 = return 0; // error: return statement outside of function body
+
+fn main() {}
+```
+
+To fix this issue, just remove the return keyword or move the expression into a
+function. Example:
+
+```
+const FOO: u32 = 0;
+
+fn some_fn() -> u32 {
+    return FOO;
+}
+
+fn main() {
+    some_fn();
+}
+```
+"##,
+
 }
 
 register_diagnostics! {
@@ -4183,6 +4103,7 @@ register_diagnostics! {
 //  E0163, // merged into E0071
 //  E0167,
 //  E0168,
+//  E0172, // non-trait found in a type sum, moved to resolve
 //  E0173, // manual implementations of unboxed closure traits are experimental
 //  E0174,
     E0183,
@@ -4222,6 +4143,7 @@ register_diagnostics! {
     E0245, // not a trait
 //  E0246, // invalid recursive type
 //  E0247,
+//  E0248, // value used as a type, now reported earlier during resolution as E0412
 //  E0249,
 //  E0319, // trait impls for defaulted traits allowed just for structs/enums
     E0320, // recursive overflow during dropck

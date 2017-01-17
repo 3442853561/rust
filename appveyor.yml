@@ -1,26 +1,30 @@
 environment:
+  SCCACHE_BUCKET: rust-lang-ci-sccache
+  AWS_ACCESS_KEY_ID: AKIAIMX7VLAS3PZAVLUQ
+  AWS_SECRET_ACCESS_KEY:
+    secure: 1UkmbiDd15tWtYbMm5O2Uqm0b0Ur8v1MoSlydxl4ojcroPeerRMlUges0l57py8c
+  SCCACHE_DIGEST: f808afabb4a4eb1d7112bcb3fa6be03b61e93412890c88e177c667eb37f46353d7ec294e559b16f9f4b5e894f2185fe7670a0df15fd064889ecbd80f0c34166c
   matrix:
   # 32/64 bit MSVC
   - MSYS_BITS: 64
-    TARGET: x86_64-pc-windows-msvc
-    CHECK: check
-    CONFIGURE_ARGS: --enable-llvm-assertions --enable-debug-assertions
+    RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc
+    SCRIPT: python x.py test && python x.py dist
+    DEPLOY: 1
   - MSYS_BITS: 32
-    TARGET: i686-pc-windows-msvc
-    CHECK: check
-    CONFIGURE_ARGS: --enable-llvm-assertions --enable-debug-assertions
+    RUST_CONFIGURE_ARGS: --build=i686-pc-windows-msvc
+    SCRIPT: python x.py test && python x.py dist
+    DEPLOY: 1
 
-  # MSVC rustbuild
+  # MSVC makefiles
   - MSYS_BITS: 64
-    CONFIGURE_ARGS: --enable-rustbuild --enable-llvm-assertions --enable-debug-assertions
-    TARGET: x86_64-pc-windows-msvc
-    CHECK: check
+    RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --disable-rustbuild
+    RUST_CHECK_TARGET: check
 
   # MSVC cargotest
   - MSYS_BITS: 64
-    CONFIGURE_ARGS: --enable-rustbuild --enable-llvm-assertions --enable-debug-assertions
-    TARGET: x86_64-pc-windows-msvc
-    CHECK: check-cargotest
+    NO_VENDOR: 1
+    RUST_CHECK_TARGET: check-aux
+    RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc
 
   # 32/64-bit MinGW builds.
   #
@@ -47,27 +51,27 @@ environment:
   # *not* use debug assertions and llvm assertions. This is because they take
   # too long on appveyor and this is tested by rustbuild below.
   - MSYS_BITS: 32
-    TARGET: i686-pc-windows-gnu
-    CHECK: check
+    RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu
+    SCRIPT: python x.py test && python x.py dist
     MINGW_URL: https://s3.amazonaws.com/rust-lang-ci
     MINGW_ARCHIVE: i686-4.9.2-release-win32-dwarf-rt_v4-rev4.7z
     MINGW_DIR: mingw32
+    DEPLOY: 1
 
   - MSYS_BITS: 32
-    CONFIGURE_ARGS: --enable-rustbuild --enable-llvm-assertions --enable-debug-assertions
-    TARGET: i686-pc-windows-gnu
-    CHECK: check
+    RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu --disable-rustbuild
+    RUST_CHECK_TARGET: check
     MINGW_URL: https://s3.amazonaws.com/rust-lang-ci
     MINGW_ARCHIVE: i686-4.9.2-release-win32-dwarf-rt_v4-rev4.7z
     MINGW_DIR: mingw32
 
   - MSYS_BITS: 64
-    CONFIGURE_ARGS: --enable-llvm-assertions --enable-debug-assertions
-    TARGET: x86_64-pc-windows-gnu
-    CHECK: check
+    SCRIPT: python x.py test && python x.py dist
+    RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-gnu
     MINGW_URL: https://s3.amazonaws.com/rust-lang-ci
     MINGW_ARCHIVE: x86_64-4.9.2-release-win32-seh-rt_v4-rev4.7z
     MINGW_DIR: mingw64
+    DEPLOY: 1
 
 clone_depth: 1
 build: false
@@ -89,20 +93,65 @@ install:
   # Otherwise pull in the MinGW installed on appveyor
   - if NOT defined MINGW_URL set PATH=C:\msys64\mingw%MSYS_BITS%\bin;C:\msys64\usr\bin;%PATH%
 
+  # Download and install sccache
+  - appveyor DownloadFile https://api.pub.build.mozilla.org/tooltool/sha512/%SCCACHE_DIGEST%
+  - mv %SCCACHE_DIGEST% sccache.tar.bz2
+  - 7z x -y sccache.tar.bz2 > nul
+  - 7z x -y sccache.tar > nul
+  - set PATH=%PATH%;%CD%\sccache2
+
+  # Help debug some handle issues on AppVeyor
+  - ps: Invoke-WebRequest -Uri https://download.sysinternals.com/files/Handle.zip -OutFile handle.zip
+  - mkdir handle
+  - ps: Expand-Archive handle.zip -dest handle
+  - set PATH=%PATH%;%CD%\handle
+  - handle.exe -accepteula -help
+
 test_script:
-  - sh ./configure
-          %CONFIGURE_ARGS%
-          --build=%TARGET%
-  - bash -c "make -j$(nproc)"
-  - bash -c "make %CHECK% -j$(nproc)"
+  - git submodule update --init
+  - set SRC=.
+  - set NO_CCACHE=1
+  - sh src/ci/run.sh
 
 cache:
-  - build/%TARGET%/llvm -> src/rustllvm/llvm-auto-clean-trigger
-  - "%TARGET%/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "build/i686-pc-windows-gnu/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "build/x86_64-pc-windows-gnu/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "build/i686-pc-windows-msvc/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "build/x86_64-pc-windows-msvc/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "i686-pc-windows-gnu/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "x86_64-pc-windows-gnu/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "i686-pc-windows-msvc/llvm -> src/rustllvm/llvm-auto-clean-trigger"
+  - "x86_64-pc-windows-msvc/llvm -> src/rustllvm/llvm-auto-clean-trigger"
 
 branches:
   only:
     - auto
+
+before_deploy:
+  - ps: |
+        New-Item -Path deploy -ItemType directory
+        Get-ChildItem -Path build\dist -Filter '*.tar.gz' | Move-Item -Destination deploy
+        Get-FileHash .\deploy\* | ForEach-Object {
+          [io.file]::WriteAllText($_.Path + ".sha256", $_.Hash.ToLower() + "`n")
+        }
+        Get-ChildItem -Path deploy | Foreach-Object {
+          Push-AppveyorArtifact $_.FullName -FileName ${env:APPVEYOR_REPO_COMMIT}/$_
+        }
+
+deploy:
+  - provider: S3
+    skip_cleanup: true
+    access_key_id: AKIAIPQVNYF2T3DTYIWQ
+    secret_access_key:
+      secure: +11jsUNFTQ9dq5Ad1i2+PeUJaXluFJ0zIJAXESE1dFT3Kdjku4/eDdgyjgsB6GnV
+    bucket: rust-lang-ci
+    set_public: true
+    region: us-east-1
+    artifact: /.*\.(tar.gz|sha256)/
+    folder: rustc-builds
+    on:
+      branch: auto
+      DEPLOY: 1
 
 # init:
 #   - ps: iex ((new-object net.webclient).DownloadString('https://raw.githubusercontent.com/appveyor/ci/master/scripts/enable-rdp.ps1'))

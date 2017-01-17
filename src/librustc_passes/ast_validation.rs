@@ -21,7 +21,8 @@ use rustc::session::Session;
 use syntax::ast::*;
 use syntax::attr;
 use syntax::codemap::Spanned;
-use syntax::parse::token::{self, keywords};
+use syntax::parse::token;
+use syntax::symbol::keywords;
 use syntax::visit::{self, Visitor};
 use syntax_pos::Span;
 use errors;
@@ -39,7 +40,7 @@ impl<'a> AstValidator<'a> {
         if label.name == keywords::StaticLifetime.name() {
             self.err_handler().span_err(span, &format!("invalid label name `{}`", label.name));
         }
-        if label.name.as_str() == "'_" {
+        if label.name == "'_" {
             self.session.add_lint(lint::builtin::LIFETIME_UNDERSCORE,
                                   id,
                                   span,
@@ -85,11 +86,24 @@ impl<'a> AstValidator<'a> {
             _ => {}
         }
     }
+
+    fn no_questions_in_bounds(&self, bounds: &TyParamBounds, where_: &str, is_trait: bool) {
+        for bound in bounds {
+            if let TraitTyParamBound(ref poly, TraitBoundModifier::Maybe) = *bound {
+                let mut err = self.err_handler().struct_span_err(poly.span,
+                                    &format!("`?Trait` is not permitted in {}", where_));
+                if is_trait {
+                    err.note(&format!("traits are `?{}` by default", poly.trait_ref.path));
+                }
+                err.emit();
+            }
+        }
+    }
 }
 
-impl<'a> Visitor for AstValidator<'a> {
-    fn visit_lifetime(&mut self, lt: &Lifetime) {
-        if lt.name.as_str() == "'_" {
+impl<'a> Visitor<'a> for AstValidator<'a> {
+    fn visit_lifetime(&mut self, lt: &'a Lifetime) {
+        if lt.name == "'_" {
             self.session.add_lint(lint::builtin::LIFETIME_UNDERSCORE,
                                   lt.id,
                                   lt.span,
@@ -99,13 +113,13 @@ impl<'a> Visitor for AstValidator<'a> {
         visit::walk_lifetime(self, lt)
     }
 
-    fn visit_expr(&mut self, expr: &Expr) {
+    fn visit_expr(&mut self, expr: &'a Expr) {
         match expr.node {
             ExprKind::While(.., Some(ident)) |
             ExprKind::Loop(_, Some(ident)) |
             ExprKind::WhileLet(.., Some(ident)) |
             ExprKind::ForLoop(.., Some(ident)) |
-            ExprKind::Break(Some(ident)) |
+            ExprKind::Break(Some(ident), _) |
             ExprKind::Continue(Some(ident)) => {
                 self.check_label(ident.node, ident.span, expr.id);
             }
@@ -115,7 +129,7 @@ impl<'a> Visitor for AstValidator<'a> {
         visit::walk_expr(self, expr)
     }
 
-    fn visit_ty(&mut self, ty: &Ty) {
+    fn visit_ty(&mut self, ty: &'a Ty) {
         match ty.node {
             TyKind::BareFn(ref bfty) => {
                 self.check_decl_no_pat(&bfty.decl, |span, _| {
@@ -129,15 +143,18 @@ impl<'a> Visitor for AstValidator<'a> {
                     err.emit();
                 });
             }
+            TyKind::TraitObject(ref bounds) => {
+                self.no_questions_in_bounds(bounds, "trait object types", false);
+            }
             _ => {}
         }
 
         visit::walk_ty(self, ty)
     }
 
-    fn visit_path(&mut self, path: &Path, id: NodeId) {
-        if path.global && path.segments.len() > 0 {
-            let ident = path.segments[0].identifier;
+    fn visit_path(&mut self, path: &'a Path, id: NodeId) {
+        if path.segments.len() >= 2 && path.is_global() {
+            let ident = path.segments[1].identifier;
             if token::Ident(ident).is_path_segment_keyword() {
                 self.session.add_lint(lint::builtin::SUPER_OR_SELF_IN_GLOBAL_PATH,
                                       id,
@@ -149,11 +166,11 @@ impl<'a> Visitor for AstValidator<'a> {
         visit::walk_path(self, path)
     }
 
-    fn visit_item(&mut self, item: &Item) {
+    fn visit_item(&mut self, item: &'a Item) {
         match item.node {
             ItemKind::Use(ref view_path) => {
                 let path = view_path.node.path();
-                if !path.segments.iter().all(|segment| segment.parameters.is_empty()) {
+                if path.segments.iter().any(|segment| segment.parameters.is_some()) {
                     self.err_handler()
                         .span_err(path.span, "type or lifetime parameters in import path");
                 }
@@ -188,16 +205,32 @@ impl<'a> Visitor for AstValidator<'a> {
                     }
                 }
             }
-            ItemKind::Trait(.., ref trait_items) => {
+            ItemKind::Trait(.., ref bounds, ref trait_items) => {
+                self.no_questions_in_bounds(bounds, "supertraits", true);
                 for trait_item in trait_items {
-                    if let TraitItemKind::Method(ref sig, _) = trait_item.node {
+                    if let TraitItemKind::Method(ref sig, ref block) = trait_item.node {
                         self.check_trait_fn_not_const(sig.constness);
+                        if block.is_none() {
+                            self.check_decl_no_pat(&sig.decl, |span, _| {
+                                self.session.add_lint(lint::builtin::PATTERNS_IN_FNS_WITHOUT_BODY,
+                                                      trait_item.id, span,
+                                                      "patterns aren't allowed in methods \
+                                                       without bodies".to_string());
+                            });
+                        }
                     }
                 }
             }
             ItemKind::Mod(_) => {
                 // Ensure that `path` attributes on modules are recorded as used (c.f. #35584).
                 attr::first_attr_value_str_by_name(&item.attrs, "path");
+                if let Some(attr) =
+                        item.attrs.iter().find(|attr| attr.name() == "warn_directory_ownership") {
+                    let lint = lint::builtin::LEGACY_DIRECTORY_OWNERSHIP;
+                    let msg = "cannot declare a new module at this location";
+                    self.session.add_lint(lint, item.id, item.span, msg.to_string());
+                    attr::mark_used(attr);
+                }
             }
             ItemKind::Union(ref vdata, _) => {
                 if !vdata.is_struct() {
@@ -215,7 +248,7 @@ impl<'a> Visitor for AstValidator<'a> {
         visit::walk_item(self, item)
     }
 
-    fn visit_foreign_item(&mut self, fi: &ForeignItem) {
+    fn visit_foreign_item(&mut self, fi: &'a ForeignItem) {
         match fi.node {
             ForeignItemKind::Fn(ref decl, _) => {
                 self.check_decl_no_pat(decl, |span, is_recent| {
@@ -238,10 +271,10 @@ impl<'a> Visitor for AstValidator<'a> {
         visit::walk_foreign_item(self, fi)
     }
 
-    fn visit_vis(&mut self, vis: &Visibility) {
+    fn visit_vis(&mut self, vis: &'a Visibility) {
         match *vis {
             Visibility::Restricted { ref path, .. } => {
-                if !path.segments.iter().all(|segment| segment.parameters.is_empty()) {
+                if !path.segments.iter().all(|segment| segment.parameters.is_none()) {
                     self.err_handler()
                         .span_err(path.span, "type or lifetime parameters in visibility path");
                 }

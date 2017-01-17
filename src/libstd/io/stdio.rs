@@ -10,7 +10,7 @@
 
 use io::prelude::*;
 
-use cell::{RefCell, BorrowState};
+use cell::RefCell;
 use fmt;
 use io::lazy::Lazy;
 use io::{self, BufReader, LineWriter};
@@ -81,11 +81,11 @@ impl Read for StdinRaw {
 }
 impl Write for StdoutRaw {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf) }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> { self.0.flush() }
 }
 impl Write for StderrRaw {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf) }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> { self.0.flush() }
 }
 
 enum Maybe<T> {
@@ -214,15 +214,7 @@ pub fn stdin() -> Stdin {
             _ => Maybe::Fake
         };
 
-        // The default buffer capacity is 64k, but apparently windows
-        // doesn't like 64k reads on stdin. See #13304 for details, but the
-        // idea is that on windows we use a slightly smaller buffer that's
-        // been seen to be acceptable.
-        Arc::new(Mutex::new(if cfg!(windows) {
-            BufReader::with_capacity(8 * 1024, stdin)
-        } else {
-            BufReader::new(stdin)
-        }))
+        Arc::new(Mutex::new(BufReader::with_capacity(stdio::STDIN_BUF_SIZE, stdin)))
     }
 }
 
@@ -290,6 +282,13 @@ impl Stdin {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Stdin {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Stdin { .. }")
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Read for Stdin {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -322,14 +321,22 @@ impl<'a> BufRead for StdinLock<'a> {
     fn consume(&mut self, n: usize) { self.inner.consume(n) }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl<'a> fmt::Debug for StdinLock<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("StdinLock { .. }")
+    }
+}
+
 /// A handle to the global standard output stream of the current process.
 ///
 /// Each handle shares a global buffer of data to be written to the standard
 /// output stream. Access is also synchronized via a lock and explicit control
-/// over locking is available via the `lock` method.
+/// over locking is available via the [`lock()`] method.
 ///
 /// Created by the [`io::stdout`] method.
 ///
+/// [`lock()`]: #method.lock
 /// [`io::stdout`]: fn.stdout.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Stdout {
@@ -431,6 +438,13 @@ impl Stdout {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Stdout {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Stdout { .. }")
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Write for Stdout {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -453,6 +467,13 @@ impl<'a> Write for StdoutLock<'a> {
     }
     fn flush(&mut self) -> io::Result<()> {
         self.inner.borrow_mut().flush()
+    }
+}
+
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl<'a> fmt::Debug for StdoutLock<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("StdoutLock { .. }")
     }
 }
 
@@ -552,6 +573,13 @@ impl Stderr {
     }
 }
 
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl fmt::Debug for Stderr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Stderr { .. }")
+    }
+}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Write for Stderr {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -574,6 +602,13 @@ impl<'a> Write for StderrLock<'a> {
     }
     fn flush(&mut self) -> io::Result<()> {
         self.inner.borrow_mut().flush()
+    }
+}
+
+#[stable(feature = "std_debug", since = "1.15.0")]
+impl<'a> fmt::Debug for StderrLock<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("StderrLock { .. }")
     }
 }
 
@@ -645,8 +680,8 @@ pub fn _print(args: fmt::Arguments) {
         LocalKeyState::Destroyed => stdout().write_fmt(args),
         LocalKeyState::Valid => {
             LOCAL_STDOUT.with(|s| {
-                if s.borrow_state() == BorrowState::Unused {
-                    if let Some(w) = s.borrow_mut().as_mut() {
+                if let Ok(mut borrowed) = s.try_borrow_mut() {
+                    if let Some(w) = borrowed.as_mut() {
                         return w.write_fmt(args);
                     }
                 }

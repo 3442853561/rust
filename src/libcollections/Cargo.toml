@@ -10,8 +10,13 @@ path = "lib.rs"
 [dependencies]
 alloc = { path = "../liballoc" }
 core = { path = "../libcore" }
-rustc_unicode = { path = "../librustc_unicode" }
+std_unicode = { path = "../libstd_unicode" }
 
 [[test]]
 name = "collectionstest"
 path = "../libcollectionstest/lib.rs"
+
+# FIXME: need to extract benchmarks to separate crate
+#[[bench]]
+#name = "collectionstest"
+#path = "../libcollectionstest/lib.rs"

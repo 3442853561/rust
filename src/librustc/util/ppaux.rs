@@ -9,23 +9,23 @@
 // except according to those terms.
 
 use hir::def_id::DefId;
+use hir::map::definitions::DefPathData;
 use ty::subst::{self, Subst};
 use ty::{BrAnon, BrEnv, BrFresh, BrNamed};
 use ty::{TyBool, TyChar, TyAdt};
 use ty::{TyError, TyStr, TyArray, TySlice, TyFloat, TyFnDef, TyFnPtr};
 use ty::{TyParam, TyRawPtr, TyRef, TyNever, TyTuple};
-use ty::TyClosure;
-use ty::{TyBox, TyTrait, TyInt, TyUint, TyInfer};
+use ty::{TyClosure, TyProjection, TyAnon};
+use ty::{TyBox, TyDynamic, TyInt, TyUint, TyInfer};
 use ty::{self, Ty, TyCtxt, TypeFoldable};
-use ty::fold::{TypeFolder, TypeVisitor};
 
 use std::cell::Cell;
 use std::fmt;
 use std::usize;
 
 use syntax::abi::Abi;
-use syntax::parse::token;
 use syntax::ast::CRATE_NODE_ID;
+use syntax::symbol::Symbol;
 use hir;
 
 pub fn verbose() -> bool {
@@ -56,27 +56,55 @@ fn fn_sig(f: &mut fmt::Formatter,
     Ok(())
 }
 
-/// Namespace of the path given to parameterized to print.
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub enum Ns {
-    Type,
-    Value
-}
-
 pub fn parameterized(f: &mut fmt::Formatter,
                      substs: &subst::Substs,
-                     did: DefId,
-                     ns: Ns,
+                     mut did: DefId,
                      projections: &[ty::ProjectionPredicate])
                      -> fmt::Result {
+    let key = ty::tls::with(|tcx| tcx.def_key(did));
+    let mut item_name = if let Some(name) = key.disambiguated_data.data.get_opt_name() {
+        Some(name)
+    } else {
+        did.index = key.parent.unwrap_or_else(
+            || bug!("finding type for {:?}, encountered def-id {:?} with no parent",
+                    did, did));
+        parameterized(f, substs, did, projections)?;
+        return write!(f, "::{}", key.disambiguated_data.data.as_interned_str());
+    };
+
     let mut verbose = false;
     let mut num_supplied_defaults = 0;
     let mut has_self = false;
     let mut num_regions = 0;
     let mut num_types = 0;
-    let mut item_name = None;
+    let mut is_value_path = false;
     let fn_trait_kind = ty::tls::with(|tcx| {
-        let mut generics = tcx.lookup_generics(did);
+        // Unfortunately, some kinds of items (e.g., closures) don't have
+        // generics. So walk back up the find the closest parent that DOES
+        // have them.
+        let mut item_def_id = did;
+        loop {
+            let key = tcx.def_key(item_def_id);
+            match key.disambiguated_data.data {
+                DefPathData::TypeNs(_) => {
+                    break;
+                }
+                DefPathData::ValueNs(_) | DefPathData::EnumVariant(_) => {
+                    is_value_path = true;
+                    break;
+                }
+                _ => {
+                    // if we're making a symbol for something, there ought
+                    // to be a value or type-def or something in there
+                    // *somewhere*
+                    item_def_id.index = key.parent.unwrap_or_else(|| {
+                        bug!("finding type for {:?}, encountered def-id {:?} with no \
+                             parent", did, item_def_id);
+                    });
+                }
+            }
+        }
+        let mut generics = tcx.item_generics(item_def_id);
         let mut path_def_id = did;
         verbose = tcx.sess.verbose();
         has_self = generics.has_self;
@@ -84,9 +112,9 @@ pub fn parameterized(f: &mut fmt::Formatter,
         let mut child_types = 0;
         if let Some(def_id) = generics.parent {
             // Methods.
-            assert_eq!(ns, Ns::Value);
+            assert!(is_value_path);
             child_types = generics.types.len();
-            generics = tcx.lookup_generics(def_id);
+            generics = tcx.item_generics(def_id);
             num_regions = generics.regions.len();
             num_types = generics.types.len();
 
@@ -94,10 +122,11 @@ pub fn parameterized(f: &mut fmt::Formatter,
                 write!(f, "<{} as ", substs.type_at(0))?;
             }
 
-            item_name = Some(tcx.item_name(did));
             path_def_id = def_id;
         } else {
-            if ns == Ns::Value {
+            item_name = None;
+
+            if is_value_path {
                 // Functions.
                 assert_eq!(has_self, false);
             } else {
@@ -192,7 +221,7 @@ pub fn parameterized(f: &mut fmt::Formatter,
     start_or_continue(f, "", ">")?;
 
     // For values, also print their name and type parameters.
-    if ns == Ns::Value {
+    if is_value_path {
         empty.set(true);
 
         if has_self {
@@ -254,7 +283,7 @@ fn in_binder<'a, 'gcx, 'tcx, T, U>(f: &mut fmt::Formatter,
             ty::BrAnon(_) |
             ty::BrFresh(_) |
             ty::BrEnv => {
-                let name = token::intern("'r");
+                let name = Symbol::intern("'r");
                 let _ = write!(f, "{}", name);
                 ty::BrNamed(tcx.map.local_def_id(CRATE_NODE_ID),
                             name,
@@ -268,75 +297,31 @@ fn in_binder<'a, 'gcx, 'tcx, T, U>(f: &mut fmt::Formatter,
     write!(f, "{}", new_value)
 }
 
-/// This curious type is here to help pretty-print trait objects. In
-/// a trait object, the projections are stored separately from the
-/// main trait bound, but in fact we want to package them together
-/// when printing out; they also have separate binders, but we want
-/// them to share a binder when we print them out. (And the binder
-/// pretty-printing logic is kind of clever and we don't want to
-/// reproduce it.) So we just repackage up the structure somewhat.
-///
-/// Right now there is only one trait in an object that can have
-/// projection bounds, so we just stuff them altogether. But in
-/// reality we should eventually sort things out better.
-#[derive(Clone, Debug)]
-struct TraitAndProjections<'tcx>(ty::TraitRef<'tcx>,
-                                 Vec<ty::ProjectionPredicate<'tcx>>);
-
-impl<'tcx> TypeFoldable<'tcx> for TraitAndProjections<'tcx> {
-    fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
-        TraitAndProjections(self.0.fold_with(folder), self.1.fold_with(folder))
-    }
-
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
-        self.0.visit_with(visitor) || self.1.visit_with(visitor)
-    }
-}
-
-impl<'tcx> fmt::Display for TraitAndProjections<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let TraitAndProjections(ref trait_ref, ref projection_bounds) = *self;
-        parameterized(f, trait_ref.substs,
-                      trait_ref.def_id,
-                      Ns::Type,
-                      projection_bounds)
-    }
-}
-
-impl<'tcx> fmt::Display for ty::TraitObject<'tcx> {
+impl<'tcx> fmt::Display for &'tcx ty::Slice<ty::ExistentialPredicate<'tcx>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Generate the main trait ref, including associated types.
         ty::tls::with(|tcx| {
             // Use a type that can't appear in defaults of type parameters.
             let dummy_self = tcx.mk_infer(ty::FreshTy(0));
 
-            let principal = tcx.lift(&self.principal)
-                               .expect("could not lift TraitRef for printing")
-                               .with_self_ty(tcx, dummy_self).0;
-            let projections = self.projection_bounds.iter().map(|p| {
-                tcx.lift(p)
-                    .expect("could not lift projection for printing")
-                    .with_self_ty(tcx, dummy_self).0
-            }).collect();
+            if let Some(p) = self.principal() {
+                let principal = tcx.lift(&p).expect("could not lift TraitRef for printing")
+                    .with_self_ty(tcx, dummy_self);
+                let projections = self.projection_bounds().map(|p| {
+                    tcx.lift(&p)
+                        .expect("could not lift projection for printing")
+                        .with_self_ty(tcx, dummy_self)
+                }).collect::<Vec<_>>();
+                parameterized(f, principal.substs, principal.def_id, &projections)?;
+            }
 
-            let tap = ty::Binder(TraitAndProjections(principal, projections));
-            in_binder(f, tcx, &ty::Binder(""), Some(tap))
+            // Builtin bounds.
+            for did in self.auto_traits() {
+                write!(f, " + {}", tcx.item_path_str(did))?;
+            }
+
+            Ok(())
         })?;
-
-        // Builtin bounds.
-        for bound in &self.builtin_bounds {
-            write!(f, " + {:?}", bound)?;
-        }
-
-        // FIXME: It'd be nice to compute from context when this bound
-        // is implied, but that's non-trivial -- we'd perhaps have to
-        // use thread-local data of some kind? There are also
-        // advantages to just showing the region, since it makes
-        // people aware that it's there.
-        let bound = self.region_bound.to_string();
-        if !bound.is_empty() {
-            write!(f, " + {}", bound)?;
-        }
 
         Ok(())
     }
@@ -398,19 +383,20 @@ impl<'tcx> fmt::Debug for ty::ExistentialTraitRef<'tcx> {
             let trait_ref = tcx.lift(&ty::Binder(*self))
                                .expect("could not lift TraitRef for printing")
                                .with_self_ty(tcx, dummy_self).0;
-            parameterized(f, trait_ref.substs, trait_ref.def_id, Ns::Type, &[])
+            parameterized(f, trait_ref.substs, trait_ref.def_id, &[])
         })
     }
 }
 
-impl<'tcx> fmt::Debug for ty::TraitDef<'tcx> {
+impl fmt::Debug for ty::TraitDef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "TraitDef(generics={:?}, trait_ref={:?})",
-               self.generics, self.trait_ref)
+        ty::tls::with(|tcx| {
+            write!(f, "{}", tcx.item_path_str(self.def_id))
+        })
     }
 }
 
-impl<'tcx, 'container> fmt::Debug for ty::AdtDefData<'tcx, 'container> {
+impl fmt::Debug for ty::AdtDef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         ty::tls::with(|tcx| {
             write!(f, "{}", tcx.item_path_str(self.did))
@@ -418,67 +404,9 @@ impl<'tcx, 'container> fmt::Debug for ty::AdtDefData<'tcx, 'container> {
     }
 }
 
-impl<'tcx> fmt::Debug for ty::adjustment::AutoAdjustment<'tcx> {
+impl<'tcx> fmt::Debug for ty::adjustment::Adjustment<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ty::adjustment::AdjustNeverToAny(ref target) => {
-                write!(f, "AdjustNeverToAny({:?})", target)
-            }
-            ty::adjustment::AdjustReifyFnPointer => {
-                write!(f, "AdjustReifyFnPointer")
-            }
-            ty::adjustment::AdjustUnsafeFnPointer => {
-                write!(f, "AdjustUnsafeFnPointer")
-            }
-            ty::adjustment::AdjustMutToConstPointer => {
-                write!(f, "AdjustMutToConstPointer")
-            }
-            ty::adjustment::AdjustDerefRef(ref data) => {
-                write!(f, "{:?}", data)
-            }
-        }
-    }
-}
-
-impl<'tcx> fmt::Debug for ty::adjustment::AutoDerefRef<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "AutoDerefRef({}, unsize={:?}, {:?})",
-               self.autoderefs, self.unsize, self.autoref)
-    }
-}
-
-impl<'tcx> fmt::Debug for ty::TraitObject<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut empty = true;
-        let mut maybe_continue = |f: &mut fmt::Formatter| {
-            if empty {
-                empty = false;
-                Ok(())
-            } else {
-                write!(f, " + ")
-            }
-        };
-
-        maybe_continue(f)?;
-        write!(f, "{:?}", self.principal)?;
-
-        let region_str = format!("{:?}", self.region_bound);
-        if !region_str.is_empty() {
-            maybe_continue(f)?;
-            write!(f, "{}", region_str)?;
-        }
-
-        for bound in &self.builtin_bounds {
-            maybe_continue(f)?;
-            write!(f, "{:?}", bound)?;
-        }
-
-        for projection_bound in &self.projection_bounds {
-            maybe_continue(f)?;
-            write!(f, "{:?}", projection_bound)?;
-        }
-
-        Ok(())
+        write!(f, "{:?} -> {}", self.kind, self.target)
     }
 }
 
@@ -664,35 +592,10 @@ impl<'tcx> fmt::Debug for ty::InstantiatedPredicates<'tcx> {
     }
 }
 
-impl<'tcx> fmt::Debug for ty::ImplOrTraitItem<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ImplOrTraitItem(")?;
-        match *self {
-            ty::ImplOrTraitItem::MethodTraitItem(ref i) => write!(f, "{:?}", i),
-            ty::ImplOrTraitItem::ConstTraitItem(ref i) => write!(f, "{:?}", i),
-            ty::ImplOrTraitItem::TypeTraitItem(ref i) => write!(f, "{:?}", i),
-        }?;
-        write!(f, ")")
-    }
-}
-
 impl<'tcx> fmt::Display for ty::FnSig<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "fn")?;
-        fn_sig(f, &self.inputs, self.variadic, self.output)
-    }
-}
-
-impl fmt::Display for ty::BuiltinBounds {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut bounds = self.iter();
-        if let Some(bound) = bounds.next() {
-            write!(f, "{:?}", bound)?;
-            for bound in bounds {
-                write!(f, " + {:?}", bound)?;
-            }
-        }
-        Ok(())
+        fn_sig(f, self.inputs(), self.variadic, self.output())
     }
 }
 
@@ -722,7 +625,7 @@ impl fmt::Debug for ty::RegionVid {
 
 impl<'tcx> fmt::Debug for ty::FnSig<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({:?}; variadic: {})->{:?}", self.inputs, self.variadic, self.output)
+        write!(f, "({:?}; variadic: {})->{:?}", self.inputs(), self.variadic, self.output())
     }
 }
 
@@ -758,6 +661,12 @@ impl fmt::Debug for ty::IntVarValue {
         ty::tls::with(|tcx| in_binder(f, tcx, self, tcx.lift(self)))
     }
 }*/
+
+impl<'tcx> fmt::Display for ty::Binder<&'tcx ty::Slice<ty::ExistentialPredicate<'tcx>>> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        ty::tls::with(|tcx| in_binder(f, tcx, self, tcx.lift(self)))
+    }
+}
 
 impl<'tcx> fmt::Display for ty::Binder<ty::TraitRef<'tcx>> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -798,7 +707,7 @@ impl<'tcx> fmt::Display for ty::Binder<ty::OutlivesPredicate<&'tcx ty::Region,
 
 impl<'tcx> fmt::Display for ty::TraitRef<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        parameterized(f, self.substs, self.def_id, Ns::Type, &[])
+        parameterized(f, self.substs, self.def_id, &[])
     }
 }
 
@@ -851,7 +760,7 @@ impl<'tcx> fmt::Display for ty::TypeVariants<'tcx> {
                 }
 
                 write!(f, "{} {{", bare_fn.sig.0)?;
-                parameterized(f, substs, def_id, Ns::Value, &[])?;
+                parameterized(f, substs, def_id, &[])?;
                 write!(f, "}}")
             }
             TyFnPtr(ref bare_fn) => {
@@ -871,20 +780,28 @@ impl<'tcx> fmt::Display for ty::TypeVariants<'tcx> {
             TyAdt(def, substs) => {
                 ty::tls::with(|tcx| {
                     if def.did.is_local() &&
-                          !tcx.tcache.borrow().contains_key(&def.did) {
+                          !tcx.item_types.borrow().contains_key(&def.did) {
                         write!(f, "{}<..>", tcx.item_path_str(def.did))
                     } else {
-                        parameterized(f, substs, def.did, Ns::Type, &[])
+                        parameterized(f, substs, def.did, &[])
                     }
                 })
             }
-            TyTrait(ref data) => write!(f, "{}", data),
-            ty::TyProjection(ref data) => write!(f, "{}", data),
-            ty::TyAnon(def_id, substs) => {
+            TyDynamic(data, r) => {
+                write!(f, "{}", data)?;
+                let r = r.to_string();
+                if !r.is_empty() {
+                    write!(f, " + {}", r)
+                } else {
+                    Ok(())
+                }
+            }
+            TyProjection(ref data) => write!(f, "{}", data),
+            TyAnon(def_id, substs) => {
                 ty::tls::with(|tcx| {
                     // Grab the "TraitA + TraitB" from `impl TraitA + TraitB`,
                     // by looking up the projections associated with the def_id.
-                    let item_predicates = tcx.lookup_predicates(def_id);
+                    let item_predicates = tcx.item_predicates(def_id);
                     let substs = tcx.lift(&substs).unwrap_or_else(|| {
                         tcx.intern_substs(&[])
                     });
@@ -913,13 +830,14 @@ impl<'tcx> fmt::Display for ty::TypeVariants<'tcx> {
             }
             TyStr => write!(f, "str"),
             TyClosure(did, substs) => ty::tls::with(|tcx| {
+                let upvar_tys = substs.upvar_tys(did, tcx);
                 write!(f, "[closure")?;
 
                 if let Some(node_id) = tcx.map.as_local_node_id(did) {
                     write!(f, "@{:?}", tcx.map.span(node_id))?;
                     let mut sep = " ";
                     tcx.with_freevars(node_id, |freevars| {
-                        for (freevar, upvar_ty) in freevars.iter().zip(substs.upvar_tys) {
+                        for (freevar, upvar_ty) in freevars.iter().zip(upvar_tys) {
                             let def_id = freevar.def.def_id();
                             let node_id = tcx.map.as_local_node_id(def_id).unwrap();
                             write!(f,
@@ -936,7 +854,7 @@ impl<'tcx> fmt::Display for ty::TypeVariants<'tcx> {
                     // visible in trans bug reports, I imagine.
                     write!(f, "@{:?}", did)?;
                     let mut sep = " ";
-                    for (index, upvar_ty) in substs.upvar_tys.iter().enumerate() {
+                    for (index, upvar_ty) in upvar_tys.enumerate() {
                         write!(f, "{}{}:{}", sep, index, upvar_ty)?;
                         sep = ", ";
                     }
@@ -986,20 +904,6 @@ impl fmt::Display for ty::InferTy {
             ty::FreshIntTy(v) => write!(f, "FreshIntTy({})", v),
             ty::FreshFloatTy(v) => write!(f, "FreshFloatTy({})", v)
         }
-    }
-}
-
-impl<'tcx> fmt::Display for ty::ExplicitSelfCategory<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match *self {
-            ty::ExplicitSelfCategory::Static => "static",
-            ty::ExplicitSelfCategory::ByValue => "self",
-            ty::ExplicitSelfCategory::ByReference(_, hir::MutMutable) => {
-                "&mut self"
-            }
-            ty::ExplicitSelfCategory::ByReference(_, hir::MutImmutable) => "&self",
-            ty::ExplicitSelfCategory::ByBox => "Box<self>",
-        })
     }
 }
 

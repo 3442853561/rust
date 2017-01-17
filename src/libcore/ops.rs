@@ -182,11 +182,11 @@ pub trait Drop {
     /// After this function is over, the memory of `self` will be deallocated.
     ///
     /// This function cannot be called explicitly. This is compiler error
-    /// [0040]. However, the [`std::mem::drop`] function in the prelude can be
+    /// [E0040]. However, the [`std::mem::drop`] function in the prelude can be
     /// used to call the argument's `Drop` implementation.
     ///
-    /// [0040]: https://doc.rust-lang.org/error-index.html#E0040
-    /// [`std::mem::drop`]: https://doc.rust-lang.org/std/mem/fn.drop.html
+    /// [E0040]: ../../error-index.html#E0040
+    /// [`std::mem::drop`]: ../../std/mem/fn.drop.html
     ///
     /// # Panics
     ///
@@ -194,58 +194,6 @@ pub trait Drop {
     /// a `drop()` implementation will likely abort.
     #[stable(feature = "rust1", since = "1.0.0")]
     fn drop(&mut self);
-}
-
-// implements the unary operator "op &T"
-// based on "op T" where T is expected to be `Copy`able
-macro_rules! forward_ref_unop {
-    (impl $imp:ident, $method:ident for $t:ty) => {
-        #[stable(feature = "rust1", since = "1.0.0")]
-        impl<'a> $imp for &'a $t {
-            type Output = <$t as $imp>::Output;
-
-            #[inline]
-            fn $method(self) -> <$t as $imp>::Output {
-                $imp::$method(*self)
-            }
-        }
-    }
-}
-
-// implements binary operators "&T op U", "T op &U", "&T op &U"
-// based on "T op U" where T and U are expected to be `Copy`able
-macro_rules! forward_ref_binop {
-    (impl $imp:ident, $method:ident for $t:ty, $u:ty) => {
-        #[stable(feature = "rust1", since = "1.0.0")]
-        impl<'a> $imp<$u> for &'a $t {
-            type Output = <$t as $imp<$u>>::Output;
-
-            #[inline]
-            fn $method(self, other: $u) -> <$t as $imp<$u>>::Output {
-                $imp::$method(*self, other)
-            }
-        }
-
-        #[stable(feature = "rust1", since = "1.0.0")]
-        impl<'a> $imp<&'a $u> for $t {
-            type Output = <$t as $imp<$u>>::Output;
-
-            #[inline]
-            fn $method(self, other: &'a $u) -> <$t as $imp<$u>>::Output {
-                $imp::$method(self, *other)
-            }
-        }
-
-        #[stable(feature = "rust1", since = "1.0.0")]
-        impl<'a, 'b> $imp<&'a $u> for &'b $t {
-            type Output = <$t as $imp<$u>>::Output;
-
-            #[inline]
-            fn $method(self, other: &'a $u) -> <$t as $imp<$u>>::Output {
-                $imp::$method(*self, *other)
-            }
-        }
-    }
 }
 
 /// The `Add` trait is used to specify the functionality of `+`.
@@ -320,6 +268,8 @@ macro_rules! add_impl {
 }
 
 add_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+add_impl! { u128 i128 }
 
 /// The `Sub` trait is used to specify the functionality of `-`.
 ///
@@ -393,6 +343,8 @@ macro_rules! sub_impl {
 }
 
 sub_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+sub_impl! { u128 i128 }
 
 /// The `Mul` trait is used to specify the functionality of `*`.
 ///
@@ -515,6 +467,8 @@ macro_rules! mul_impl {
 }
 
 mul_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+mul_impl! { u128 i128 }
 
 /// The `Div` trait is used to specify the functionality of `/`.
 ///
@@ -644,6 +598,8 @@ macro_rules! div_impl_integer {
 }
 
 div_impl_integer! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+div_impl_integer! { u128 i128 }
 
 macro_rules! div_impl_float {
     ($($t:ty)*) => ($(
@@ -723,6 +679,9 @@ macro_rules! rem_impl_integer {
 }
 
 rem_impl_integer! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+rem_impl_integer! { u128 i128 }
+
 
 macro_rules! rem_impl_float {
     ($($t:ty)*) => ($(
@@ -818,6 +777,8 @@ macro_rules! neg_impl_unsigned {
 
 // neg_impl_unsigned! { usize u8 u16 u32 u64 }
 neg_impl_numeric! { isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+neg_impl_numeric! { i128 }
 
 /// The `Not` trait is used to specify the functionality of unary `!`.
 ///
@@ -876,6 +837,8 @@ macro_rules! not_impl {
 }
 
 not_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+not_impl! { u128 i128 }
 
 /// The `BitAnd` trait is used to specify the functionality of `&`.
 ///
@@ -959,6 +922,8 @@ macro_rules! bitand_impl {
 }
 
 bitand_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitand_impl! { u128 i128 }
 
 /// The `BitOr` trait is used to specify the functionality of `|`.
 ///
@@ -1042,6 +1007,8 @@ macro_rules! bitor_impl {
 }
 
 bitor_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitor_impl! { u128 i128 }
 
 /// The `BitXor` trait is used to specify the functionality of `^`.
 ///
@@ -1128,6 +1095,8 @@ macro_rules! bitxor_impl {
 }
 
 bitxor_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitxor_impl! { u128 i128 }
 
 /// The `Shl` trait is used to specify the functionality of `<<`.
 ///
@@ -1218,17 +1187,23 @@ macro_rules! shl_impl_all {
         shl_impl! { $t, u16 }
         shl_impl! { $t, u32 }
         shl_impl! { $t, u64 }
+        #[cfg(not(stage0))]
+        shl_impl! { $t, u128 }
         shl_impl! { $t, usize }
 
         shl_impl! { $t, i8 }
         shl_impl! { $t, i16 }
         shl_impl! { $t, i32 }
         shl_impl! { $t, i64 }
+        #[cfg(not(stage0))]
+        shl_impl! { $t, i128 }
         shl_impl! { $t, isize }
     )*)
 }
 
 shl_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
+#[cfg(not(stage0))]
+shl_impl_all! { u128 i128 }
 
 /// The `Shr` trait is used to specify the functionality of `>>`.
 ///
@@ -1319,17 +1294,23 @@ macro_rules! shr_impl_all {
         shr_impl! { $t, u16 }
         shr_impl! { $t, u32 }
         shr_impl! { $t, u64 }
+        #[cfg(not(stage0))]
+        shr_impl! { $t, u128 }
         shr_impl! { $t, usize }
 
         shr_impl! { $t, i8 }
         shr_impl! { $t, i16 }
         shr_impl! { $t, i32 }
         shr_impl! { $t, i64 }
+        #[cfg(not(stage0))]
+        shr_impl! { $t, i128 }
         shr_impl! { $t, isize }
     )*)
 }
 
 shr_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
+#[cfg(not(stage0))]
+shr_impl_all! { u128 i128 }
 
 /// The `AddAssign` trait is used to specify the functionality of `+=`.
 ///
@@ -1386,6 +1367,8 @@ macro_rules! add_assign_impl {
 }
 
 add_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+add_assign_impl! { u128 i128 }
 
 /// The `SubAssign` trait is used to specify the functionality of `-=`.
 ///
@@ -1442,6 +1425,8 @@ macro_rules! sub_assign_impl {
 }
 
 sub_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+sub_assign_impl! { u128 i128 }
 
 /// The `MulAssign` trait is used to specify the functionality of `*=`.
 ///
@@ -1487,6 +1472,8 @@ macro_rules! mul_assign_impl {
 }
 
 mul_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+mul_assign_impl! { u128 i128 }
 
 /// The `DivAssign` trait is used to specify the functionality of `/=`.
 ///
@@ -1531,6 +1518,8 @@ macro_rules! div_assign_impl {
 }
 
 div_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+div_assign_impl! { u128 i128 }
 
 /// The `RemAssign` trait is used to specify the functionality of `%=`.
 ///
@@ -1575,6 +1564,8 @@ macro_rules! rem_assign_impl {
 }
 
 rem_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
+#[cfg(not(stage0))]
+rem_assign_impl! { u128 i128 }
 
 /// The `BitAndAssign` trait is used to specify the functionality of `&=`.
 ///
@@ -1645,7 +1636,7 @@ rem_assign_impl! { usize u8 u16 u32 u64 isize i8 i16 i32 i64 f32 f64 }
 #[lang = "bitand_assign"]
 #[stable(feature = "op_assign_traits", since = "1.8.0")]
 pub trait BitAndAssign<Rhs=Self> {
-    /// The method for the `&` operator
+    /// The method for the `&=` operator
     #[stable(feature = "op_assign_traits", since = "1.8.0")]
     fn bitand_assign(&mut self, Rhs);
 }
@@ -1661,6 +1652,8 @@ macro_rules! bitand_assign_impl {
 }
 
 bitand_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitand_assign_impl! { u128 i128 }
 
 /// The `BitOrAssign` trait is used to specify the functionality of `|=`.
 ///
@@ -1705,6 +1698,8 @@ macro_rules! bitor_assign_impl {
 }
 
 bitor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitor_assign_impl! { u128 i128 }
 
 /// The `BitXorAssign` trait is used to specify the functionality of `^=`.
 ///
@@ -1749,6 +1744,8 @@ macro_rules! bitxor_assign_impl {
 }
 
 bitxor_assign_impl! { bool usize u8 u16 u32 u64 isize i8 i16 i32 i64 }
+#[cfg(not(stage0))]
+bitxor_assign_impl! { u128 i128 }
 
 /// The `ShlAssign` trait is used to specify the functionality of `<<=`.
 ///
@@ -1801,17 +1798,23 @@ macro_rules! shl_assign_impl_all {
         shl_assign_impl! { $t, u16 }
         shl_assign_impl! { $t, u32 }
         shl_assign_impl! { $t, u64 }
+        #[cfg(not(stage0))]
+        shl_assign_impl! { $t, u128 }
         shl_assign_impl! { $t, usize }
 
         shl_assign_impl! { $t, i8 }
         shl_assign_impl! { $t, i16 }
         shl_assign_impl! { $t, i32 }
         shl_assign_impl! { $t, i64 }
+        #[cfg(not(stage0))]
+        shl_assign_impl! { $t, i128 }
         shl_assign_impl! { $t, isize }
     )*)
 }
 
 shl_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
+#[cfg(not(stage0))]
+shl_assign_impl_all! { u128 i128 }
 
 /// The `ShrAssign` trait is used to specify the functionality of `>>=`.
 ///
@@ -1864,25 +1867,39 @@ macro_rules! shr_assign_impl_all {
         shr_assign_impl! { $t, u16 }
         shr_assign_impl! { $t, u32 }
         shr_assign_impl! { $t, u64 }
+        #[cfg(not(stage0))]
+        shr_assign_impl! { $t, u128 }
         shr_assign_impl! { $t, usize }
 
         shr_assign_impl! { $t, i8 }
         shr_assign_impl! { $t, i16 }
         shr_assign_impl! { $t, i32 }
         shr_assign_impl! { $t, i64 }
+        #[cfg(not(stage0))]
+        shr_assign_impl! { $t, i128 }
         shr_assign_impl! { $t, isize }
     )*)
 }
 
 shr_assign_impl_all! { u8 u16 u32 u64 usize i8 i16 i32 i64 isize }
+#[cfg(not(stage0))]
+shr_assign_impl_all! { u128 i128 }
 
 /// The `Index` trait is used to specify the functionality of indexing operations
 /// like `container[index]` when used in an immutable context.
 ///
+/// `container[index]` is actually syntactic sugar for `*container.index(index)`,
+/// but only when used as an immutable value. If a mutable value is requested,
+/// [`IndexMut`] is used instead. This allows nice things such as
+/// `let value = v[index]` if `value` implements [`Copy`].
+///
+/// [`IndexMut`]: ../../std/ops/trait.IndexMut.html
+/// [`Copy`]: ../../std/marker/trait.Copy.html
+///
 /// # Examples
 ///
-/// This example implements `Index` on a read-only `NucleotideCount` container,
-/// enabling individual counts to be retrieved with index syntax.
+/// The following example implements `Index` on a read-only `NucleotideCount`
+/// container, enabling individual counts to be retrieved with index syntax.
 ///
 /// ```
 /// use std::ops::Index;
@@ -1934,37 +1951,78 @@ pub trait Index<Idx: ?Sized> {
 }
 
 /// The `IndexMut` trait is used to specify the functionality of indexing
-/// operations like `container[index]`, when used in a mutable context.
+/// operations like `container[index]` when used in a mutable context.
+///
+/// `container[index]` is actually syntactic sugar for
+/// `*container.index_mut(index)`, but only when used as a mutable value. If
+/// an immutable value is requested, the [`Index`] trait is used instead. This
+/// allows nice things such as `v[index] = value` if `value` implements [`Copy`].
+///
+/// [`Index`]: ../../std/ops/trait.Index.html
+/// [`Copy`]: ../../std/marker/trait.Copy.html
 ///
 /// # Examples
 ///
-/// A trivial implementation of `IndexMut` for a type `Foo`. When `&mut Foo[2]`
-/// happens, it ends up calling `index_mut`, and therefore, `main` prints
-/// `Mutable indexing with 2!`.
+/// A very simple implementation of a `Balance` struct that has two sides, where
+/// each can be indexed mutably and immutably.
 ///
 /// ```
-/// use std::ops::{Index, IndexMut};
+/// use std::ops::{Index,IndexMut};
 ///
-/// #[derive(Copy, Clone)]
-/// struct Foo;
+/// #[derive(Debug)]
+/// enum Side {
+///     Left,
+///     Right,
+/// }
 ///
-/// impl Index<usize> for Foo {
-///     type Output = Foo;
+/// #[derive(Debug, PartialEq)]
+/// enum Weight {
+///     Kilogram(f32),
+///     Pound(f32),
+/// }
 ///
-///     fn index(&self, _index: usize) -> &Foo {
-///         self
+/// struct Balance {
+///     pub left: Weight,
+///     pub right:Weight,
+/// }
+///
+/// impl Index<Side> for Balance {
+///     type Output = Weight;
+///
+///     fn index<'a>(&'a self, index: Side) -> &'a Weight {
+///         println!("Accessing {:?}-side of balance immutably", index);
+///         match index {
+///             Side::Left => &self.left,
+///             Side::Right => &self.right,
+///         }
 ///     }
 /// }
 ///
-/// impl IndexMut<usize> for Foo {
-///     fn index_mut(&mut self, index: usize) -> &mut Foo {
-///         println!("Mutable indexing with {}!", index);
-///         self
+/// impl IndexMut<Side> for Balance {
+///     fn index_mut<'a>(&'a mut self, index: Side) -> &'a mut Weight {
+///         println!("Accessing {:?}-side of balance mutably", index);
+///         match index {
+///             Side::Left => &mut self.left,
+///             Side::Right => &mut self.right,
+///         }
 ///     }
 /// }
 ///
 /// fn main() {
-///     &mut Foo[2];
+///     let mut balance = Balance {
+///         right: Weight::Kilogram(2.5),
+///         left: Weight::Pound(1.5),
+///     };
+///
+///     // In this case balance[Side::Right] is sugar for
+///     // *balance.index(Side::Right), since we are only reading
+///     // balance[Side::Right], not writing it.
+///     assert_eq!(balance[Side::Right],Weight::Kilogram(2.5));
+///
+///     // However in this case balance[Side::Left] is sugar for
+///     // *balance.index_mut(Side::Left), since we are writing
+///     // balance[Side::Left].
+///     balance[Side::Left] = Weight::Kilogram(3.0);
 /// }
 /// ```
 #[lang = "index_mut"]
@@ -2435,13 +2493,13 @@ impl<'a, T: ?Sized> Deref for &'a mut T {
 /// impl<T> Deref for DerefMutExample<T> {
 ///     type Target = T;
 ///
-///     fn deref<'a>(&'a self) -> &'a T {
+///     fn deref(&self) -> &T {
 ///         &self.value
 ///     }
 /// }
 ///
 /// impl<T> DerefMut for DerefMutExample<T> {
-///     fn deref_mut<'a>(&'a mut self) -> &'a mut T {
+///     fn deref_mut(&mut self) -> &mut T {
 ///         &mut self.value
 ///     }
 /// }
@@ -2652,6 +2710,35 @@ mod impls {
 
 /// Trait that indicates that this is a pointer or a wrapper for one,
 /// where unsizing can be performed on the pointee.
+///
+/// See the [DST coercion RfC][dst-coerce] and [the nomicon entry on coercion][nomicon-coerce]
+/// for more details.
+///
+/// For builtin pointer types, pointers to `T` will coerce to pointers to `U` if `T: Unsize<U>`
+/// by converting from a thin pointer to a fat pointer.
+///
+/// For custom types, the coercion here works by coercing `Foo<T>` to `Foo<U>`
+/// provided an impl of `CoerceUnsized<Foo<U>> for Foo<T>` exists.
+/// Such an impl can only be written if `Foo<T>` has only a single non-phantomdata
+/// field involving `T`. If the type of that field is `Bar<T>`, an implementation
+/// of `CoerceUnsized<Bar<U>> for Bar<T>` must exist. The coercion will work by
+/// by coercing the `Bar<T>` field into `Bar<U>` and filling in the rest of the fields
+/// from `Foo<T>` to create a `Foo<U>`. This will effectively drill down to a pointer
+/// field and coerce that.
+///
+/// Generally, for smart pointers you will implement
+/// `CoerceUnsized<Ptr<U>> for Ptr<T> where T: Unsize<U>, U: ?Sized`, with an
+/// optional `?Sized` bound on `T` itself. For wrapper types that directly embed `T`
+/// like `Cell<T>` and `RefCell<T>`, you
+/// can directly implement `CoerceUnsized<Wrap<U>> for Wrap<T> where T: CoerceUnsized<U>`.
+/// This will let coercions of types like `Cell<Box<T>>` work.
+///
+/// [`Unsize`][unsize] is used to mark types which can be coerced to DSTs if behind
+/// pointers. It is implemented automatically by the compiler.
+///
+/// [dst-coerce]: https://github.com/rust-lang/rfcs/blob/master/text/0982-dst-coercion.md
+/// [unsize]: ../marker/trait.Unsize.html
+/// [nomicon-coerce]: ../../nomicon/coercions.html
 #[unstable(feature = "coerce_unsized", issue = "27732")]
 #[lang="coerce_unsized"]
 pub trait CoerceUnsized<T> {

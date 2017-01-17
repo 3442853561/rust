@@ -9,44 +9,43 @@
 // except according to those terms.
 
 use llvm;
-use llvm::{ContextRef, ModuleRef, ValueRef, BuilderRef};
-use rustc::dep_graph::{DepNode, DepTrackingMap, DepTrackingMapConfig, WorkProduct};
+use llvm::{ContextRef, ModuleRef, ValueRef};
+use rustc::dep_graph::{DepGraph, DepNode, DepTrackingMap, DepTrackingMapConfig, WorkProduct};
 use middle::cstore::LinkMeta;
+use rustc::hir;
 use rustc::hir::def::ExportMap;
 use rustc::hir::def_id::DefId;
 use rustc::traits;
-use rustc::mir::mir_map::MirMap;
-use rustc::mir::repr as mir;
-use base;
-use builder::Builder;
-use common::BuilderRef_res;
 use debuginfo;
+use callee::Callee;
+use base;
 use declare;
 use glue::DropGlueKind;
-use mir::CachedMir;
 use monomorphize::Instance;
 
 use partitioning::CodegenUnit;
 use trans_item::TransItem;
-use type_::{Type, TypeNames};
+use type_::Type;
+use rustc_data_structures::base_n;
 use rustc::ty::subst::Substs;
 use rustc::ty::{self, Ty, TyCtxt};
 use session::config::NoDebugInfo;
 use session::Session;
 use session::config;
 use symbol_map::SymbolMap;
-use util::sha2::Sha256;
-use util::nodemap::{NodeSet, DefIdMap, FnvHashMap, FnvHashSet};
+use util::nodemap::{NodeSet, DefIdMap, FxHashMap, FxHashSet};
 
 use std::ffi::{CStr, CString};
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ptr;
+use std::iter;
 use std::rc::Rc;
 use std::str;
 use syntax::ast;
-use syntax::parse::token::InternedString;
-use abi::FnType;
+use syntax::symbol::InternedString;
+use syntax_pos::DUMMY_SP;
+use abi::{Abi, FnType};
 
 pub struct Stats {
     pub n_glues_created: Cell<usize>,
@@ -56,7 +55,7 @@ pub struct Stats {
     pub n_inlines: Cell<usize>,
     pub n_closures: Cell<usize>,
     pub n_llvm_insns: Cell<usize>,
-    pub llvm_insns: RefCell<FnvHashMap<String, usize>>,
+    pub llvm_insns: RefCell<FxHashMap<String, usize>>,
     // (ident, llvm-instructions)
     pub fn_stats: RefCell<Vec<(String, usize)> >,
 }
@@ -70,18 +69,16 @@ pub struct SharedCrateContext<'a, 'tcx: 'a> {
     metadata_llcx: ContextRef,
 
     export_map: ExportMap,
-    reachable: NodeSet,
+    exported_symbols: NodeSet,
     link_meta: LinkMeta,
-    symbol_hasher: RefCell<Sha256>,
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    empty_param_env: ty::ParameterEnvironment<'tcx>,
     stats: Stats,
     check_overflow: bool,
-    mir_map: &'a MirMap<'tcx>,
-    mir_cache: RefCell<DepTrackingMap<MirCache<'tcx>>>,
 
     use_dll_storage_attrs: bool,
 
-    translation_items: RefCell<FnvHashSet<TransItem<'tcx>>>,
+    translation_items: RefCell<FxHashSet<TransItem<'tcx>>>,
     trait_cache: RefCell<DepTrackingMap<TraitSelectionCache<'tcx>>>,
     project_cache: RefCell<DepTrackingMap<ProjectionCache<'tcx>>>,
 }
@@ -94,17 +91,17 @@ pub struct LocalCrateContext<'tcx> {
     llmod: ModuleRef,
     llcx: ContextRef,
     previous_work_product: Option<WorkProduct>,
-    tn: TypeNames, // FIXME: This seems to be largely unused.
     codegen_unit: CodegenUnit<'tcx>,
-    needs_unwind_cleanup_cache: RefCell<FnvHashMap<Ty<'tcx>, bool>>,
-    fn_pointer_shims: RefCell<FnvHashMap<Ty<'tcx>, ValueRef>>,
-    drop_glues: RefCell<FnvHashMap<DropGlueKind<'tcx>, (ValueRef, FnType)>>,
+    needs_unwind_cleanup_cache: RefCell<FxHashMap<Ty<'tcx>, bool>>,
+    fn_pointer_shims: RefCell<FxHashMap<Ty<'tcx>, ValueRef>>,
+    drop_glues: RefCell<FxHashMap<DropGlueKind<'tcx>, (ValueRef, FnType)>>,
     /// Cache instances of monomorphic and polymorphic items
-    instances: RefCell<FnvHashMap<Instance<'tcx>, ValueRef>>,
+    instances: RefCell<FxHashMap<Instance<'tcx>, ValueRef>>,
     /// Cache generated vtables
-    vtables: RefCell<FnvHashMap<ty::PolyTraitRef<'tcx>, ValueRef>>,
+    vtables: RefCell<FxHashMap<(ty::Ty<'tcx>,
+                                Option<ty::PolyExistentialTraitRef<'tcx>>), ValueRef>>,
     /// Cache of constant strings,
-    const_cstr_cache: RefCell<FnvHashMap<InternedString, ValueRef>>,
+    const_cstr_cache: RefCell<FxHashMap<InternedString, ValueRef>>,
 
     /// Reverse-direction for const ptrs cast from globals.
     /// Key is a ValueRef holding a *T,
@@ -114,24 +111,24 @@ pub struct LocalCrateContext<'tcx> {
     /// when we ptrcast, and we have to ptrcast during translation
     /// of a [T] const because we form a slice, a (*T,usize) pair, not
     /// a pointer to an LLVM array type. Similar for trait objects.
-    const_unsized: RefCell<FnvHashMap<ValueRef, ValueRef>>,
+    const_unsized: RefCell<FxHashMap<ValueRef, ValueRef>>,
 
     /// Cache of emitted const globals (value -> global)
-    const_globals: RefCell<FnvHashMap<ValueRef, ValueRef>>,
+    const_globals: RefCell<FxHashMap<ValueRef, ValueRef>>,
 
     /// Cache of emitted const values
-    const_values: RefCell<FnvHashMap<(ast::NodeId, &'tcx Substs<'tcx>), ValueRef>>,
+    const_values: RefCell<FxHashMap<(ast::NodeId, &'tcx Substs<'tcx>), ValueRef>>,
 
     /// Cache of external const values
     extern_const_values: RefCell<DefIdMap<ValueRef>>,
 
     /// Mapping from static definitions to their DefId's.
-    statics: RefCell<FnvHashMap<ValueRef, DefId>>,
+    statics: RefCell<FxHashMap<ValueRef, DefId>>,
 
-    impl_method_cache: RefCell<FnvHashMap<(DefId, ast::Name), DefId>>,
+    impl_method_cache: RefCell<FxHashMap<(DefId, ast::Name), DefId>>,
 
     /// Cache of closure wrappers for bare fn's.
-    closure_bare_wrapper_cache: RefCell<FnvHashMap<ValueRef, ValueRef>>,
+    closure_bare_wrapper_cache: RefCell<FxHashMap<ValueRef, ValueRef>>,
 
     /// List of globals for static variables which need to be passed to the
     /// LLVM function ReplaceAllUsesWith (RAUW) when translation is complete.
@@ -139,15 +136,15 @@ pub struct LocalCrateContext<'tcx> {
     /// to constants.)
     statics_to_rauw: RefCell<Vec<(ValueRef, ValueRef)>>,
 
-    lltypes: RefCell<FnvHashMap<Ty<'tcx>, Type>>,
-    llsizingtypes: RefCell<FnvHashMap<Ty<'tcx>, Type>>,
-    type_hashcodes: RefCell<FnvHashMap<Ty<'tcx>, String>>,
+    lltypes: RefCell<FxHashMap<Ty<'tcx>, Type>>,
+    llsizingtypes: RefCell<FxHashMap<Ty<'tcx>, Type>>,
+    type_hashcodes: RefCell<FxHashMap<Ty<'tcx>, String>>,
     int_type: Type,
     opaque_vec_type: Type,
-    builder: BuilderRef_res,
+    str_slice_type: Type,
 
     /// Holds the LLVM values for closure IDs.
-    closure_vals: RefCell<FnvHashMap<Instance<'tcx>, ValueRef>>,
+    closure_vals: RefCell<FxHashMap<Instance<'tcx>, ValueRef>>,
 
     dbg_cx: Option<debuginfo::CrateDebugContext<'tcx>>,
 
@@ -155,12 +152,7 @@ pub struct LocalCrateContext<'tcx> {
     eh_unwind_resume: Cell<Option<ValueRef>>,
     rust_try_fn: Cell<Option<ValueRef>>,
 
-    intrinsics: RefCell<FnvHashMap<&'static str, ValueRef>>,
-
-    /// Number of LLVM instructions translated into this `LocalCrateContext`.
-    /// This is used to perform some basic load-balancing to keep all LLVM
-    /// contexts around the same size.
-    n_llvm_insns: Cell<usize>,
+    intrinsics: RefCell<FxHashMap<&'static str, ValueRef>>,
 
     /// Depth of the current type-of computation - used to bail out
     type_of_depth: Cell<usize>,
@@ -181,19 +173,6 @@ impl<'tcx> DepTrackingMapConfig for TraitSelectionCache<'tcx> {
     type Value = traits::Vtable<'tcx, ()>;
     fn to_dep_node(key: &ty::PolyTraitRef<'tcx>) -> DepNode<DefId> {
         key.to_poly_trait_predicate().dep_node()
-    }
-}
-
-// Cache for mir loaded from metadata
-struct MirCache<'tcx> {
-    data: PhantomData<&'tcx ()>
-}
-
-impl<'tcx> DepTrackingMapConfig for MirCache<'tcx> {
-    type Key = DefId;
-    type Value = Rc<mir::Mir<'tcx>>;
-    fn to_dep_node(key: &DefId) -> DepNode<DefId> {
-        DepNode::Mir(*key)
     }
 }
 
@@ -333,38 +312,6 @@ impl<'a, 'tcx> Iterator for CrateContextIterator<'a,'tcx> {
     }
 }
 
-/// The iterator produced by `CrateContext::maybe_iter`.
-pub struct CrateContextMaybeIterator<'a, 'tcx: 'a> {
-    shared: &'a SharedCrateContext<'a, 'tcx>,
-    local_ccxs: &'a [LocalCrateContext<'tcx>],
-    index: usize,
-    single: bool,
-    origin: usize,
-}
-
-impl<'a, 'tcx> Iterator for CrateContextMaybeIterator<'a, 'tcx> {
-    type Item = (CrateContext<'a, 'tcx>, bool);
-
-    fn next(&mut self) -> Option<(CrateContext<'a, 'tcx>, bool)> {
-        if self.index >= self.local_ccxs.len() {
-            return None;
-        }
-
-        let index = self.index;
-        self.index += 1;
-        if self.single {
-            self.index = self.local_ccxs.len();
-        }
-
-        let ccx = CrateContext {
-            shared: self.shared,
-            index: index,
-            local_ccxs: self.local_ccxs
-        };
-        Some((ccx, index == self.origin))
-    }
-}
-
 pub fn get_reloc_model(sess: &Session) -> llvm::RelocMode {
     let reloc_model_arg = match sess.opts.cg.relocation_model {
         Some(ref s) => &s[..],
@@ -453,11 +400,9 @@ unsafe fn create_context_and_module(sess: &Session, mod_name: &str) -> (ContextR
 
 impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
     pub fn new(tcx: TyCtxt<'b, 'tcx, 'tcx>,
-               mir_map: &'b MirMap<'tcx>,
                export_map: ExportMap,
-               symbol_hasher: Sha256,
                link_meta: LinkMeta,
-               reachable: NodeSet,
+               exported_symbols: NodeSet,
                check_overflow: bool)
                -> SharedCrateContext<'b, 'tcx> {
         let (metadata_llcx, metadata_llmod) = unsafe {
@@ -474,7 +419,7 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
         // they're not available to be linked against. This poses a few problems
         // for the compiler, some of which are somewhat fundamental, but we use
         // the `use_dll_storage_attrs` variable below to attach the `dllexport`
-        // attribute to all LLVM functions that are reachable (e.g. they're
+        // attribute to all LLVM functions that are exported e.g. they're
         // already tagged with external linkage). This is suboptimal for a few
         // reasons:
         //
@@ -513,12 +458,10 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
             metadata_llmod: metadata_llmod,
             metadata_llcx: metadata_llcx,
             export_map: export_map,
-            reachable: reachable,
+            exported_symbols: exported_symbols,
             link_meta: link_meta,
-            symbol_hasher: RefCell::new(symbol_hasher),
+            empty_param_env: tcx.empty_parameter_environment(),
             tcx: tcx,
-            mir_map: mir_map,
-            mir_cache: RefCell::new(DepTrackingMap::new(tcx.dep_graph.clone())),
             stats: Stats {
                 n_glues_created: Cell::new(0),
                 n_null_glues: Cell::new(0),
@@ -527,15 +470,23 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
                 n_inlines: Cell::new(0),
                 n_closures: Cell::new(0),
                 n_llvm_insns: Cell::new(0),
-                llvm_insns: RefCell::new(FnvHashMap()),
+                llvm_insns: RefCell::new(FxHashMap()),
                 fn_stats: RefCell::new(Vec::new()),
             },
             check_overflow: check_overflow,
             use_dll_storage_attrs: use_dll_storage_attrs,
-            translation_items: RefCell::new(FnvHashSet()),
+            translation_items: RefCell::new(FxHashSet()),
             trait_cache: RefCell::new(DepTrackingMap::new(tcx.dep_graph.clone())),
             project_cache: RefCell::new(DepTrackingMap::new(tcx.dep_graph.clone())),
         }
+    }
+
+    pub fn type_needs_drop(&self, ty: Ty<'tcx>) -> bool {
+        self.tcx.type_needs_drop_given_env(ty, &self.empty_param_env)
+    }
+
+    pub fn type_is_sized(&self, ty: Ty<'tcx>) -> bool {
+        ty.is_sized(self.tcx, &self.empty_param_env, DUMMY_SP)
     }
 
     pub fn metadata_llmod(&self) -> ModuleRef {
@@ -550,8 +501,8 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
         &self.export_map
     }
 
-    pub fn reachable<'a>(&'a self) -> &'a NodeSet {
-        &self.reachable
+    pub fn exported_symbols<'a>(&'a self) -> &'a NodeSet {
+        &self.exported_symbols
     }
 
     pub fn trait_cache(&self) -> &RefCell<DepTrackingMap<TraitSelectionCache<'tcx>>> {
@@ -574,6 +525,10 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
         &self.tcx.sess
     }
 
+    pub fn dep_graph<'a>(&'a self) -> &'a DepGraph {
+        &self.tcx.dep_graph
+    }
+
     pub fn stats<'a>(&'a self) -> &'a Stats {
         &self.stats
     }
@@ -582,24 +537,7 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
         self.use_dll_storage_attrs
     }
 
-    pub fn get_mir(&self, def_id: DefId) -> Option<CachedMir<'b, 'tcx>> {
-        if def_id.is_local() {
-            self.mir_map.map.get(&def_id).map(CachedMir::Ref)
-        } else {
-            if let Some(mir) = self.mir_cache.borrow().get(&def_id).cloned() {
-                return Some(CachedMir::Owned(mir));
-            }
-
-            let mir = self.sess().cstore.maybe_get_item_mir(self.tcx, def_id);
-            let cached = mir.map(Rc::new);
-            if let Some(ref mir) = cached {
-                self.mir_cache.borrow_mut().insert(def_id, mir.clone());
-            }
-            cached.map(CachedMir::Owned)
-        }
-    }
-
-    pub fn translation_items(&self) -> &RefCell<FnvHashSet<TransItem<'tcx>>> {
+    pub fn translation_items(&self) -> &RefCell<FxHashSet<TransItem<'tcx>>> {
         &self.translation_items
     }
 
@@ -611,14 +549,6 @@ impl<'b, 'tcx> SharedCrateContext<'b, 'tcx> {
                          |_, _| {
             bug!("empty_substs_for_def_id: {:?} has type parameters", item_def_id)
         })
-    }
-
-    pub fn symbol_hasher(&self) -> &RefCell<Sha256> {
-        &self.symbol_hasher
-    }
-
-    pub fn mir_map(&self) -> &MirMap<'tcx> {
-        &self.mir_map
     }
 
     pub fn metadata_symbol_name(&self) -> String {
@@ -661,34 +591,32 @@ impl<'tcx> LocalCrateContext<'tcx> {
                 llcx: llcx,
                 previous_work_product: previous_work_product,
                 codegen_unit: codegen_unit,
-                tn: TypeNames::new(),
-                needs_unwind_cleanup_cache: RefCell::new(FnvHashMap()),
-                fn_pointer_shims: RefCell::new(FnvHashMap()),
-                drop_glues: RefCell::new(FnvHashMap()),
-                instances: RefCell::new(FnvHashMap()),
-                vtables: RefCell::new(FnvHashMap()),
-                const_cstr_cache: RefCell::new(FnvHashMap()),
-                const_unsized: RefCell::new(FnvHashMap()),
-                const_globals: RefCell::new(FnvHashMap()),
-                const_values: RefCell::new(FnvHashMap()),
+                needs_unwind_cleanup_cache: RefCell::new(FxHashMap()),
+                fn_pointer_shims: RefCell::new(FxHashMap()),
+                drop_glues: RefCell::new(FxHashMap()),
+                instances: RefCell::new(FxHashMap()),
+                vtables: RefCell::new(FxHashMap()),
+                const_cstr_cache: RefCell::new(FxHashMap()),
+                const_unsized: RefCell::new(FxHashMap()),
+                const_globals: RefCell::new(FxHashMap()),
+                const_values: RefCell::new(FxHashMap()),
                 extern_const_values: RefCell::new(DefIdMap()),
-                statics: RefCell::new(FnvHashMap()),
-                impl_method_cache: RefCell::new(FnvHashMap()),
-                closure_bare_wrapper_cache: RefCell::new(FnvHashMap()),
+                statics: RefCell::new(FxHashMap()),
+                impl_method_cache: RefCell::new(FxHashMap()),
+                closure_bare_wrapper_cache: RefCell::new(FxHashMap()),
                 statics_to_rauw: RefCell::new(Vec::new()),
-                lltypes: RefCell::new(FnvHashMap()),
-                llsizingtypes: RefCell::new(FnvHashMap()),
-                type_hashcodes: RefCell::new(FnvHashMap()),
+                lltypes: RefCell::new(FxHashMap()),
+                llsizingtypes: RefCell::new(FxHashMap()),
+                type_hashcodes: RefCell::new(FxHashMap()),
                 int_type: Type::from_ref(ptr::null_mut()),
                 opaque_vec_type: Type::from_ref(ptr::null_mut()),
-                builder: BuilderRef_res(llvm::LLVMCreateBuilderInContext(llcx)),
-                closure_vals: RefCell::new(FnvHashMap()),
+                str_slice_type: Type::from_ref(ptr::null_mut()),
+                closure_vals: RefCell::new(FxHashMap()),
                 dbg_cx: dbg_cx,
                 eh_personality: Cell::new(None),
                 eh_unwind_resume: Cell::new(None),
                 rust_try_fn: Cell::new(None),
-                intrinsics: RefCell::new(FnvHashMap()),
-                n_llvm_insns: Cell::new(0),
+                intrinsics: RefCell::new(FxHashMap()),
                 type_of_depth: Cell::new(0),
                 symbol_map: symbol_map,
                 local_gen_sym_counter: Cell::new(0),
@@ -712,11 +640,7 @@ impl<'tcx> LocalCrateContext<'tcx> {
 
             local_ccx.int_type = int_type;
             local_ccx.opaque_vec_type = opaque_vec_type;
-            local_ccx.tn.associate_type("str_slice", &str_slice_ty);
-
-            if shared.tcx.sess.count_llvm_insns() {
-                base::init_insn_ctxt()
-            }
+            local_ccx.str_slice_type = str_slice_ty;
 
             local_ccx
         }
@@ -746,40 +670,8 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         self.shared
     }
 
-    pub fn local(&self) -> &'b LocalCrateContext<'tcx> {
+    fn local(&self) -> &'b LocalCrateContext<'tcx> {
         &self.local_ccxs[self.index]
-    }
-
-    /// Get a (possibly) different `CrateContext` from the same
-    /// `SharedCrateContext`.
-    pub fn rotate(&'b self) -> CrateContext<'b, 'tcx> {
-        let (_, index) =
-            self.local_ccxs
-                .iter()
-                .zip(0..self.local_ccxs.len())
-                .min_by_key(|&(local_ccx, _idx)| local_ccx.n_llvm_insns.get())
-                .unwrap();
-        CrateContext {
-            shared: self.shared,
-            index: index,
-            local_ccxs: &self.local_ccxs[..],
-        }
-    }
-
-    /// Either iterate over only `self`, or iterate over all `CrateContext`s in
-    /// the `SharedCrateContext`.  The iterator produces `(ccx, is_origin)`
-    /// pairs, where `is_origin` is `true` if `ccx` is `self` and `false`
-    /// otherwise.  This method is useful for avoiding code duplication in
-    /// cases where it may or may not be necessary to translate code into every
-    /// context.
-    pub fn maybe_iter(&self, iter_all: bool) -> CrateContextMaybeIterator<'b, 'tcx> {
-        CrateContextMaybeIterator {
-            shared: self.shared,
-            index: if iter_all { 0 } else { self.index },
-            single: !iter_all,
-            origin: self.index,
-            local_ccxs: self.local_ccxs,
-        }
     }
 
     pub fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx> {
@@ -788,14 +680,6 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
 
     pub fn sess<'a>(&'a self) -> &'a Session {
         &self.shared.tcx.sess
-    }
-
-    pub fn builder<'a>(&'a self) -> Builder<'a, 'tcx> {
-        Builder::new(self)
-    }
-
-    pub fn raw_builder<'a>(&'a self) -> BuilderRef {
-        self.local().builder.b
     }
 
     pub fn get_intrinsic(&self, key: &str) -> ValueRef {
@@ -828,65 +712,55 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         unsafe { llvm::LLVMRustGetModuleDataLayout(self.llmod()) }
     }
 
-    pub fn tn<'a>(&'a self) -> &'a TypeNames {
-        &self.local().tn
-    }
-
     pub fn export_map<'a>(&'a self) -> &'a ExportMap {
         &self.shared.export_map
     }
 
-    pub fn reachable<'a>(&'a self) -> &'a NodeSet {
-        &self.shared.reachable
+    pub fn exported_symbols<'a>(&'a self) -> &'a NodeSet {
+        &self.shared.exported_symbols
     }
 
     pub fn link_meta<'a>(&'a self) -> &'a LinkMeta {
         &self.shared.link_meta
     }
 
-    pub fn needs_unwind_cleanup_cache(&self) -> &RefCell<FnvHashMap<Ty<'tcx>, bool>> {
+    pub fn needs_unwind_cleanup_cache(&self) -> &RefCell<FxHashMap<Ty<'tcx>, bool>> {
         &self.local().needs_unwind_cleanup_cache
     }
 
-    pub fn fn_pointer_shims(&self) -> &RefCell<FnvHashMap<Ty<'tcx>, ValueRef>> {
+    pub fn fn_pointer_shims(&self) -> &RefCell<FxHashMap<Ty<'tcx>, ValueRef>> {
         &self.local().fn_pointer_shims
     }
 
     pub fn drop_glues<'a>(&'a self)
-                          -> &'a RefCell<FnvHashMap<DropGlueKind<'tcx>, (ValueRef, FnType)>> {
+                          -> &'a RefCell<FxHashMap<DropGlueKind<'tcx>, (ValueRef, FnType)>> {
         &self.local().drop_glues
     }
 
-    pub fn local_node_for_inlined_defid<'a>(&'a self, def_id: DefId) -> Option<ast::NodeId> {
-        self.sess().cstore.local_node_for_inlined_defid(def_id)
-    }
-
-    pub fn defid_for_inlined_node<'a>(&'a self, node_id: ast::NodeId) -> Option<DefId> {
-        self.sess().cstore.defid_for_inlined_node(node_id)
-    }
-
-    pub fn instances<'a>(&'a self) -> &'a RefCell<FnvHashMap<Instance<'tcx>, ValueRef>> {
+    pub fn instances<'a>(&'a self) -> &'a RefCell<FxHashMap<Instance<'tcx>, ValueRef>> {
         &self.local().instances
     }
 
-    pub fn vtables<'a>(&'a self) -> &'a RefCell<FnvHashMap<ty::PolyTraitRef<'tcx>, ValueRef>> {
+    pub fn vtables<'a>(&'a self)
+        -> &'a RefCell<FxHashMap<(ty::Ty<'tcx>,
+                                  Option<ty::PolyExistentialTraitRef<'tcx>>), ValueRef>> {
         &self.local().vtables
     }
 
-    pub fn const_cstr_cache<'a>(&'a self) -> &'a RefCell<FnvHashMap<InternedString, ValueRef>> {
+    pub fn const_cstr_cache<'a>(&'a self) -> &'a RefCell<FxHashMap<InternedString, ValueRef>> {
         &self.local().const_cstr_cache
     }
 
-    pub fn const_unsized<'a>(&'a self) -> &'a RefCell<FnvHashMap<ValueRef, ValueRef>> {
+    pub fn const_unsized<'a>(&'a self) -> &'a RefCell<FxHashMap<ValueRef, ValueRef>> {
         &self.local().const_unsized
     }
 
-    pub fn const_globals<'a>(&'a self) -> &'a RefCell<FnvHashMap<ValueRef, ValueRef>> {
+    pub fn const_globals<'a>(&'a self) -> &'a RefCell<FxHashMap<ValueRef, ValueRef>> {
         &self.local().const_globals
     }
 
-    pub fn const_values<'a>(&'a self) -> &'a RefCell<FnvHashMap<(ast::NodeId, &'tcx Substs<'tcx>),
-                                                                ValueRef>> {
+    pub fn const_values<'a>(&'a self) -> &'a RefCell<FxHashMap<(ast::NodeId, &'tcx Substs<'tcx>),
+                                                               ValueRef>> {
         &self.local().const_values
     }
 
@@ -894,16 +768,16 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         &self.local().extern_const_values
     }
 
-    pub fn statics<'a>(&'a self) -> &'a RefCell<FnvHashMap<ValueRef, DefId>> {
+    pub fn statics<'a>(&'a self) -> &'a RefCell<FxHashMap<ValueRef, DefId>> {
         &self.local().statics
     }
 
     pub fn impl_method_cache<'a>(&'a self)
-            -> &'a RefCell<FnvHashMap<(DefId, ast::Name), DefId>> {
+            -> &'a RefCell<FxHashMap<(DefId, ast::Name), DefId>> {
         &self.local().impl_method_cache
     }
 
-    pub fn closure_bare_wrapper_cache<'a>(&'a self) -> &'a RefCell<FnvHashMap<ValueRef, ValueRef>> {
+    pub fn closure_bare_wrapper_cache<'a>(&'a self) -> &'a RefCell<FxHashMap<ValueRef, ValueRef>> {
         &self.local().closure_bare_wrapper_cache
     }
 
@@ -911,19 +785,15 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         &self.local().statics_to_rauw
     }
 
-    pub fn lltypes<'a>(&'a self) -> &'a RefCell<FnvHashMap<Ty<'tcx>, Type>> {
+    pub fn lltypes<'a>(&'a self) -> &'a RefCell<FxHashMap<Ty<'tcx>, Type>> {
         &self.local().lltypes
     }
 
-    pub fn llsizingtypes<'a>(&'a self) -> &'a RefCell<FnvHashMap<Ty<'tcx>, Type>> {
+    pub fn llsizingtypes<'a>(&'a self) -> &'a RefCell<FxHashMap<Ty<'tcx>, Type>> {
         &self.local().llsizingtypes
     }
 
-    pub fn symbol_hasher<'a>(&'a self) -> &'a RefCell<Sha256> {
-        &self.shared.symbol_hasher
-    }
-
-    pub fn type_hashcodes<'a>(&'a self) -> &'a RefCell<FnvHashMap<Ty<'tcx>, String>> {
+    pub fn type_hashcodes<'a>(&'a self) -> &'a RefCell<FxHashMap<Ty<'tcx>, String>> {
         &self.local().type_hashcodes
     }
 
@@ -939,7 +809,11 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         self.local().opaque_vec_type
     }
 
-    pub fn closure_vals<'a>(&'a self) -> &'a RefCell<FnvHashMap<Instance<'tcx>, ValueRef>> {
+    pub fn str_slice_type(&self) -> Type {
+        self.local().str_slice_type
+    }
+
+    pub fn closure_vals<'a>(&'a self) -> &'a RefCell<FxHashMap<Instance<'tcx>, ValueRef>> {
         &self.local().closure_vals
     }
 
@@ -947,24 +821,12 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         &self.local().dbg_cx
     }
 
-    pub fn eh_personality<'a>(&'a self) -> &'a Cell<Option<ValueRef>> {
-        &self.local().eh_personality
-    }
-
-    pub fn eh_unwind_resume<'a>(&'a self) -> &'a Cell<Option<ValueRef>> {
-        &self.local().eh_unwind_resume
-    }
-
     pub fn rust_try_fn<'a>(&'a self) -> &'a Cell<Option<ValueRef>> {
         &self.local().rust_try_fn
     }
 
-    fn intrinsics<'a>(&'a self) -> &'a RefCell<FnvHashMap<&'static str, ValueRef>> {
+    fn intrinsics<'a>(&'a self) -> &'a RefCell<FxHashMap<&'static str, ValueRef>> {
         &self.local().intrinsics
-    }
-
-    pub fn count_llvm_insn(&self) {
-        self.local().n_llvm_insns.set(self.local().n_llvm_insns.get() + 1);
     }
 
     pub fn obj_size_bound(&self) -> u64 {
@@ -989,7 +851,7 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
     }
 
     pub fn layout_of(&self, ty: Ty<'tcx>) -> &'tcx ty::layout::Layout {
-        self.tcx().infer_ctxt(None, None, traits::Reveal::All).enter(|infcx| {
+        self.tcx().infer_ctxt((), traits::Reveal::All).enter(|infcx| {
             ty.layout(&infcx).unwrap_or_else(|e| {
                 match e {
                     ty::layout::LayoutError::SizeOverflow(_) =>
@@ -1008,15 +870,11 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         self.shared.use_dll_storage_attrs()
     }
 
-    pub fn get_mir(&self, def_id: DefId) -> Option<CachedMir<'b, 'tcx>> {
-        self.shared.get_mir(def_id)
-    }
-
     pub fn symbol_map(&self) -> &SymbolMap<'tcx> {
         &*self.local().symbol_map
     }
 
-    pub fn translation_items(&self) -> &RefCell<FnvHashSet<TransItem<'tcx>>> {
+    pub fn translation_items(&self) -> &RefCell<FxHashSet<TransItem<'tcx>>> {
         &self.shared.translation_items
     }
 
@@ -1033,7 +891,87 @@ impl<'b, 'tcx> CrateContext<'b, 'tcx> {
         self.local().local_gen_sym_counter.set(idx + 1);
         // Include a '.' character, so there can be no accidental conflicts with
         // user defined names
-        format!("{}.{}", prefix, idx)
+        let mut name = String::with_capacity(prefix.len() + 6);
+        name.push_str(prefix);
+        name.push_str(".");
+        base_n::push_str(idx as u64, base_n::ALPHANUMERIC_ONLY, &mut name);
+        name
+    }
+
+    pub fn eh_personality(&self) -> ValueRef {
+        // The exception handling personality function.
+        //
+        // If our compilation unit has the `eh_personality` lang item somewhere
+        // within it, then we just need to translate that. Otherwise, we're
+        // building an rlib which will depend on some upstream implementation of
+        // this function, so we just codegen a generic reference to it. We don't
+        // specify any of the types for the function, we just make it a symbol
+        // that LLVM can later use.
+        //
+        // Note that MSVC is a little special here in that we don't use the
+        // `eh_personality` lang item at all. Currently LLVM has support for
+        // both Dwarf and SEH unwind mechanisms for MSVC targets and uses the
+        // *name of the personality function* to decide what kind of unwind side
+        // tables/landing pads to emit. It looks like Dwarf is used by default,
+        // injecting a dependency on the `_Unwind_Resume` symbol for resuming
+        // an "exception", but for MSVC we want to force SEH. This means that we
+        // can't actually have the personality function be our standard
+        // `rust_eh_personality` function, but rather we wired it up to the
+        // CRT's custom personality function, which forces LLVM to consider
+        // landing pads as "landing pads for SEH".
+        if let Some(llpersonality) = self.local().eh_personality.get() {
+            return llpersonality
+        }
+        let tcx = self.tcx();
+        let llfn = match tcx.lang_items.eh_personality() {
+            Some(def_id) if !base::wants_msvc_seh(self.sess()) => {
+                Callee::def(self, def_id, tcx.intern_substs(&[])).reify(self)
+            }
+            _ => {
+                let name = if base::wants_msvc_seh(self.sess()) {
+                    "__CxxFrameHandler3"
+                } else {
+                    "rust_eh_personality"
+                };
+                let fty = Type::variadic_func(&[], &Type::i32(self));
+                declare::declare_cfn(self, name, fty)
+            }
+        };
+        self.local().eh_personality.set(Some(llfn));
+        llfn
+    }
+
+    // Returns a ValueRef of the "eh_unwind_resume" lang item if one is defined,
+    // otherwise declares it as an external function.
+    pub fn eh_unwind_resume(&self) -> ValueRef {
+        use attributes;
+        let unwresume = &self.local().eh_unwind_resume;
+        if let Some(llfn) = unwresume.get() {
+            return llfn;
+        }
+
+        let tcx = self.tcx();
+        assert!(self.sess().target.target.options.custom_unwind_resume);
+        if let Some(def_id) = tcx.lang_items.eh_unwind_resume() {
+            let llfn = Callee::def(self, def_id, tcx.intern_substs(&[])).reify(self);
+            unwresume.set(Some(llfn));
+            return llfn;
+        }
+
+        let ty = tcx.mk_fn_ptr(tcx.mk_bare_fn(ty::BareFnTy {
+            unsafety: hir::Unsafety::Unsafe,
+            abi: Abi::C,
+            sig: ty::Binder(tcx.mk_fn_sig(
+                iter::once(tcx.mk_mut_ptr(tcx.types.u8)),
+                tcx.types.never,
+                false
+            )),
+        }));
+
+        let llfn = declare::declare_fn(self, "rust_eh_unwind_resume", ty);
+        attributes::unwind(llfn, true);
+        unwresume.set(Some(llfn));
+        llfn
     }
 }
 
@@ -1084,6 +1022,7 @@ fn declare_intrinsic(ccx: &CrateContext, key: &str) -> Option<ValueRef> {
     let t_i16 = Type::i16(ccx);
     let t_i32 = Type::i32(ccx);
     let t_i64 = Type::i64(ccx);
+    let t_i128 = Type::i128(ccx);
     let t_f32 = Type::f32(ccx);
     let t_f64 = Type::f64(ccx);
 
@@ -1150,50 +1089,60 @@ fn declare_intrinsic(ccx: &CrateContext, key: &str) -> Option<ValueRef> {
     ifn!("llvm.ctpop.i16", fn(t_i16) -> t_i16);
     ifn!("llvm.ctpop.i32", fn(t_i32) -> t_i32);
     ifn!("llvm.ctpop.i64", fn(t_i64) -> t_i64);
+    ifn!("llvm.ctpop.i128", fn(t_i128) -> t_i128);
 
     ifn!("llvm.ctlz.i8", fn(t_i8 , i1) -> t_i8);
     ifn!("llvm.ctlz.i16", fn(t_i16, i1) -> t_i16);
     ifn!("llvm.ctlz.i32", fn(t_i32, i1) -> t_i32);
     ifn!("llvm.ctlz.i64", fn(t_i64, i1) -> t_i64);
+    ifn!("llvm.ctlz.i128", fn(t_i128, i1) -> t_i128);
 
     ifn!("llvm.cttz.i8", fn(t_i8 , i1) -> t_i8);
     ifn!("llvm.cttz.i16", fn(t_i16, i1) -> t_i16);
     ifn!("llvm.cttz.i32", fn(t_i32, i1) -> t_i32);
     ifn!("llvm.cttz.i64", fn(t_i64, i1) -> t_i64);
+    ifn!("llvm.cttz.i128", fn(t_i128, i1) -> t_i128);
 
     ifn!("llvm.bswap.i16", fn(t_i16) -> t_i16);
     ifn!("llvm.bswap.i32", fn(t_i32) -> t_i32);
     ifn!("llvm.bswap.i64", fn(t_i64) -> t_i64);
+    ifn!("llvm.bswap.i128", fn(t_i128) -> t_i128);
 
     ifn!("llvm.sadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.sadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.sadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.sadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.sadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.uadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.uadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.uadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.uadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.uadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.ssub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.ssub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.ssub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.ssub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.ssub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.usub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.usub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.usub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.usub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.usub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.smul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.smul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.smul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.smul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.smul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.umul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
     ifn!("llvm.umul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
     ifn!("llvm.umul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
     ifn!("llvm.umul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
+    ifn!("llvm.umul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
     ifn!("llvm.lifetime.start", fn(t_i64,i8p) -> void);
     ifn!("llvm.lifetime.end", fn(t_i64, i8p) -> void);

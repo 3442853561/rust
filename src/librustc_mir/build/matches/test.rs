@@ -18,11 +18,11 @@
 use build::Builder;
 use build::matches::{Candidate, MatchPair, Test, TestKind};
 use hair::*;
-use rustc_data_structures::fnv::FnvHashMap;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::bitvec::BitVector;
 use rustc::middle::const_val::ConstVal;
 use rustc::ty::{self, Ty};
-use rustc::mir::repr::*;
+use rustc::mir::*;
 use syntax_pos::Span;
 use std::cmp::Ordering;
 
@@ -32,7 +32,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// It is a bug to call this with a simplifyable pattern.
     pub fn test<'pat>(&mut self, match_pair: &MatchPair<'pat, 'tcx>) -> Test<'tcx> {
         match *match_pair.pattern.kind {
-            PatternKind::Variant { ref adt_def, variant_index: _, subpatterns: _ } => {
+            PatternKind::Variant { ref adt_def, substs: _, variant_index: _, subpatterns: _ } => {
                 Test {
                     span: match_pair.pattern.span,
                     kind: TestKind::Switch {
@@ -54,7 +54,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         // these maps are empty to start; cases are
                         // added below in add_cases_to_switch
                         options: vec![],
-                        indices: FnvHashMap(),
+                        indices: FxHashMap(),
                     }
                 }
             }
@@ -73,8 +73,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 Test {
                     span: match_pair.pattern.span,
                     kind: TestKind::Range {
-                        lo: lo.clone(),
-                        hi: hi.clone(),
+                        lo: Literal::Value { value: lo.clone() },
+                        hi: Literal::Value { value: hi.clone() },
                         ty: match_pair.pattern.ty.clone(),
                     },
                 }
@@ -110,7 +110,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                                      candidate: &Candidate<'pat, 'tcx>,
                                      switch_ty: Ty<'tcx>,
                                      options: &mut Vec<ConstVal>,
-                                     indices: &mut FnvHashMap<ConstVal, usize>)
+                                     indices: &mut FxHashMap<ConstVal, usize>)
                                      -> bool
     {
         let match_pair = match candidate.match_pairs.iter().find(|mp| mp.lvalue == *test_lvalue) {
@@ -451,7 +451,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             // If we are performing a variant switch, then this
             // informs variant patterns, but nothing else.
             (&TestKind::Switch { adt_def: tested_adt_def, .. },
-             &PatternKind::Variant { adt_def, variant_index, ref subpatterns }) => {
+             &PatternKind::Variant { adt_def, variant_index, ref subpatterns, .. }) => {
                 assert_eq!(adt_def, tested_adt_def);
                 let new_candidate =
                     self.candidate_after_variant_switch(match_pair_index,
@@ -615,7 +615,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
     fn candidate_after_variant_switch<'pat>(&mut self,
                                             match_pair_index: usize,
-                                            adt_def: ty::AdtDef<'tcx>,
+                                            adt_def: &'tcx ty::AdtDef,
                                             variant_index: usize,
                                             subpatterns: &'pat [FieldPattern<'tcx>],
                                             candidate: &Candidate<'pat, 'tcx>)

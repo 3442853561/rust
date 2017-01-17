@@ -686,9 +686,9 @@ fn test_show() {
     assert_eq!(format!("{:?}", ringbuf), "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]");
 
     let ringbuf: VecDeque<_> = vec!["just", "one", "test", "more"]
-                                   .iter()
-                                   .cloned()
-                                   .collect();
+        .iter()
+        .cloned()
+        .collect();
     assert_eq!(format!("{:?}", ringbuf),
                "[\"just\", \"one\", \"test\", \"more\"]");
 }
@@ -1003,5 +1003,28 @@ fn test_contains() {
 
 #[allow(dead_code)]
 fn assert_covariance() {
-    fn drain<'new>(d: Drain<'static, &'static str>) -> Drain<'new, &'new str> { d }
+    fn drain<'new>(d: Drain<'static, &'static str>) -> Drain<'new, &'new str> {
+        d
+    }
+}
+
+#[test]
+fn test_is_empty() {
+    let mut v = VecDeque::<i32>::new();
+    assert!(v.is_empty());
+    assert!(v.iter().is_empty());
+    assert!(v.iter_mut().is_empty());
+    v.extend(&[2, 3, 4]);
+    assert!(!v.is_empty());
+    assert!(!v.iter().is_empty());
+    assert!(!v.iter_mut().is_empty());
+    while let Some(_) = v.pop_front() {
+        assert_eq!(v.is_empty(), v.len() == 0);
+        assert_eq!(v.iter().is_empty(), v.iter().len() == 0);
+        assert_eq!(v.iter_mut().is_empty(), v.iter_mut().len() == 0);
+    }
+    assert!(v.is_empty());
+    assert!(v.iter().is_empty());
+    assert!(v.iter_mut().is_empty());
+    assert!(v.into_iter().is_empty());
 }

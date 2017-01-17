@@ -17,7 +17,7 @@ use rustc::mir::transform::MirMapPass;
 
 use syntax::ext::base::{SyntaxExtension, NamedSyntaxExtension, NormalTT, IdentTT};
 use syntax::ext::base::MacroExpanderFn;
-use syntax::parse::token;
+use syntax::symbol::Symbol;
 use syntax::ast;
 use syntax::feature_gate::AttributeType;
 use syntax_pos::Span;
@@ -64,6 +64,8 @@ pub struct Registry<'a> {
 
     #[doc(hidden)]
     pub attributes: Vec<(String, AttributeType)>,
+
+    whitelisted_custom_derives: Vec<ast::Name>,
 }
 
 impl<'a> Registry<'a> {
@@ -73,13 +75,14 @@ impl<'a> Registry<'a> {
             sess: sess,
             args_hidden: None,
             krate_span: krate_span,
-            syntax_exts: vec!(),
-            early_lint_passes: vec!(),
-            late_lint_passes: vec!(),
+            syntax_exts: vec![],
+            early_lint_passes: vec![],
+            late_lint_passes: vec![],
             lint_groups: HashMap::new(),
-            llvm_passes: vec!(),
-            attributes: vec!(),
+            llvm_passes: vec![],
+            attributes: vec![],
             mir_passes: Vec::new(),
+            whitelisted_custom_derives: Vec::new(),
         }
     }
 
@@ -101,7 +104,7 @@ impl<'a> Registry<'a> {
     ///
     /// This is the most general hook into `libsyntax`'s expansion behavior.
     pub fn register_syntax_extension(&mut self, name: ast::Name, extension: SyntaxExtension) {
-        if name.as_str() == "macro_rules" {
+        if name == "macro_rules" {
             panic!("user-defined macros may not be named `macro_rules`");
         }
         self.syntax_exts.push((name, match extension {
@@ -115,13 +118,28 @@ impl<'a> Registry<'a> {
         }));
     }
 
+    /// This can be used in place of `register_syntax_extension` to register legacy custom derives
+    /// (i.e. attribute syntax extensions whose name begins with `derive_`). Legacy custom
+    /// derives defined by this function do not trigger deprecation warnings when used.
+    #[unstable(feature = "rustc_private", issue = "27812")]
+    #[rustc_deprecated(since = "1.15.0", reason = "replaced by macros 1.1 (RFC 1861)")]
+    pub fn register_custom_derive(&mut self, name: ast::Name, extension: SyntaxExtension) {
+        assert!(name.as_str().starts_with("derive_"));
+        self.whitelisted_custom_derives.push(name);
+        self.register_syntax_extension(name, extension);
+    }
+
+    pub fn take_whitelisted_custom_derives(&mut self) -> Vec<ast::Name> {
+        ::std::mem::replace(&mut self.whitelisted_custom_derives, Vec::new())
+    }
+
     /// Register a macro of the usual kind.
     ///
     /// This is a convenience wrapper for `register_syntax_extension`.
     /// It builds for you a `NormalTT` that calls `expander`,
     /// and also takes care of interning the macro's name.
     pub fn register_macro(&mut self, name: &str, expander: MacroExpanderFn) {
-        self.register_syntax_extension(token::intern(name),
+        self.register_syntax_extension(Symbol::intern(name),
                                        NormalTT(Box::new(expander), None, false));
     }
 

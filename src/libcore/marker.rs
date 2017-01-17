@@ -26,15 +26,15 @@ use hash::Hasher;
 /// appropriate.
 ///
 /// An example of a non-`Send` type is the reference-counting pointer
-/// [`rc::Rc`][rc]. If two threads attempt to clone `Rc`s that point to the same
+/// [`rc::Rc`][`Rc`]. If two threads attempt to clone [`Rc`]s that point to the same
 /// reference-counted value, they might try to update the reference count at the
-/// same time, which is [undefined behavior][ub] because `Rc` doesn't use atomic
+/// same time, which is [undefined behavior][ub] because [`Rc`] doesn't use atomic
 /// operations. Its cousin [`sync::Arc`][arc] does use atomic operations (incurring
 /// some overhead) and thus is `Send`.
 ///
 /// See [the Nomicon](../../nomicon/send-and-sync.html) for more details.
 ///
-/// [rc]: ../../std/rc/struct.Rc.html
+/// [`Rc`]: ../../std/rc/struct.Rc.html
 /// [arc]: ../../std/sync/struct.Arc.html
 /// [ub]: ../../reference.html#behavior-considered-undefined
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -100,13 +100,26 @@ pub trait Sized {
 ///
 /// All implementations of `Unsize` are provided automatically by the compiler.
 ///
+/// `Unsize` is implemented for:
+///
+/// - `[T; N]` is `Unsize<[T]>`
+/// - `T` is `Unsize<Trait>` when `T: Trait`
+/// - `Foo<..., T, ...>` is `Unsize<Foo<..., U, ...>>` if:
+///   - `T: Unsize<U>`
+///   - Foo is a struct
+///   - Only the last field of `Foo` has a type involving `T`
+///   - `T` is not part of the type of any other fields
+///   - `Bar<T>: Unsize<Bar<U>>`, if the last field of `Foo` has type `Bar<T>`
+///
 /// `Unsize` is used along with [`ops::CoerceUnsized`][coerceunsized] to allow
 /// "user-defined" containers such as [`rc::Rc`][rc] to contain dynamically-sized
-/// types. See the [DST coercion RFC][RFC982] for more details.
+/// types. See the [DST coercion RFC][RFC982] and [the nomicon entry on coercion][nomicon-coerce]
+/// for more details.
 ///
 /// [coerceunsized]: ../ops/trait.CoerceUnsized.html
 /// [rc]: ../../std/rc/struct.Rc.html
 /// [RFC982]: https://github.com/rust-lang/rfcs/blob/master/text/0982-dst-coercion.md
+
 #[unstable(feature = "unsize", issue = "27732")]
 #[lang="unsize"]
 pub trait Unsize<T: ?Sized> {
@@ -183,19 +196,16 @@ pub trait Unsize<T: ?Sized> {
 /// Copies happen implicitly, for example as part of an assignment `y = x`. The behavior of
 /// `Copy` is not overloadable; it is always a simple bit-wise copy.
 ///
-/// Cloning is an explicit action, `x.clone()`. The implementation of [`Clone`][clone] can
+/// Cloning is an explicit action, `x.clone()`. The implementation of [`Clone`] can
 /// provide any type-specific behavior necessary to duplicate values safely. For example,
-/// the implementation of `Clone` for [`String`][string] needs to copy the pointed-to string
-/// buffer in the heap. A simple bitwise copy of `String` values would merely copy the
-/// pointer, leading to a double free down the line. For this reason, `String` is `Clone`
+/// the implementation of [`Clone`] for [`String`] needs to copy the pointed-to string
+/// buffer in the heap. A simple bitwise copy of [`String`] values would merely copy the
+/// pointer, leading to a double free down the line. For this reason, [`String`] is [`Clone`]
 /// but not `Copy`.
 ///
-/// `Clone` is a supertrait of `Copy`, so everything which is `Copy` must also implement
-/// `Clone`. If a type is `Copy` then its `Clone` implementation need only return `*self`
+/// [`Clone`] is a supertrait of `Copy`, so everything which is `Copy` must also implement
+/// [`Clone`]. If a type is `Copy` then its [`Clone`] implementation need only return `*self`
 /// (see the example above).
-///
-/// [clone]: ../clone/trait.Clone.html
-/// [string]: ../../std/string/struct.String.html
 ///
 /// ## When can my type be `Copy`?
 ///
@@ -210,7 +220,7 @@ pub trait Unsize<T: ?Sized> {
 /// }
 /// ```
 ///
-/// A struct can be `Copy`, and `i32` is `Copy`, therefore `Point` is eligible to be `Copy`.
+/// A struct can be `Copy`, and [`i32`] is `Copy`, therefore `Point` is eligible to be `Copy`.
 /// By contrast, consider
 ///
 /// ```
@@ -231,18 +241,16 @@ pub trait Unsize<T: ?Sized> {
 /// ## When *can't* my type be `Copy`?
 ///
 /// Some types can't be copied safely. For example, copying `&mut T` would create an aliased
-/// mutable reference. Copying [`String`] would duplicate responsibility for managing the `String`'s
-/// buffer, leading to a double free.
+/// mutable reference. Copying [`String`] would duplicate responsibility for managing the
+/// [`String`]'s buffer, leading to a double free.
 ///
 /// Generalizing the latter case, any type implementing [`Drop`] can't be `Copy`, because it's
 /// managing some resource besides its own [`size_of::<T>()`] bytes.
 ///
-/// If you try to implement `Copy` on a struct or enum containing non-`Copy` data, you will get a
-/// compile-time error. Specifically, with structs you'll get [E0204] and with enums you'll get
-/// [E0205].
+/// If you try to implement `Copy` on a struct or enum containing non-`Copy` data, you will get
+/// the error [E0204].
 ///
-/// [E0204]: https://doc.rust-lang.org/error-index.html#E0204
-/// [E0205]: https://doc.rust-lang.org/error-index.html#E0205
+/// [E0204]: ../../error-index.html#E0204
 ///
 /// ## When *should* my type be `Copy`?
 ///
@@ -255,6 +263,9 @@ pub trait Unsize<T: ?Sized> {
 /// [`String`]: ../../std/string/struct.String.html
 /// [`Drop`]: ../../std/ops/trait.Drop.html
 /// [`size_of::<T>()`]: ../../std/mem/fn.size_of.html
+/// [`Clone`]: ../clone/trait.Clone.html
+/// [`String`]: ../../std/string/struct.String.html
+/// [`i32`]: ../../std/primitive.i32.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[lang = "copy"]
 pub trait Copy : Clone {
@@ -290,20 +301,20 @@ pub trait Copy : Clone {
 /// mutability" in a non-thread-safe form, such as [`cell::Cell`][cell]
 /// and [`cell::RefCell`][refcell]. These types allow for mutation of
 /// their contents even through an immutable, shared reference. For
-/// example the `set` method on `Cell<T>` takes `&self`, so it requires
-/// only a shared reference `&Cell<T>`. The method performs no
-/// synchronization, thus `Cell` cannot be `Sync`.
+/// example the `set` method on [`Cell<T>`][cell] takes `&self`, so it requires
+/// only a shared reference [`&Cell<T>`][cell]. The method performs no
+/// synchronization, thus [`Cell`][cell] cannot be `Sync`.
 ///
 /// Another example of a non-`Sync` type is the reference-counting
-/// pointer [`rc::Rc`][rc]. Given any reference `&Rc<T>`, you can clone
-/// a new `Rc<T>`, modifying the reference counts in a non-atomic way.
+/// pointer [`rc::Rc`][rc]. Given any reference [`&Rc<T>`][rc], you can clone
+/// a new [`Rc<T>`][rc], modifying the reference counts in a non-atomic way.
 ///
 /// For cases when one does need thread-safe interior mutability,
 /// Rust provides [atomic data types], as well as explicit locking via
 /// [`sync::Mutex`][mutex] and [`sync::RWLock`][rwlock]. These types
 /// ensure that any mutation cannot cause data races, hence the types
 /// are `Sync`. Likewise, [`sync::Arc`][arc] provides a thread-safe
-/// analogue of `Rc`.
+/// analogue of [`Rc`][rc].
 ///
 /// Any types with interior mutability must also use the
 /// [`cell::UnsafeCell`][unsafecell] wrapper around the value(s) which

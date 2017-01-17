@@ -14,7 +14,7 @@ use rustc::hir::def_id::DefId;
 use rustc_serialize::json::as_json;
 
 use external_data::*;
-use data::VariableKind;
+use data::{VariableKind, SigElement};
 use dump::Dump;
 use super::Format;
 
@@ -62,7 +62,6 @@ impl<'b, W: Write + 'b> Dump for JsonDumper<'b, W> {
     impl_fn!(function, FunctionData, defs);
     impl_fn!(method, MethodData, defs);
     impl_fn!(macro_data, MacroData, defs);
-    impl_fn!(mod_data, ModData, defs);
     impl_fn!(typedef, TypeDefData, defs);
     impl_fn!(variable, VariableData, defs);
 
@@ -74,6 +73,44 @@ impl<'b, W: Write + 'b> Dump for JsonDumper<'b, W> {
     impl_fn!(variable_ref, VariableRefData, refs);
 
     impl_fn!(macro_use, MacroUseData, macro_refs);
+
+    fn mod_data(&mut self, data: ModData) {
+        let id: Id = From::from(data.id);
+        let mut def = Def {
+            kind: DefKind::Mod,
+            id: id,
+            span: data.span,
+            name: data.name,
+            qualname: data.qualname,
+            value: data.filename,
+            children: data.items.into_iter().map(|id| From::from(id)).collect(),
+            decl_id: None,
+            docs: data.docs,
+            sig: Some(From::from(data.sig)),
+        };
+        if def.span.file_name != def.value {
+            // If the module is an out-of-line defintion, then we'll make the
+            // defintion the first character in the module's file and turn the
+            // the declaration into a reference to it.
+            let rf = Ref {
+                kind: RefKind::Mod,
+                span: def.span,
+                ref_id: id,
+            };
+            self.result.refs.push(rf);
+            def.span = SpanData {
+                file_name: def.value.clone(),
+                byte_start: 0,
+                byte_end: 0,
+                line_start: 1,
+                line_end: 1,
+                column_start: 1,
+                column_end: 1,
+            }
+        }
+
+        self.result.defs.push(def);
+    }
 
     // FIXME store this instead of throwing it away.
     fn impl_data(&mut self, _data: ImplData) {}
@@ -111,7 +148,7 @@ impl Analysis {
 
 // DefId::index is a newtype and so the JSON serialisation is ugly. Therefore
 // we use our own Id which is the same, but without the newtype.
-#[derive(Debug, RustcEncodable)]
+#[derive(Clone, Copy, Debug, RustcEncodable)]
 struct Id {
     krate: u32,
     index: u32,
@@ -129,7 +166,7 @@ impl From<DefId> for Id {
 #[derive(Debug, RustcEncodable)]
 struct Import {
     kind: ImportKind,
-    id: Id,
+    ref_id: Option<Id>,
     span: SpanData,
     name: String,
     value: String,
@@ -146,7 +183,7 @@ impl From<ExternCrateData> for Import {
     fn from(data: ExternCrateData) -> Import {
         Import {
             kind: ImportKind::ExternCrate,
-            id: From::from(data.id),
+            ref_id: None,
             span: data.span,
             name: data.name,
             value: String::new(),
@@ -157,7 +194,7 @@ impl From<UseData> for Import {
     fn from(data: UseData) -> Import {
         Import {
             kind: ImportKind::Use,
-            id: From::from(data.id),
+            ref_id: data.mod_id.map(|id| From::from(id)),
             span: data.span,
             name: data.name,
             value: String::new(),
@@ -168,7 +205,7 @@ impl From<UseGlobData> for Import {
     fn from(data: UseGlobData) -> Import {
         Import {
             kind: ImportKind::GlobUse,
-            id: From::from(data.id),
+            ref_id: None,
             span: data.span,
             name: "*".to_owned(),
             value: data.names.join(", "),
@@ -187,6 +224,7 @@ struct Def {
     children: Vec<Id>,
     decl_id: Option<Id>,
     docs: String,
+    sig: Option<JsonSignature>,
 }
 
 #[derive(Debug, RustcEncodable)]
@@ -228,6 +266,7 @@ impl From<EnumData> for Def {
             children: data.variants.into_iter().map(|id| From::from(id)).collect(),
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -244,6 +283,7 @@ impl From<TupleVariantData> for Def {
             children: vec![],
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -259,6 +299,7 @@ impl From<StructVariantData> for Def {
             children: vec![],
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -274,6 +315,7 @@ impl From<StructData> for Def {
             children: data.fields.into_iter().map(|id| From::from(id)).collect(),
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -289,6 +331,7 @@ impl From<TraitData> for Def {
             children: data.items.into_iter().map(|id| From::from(id)).collect(),
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -304,6 +347,7 @@ impl From<FunctionData> for Def {
             children: vec![],
             decl_id: None,
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -319,6 +363,7 @@ impl From<MethodData> for Def {
             children: vec![],
             decl_id: data.decl_id.map(|id| From::from(id)),
             docs: data.docs,
+            sig: Some(From::from(data.sig)),
         }
     }
 }
@@ -334,21 +379,7 @@ impl From<MacroData> for Def {
             children: vec![],
             decl_id: None,
             docs: data.docs,
-        }
-    }
-}
-impl From<ModData> for Def {
-    fn from(data:ModData) -> Def {
-        Def {
-            kind: DefKind::Mod,
-            id: From::from(data.id),
-            span: data.span,
-            name: data.name,
-            qualname: data.qualname,
-            value: data.filename,
-            children: data.items.into_iter().map(|id| From::from(id)).collect(),
-            decl_id: None,
-            docs: data.docs,
+            sig: None,
         }
     }
 }
@@ -364,6 +395,7 @@ impl From<TypeDefData> for Def {
             children: vec![],
             decl_id: None,
             docs: String::new(),
+            sig: data.sig.map(|s| From::from(s)),
         }
     }
 }
@@ -384,6 +416,7 @@ impl From<VariableData> for Def {
             children: vec![],
             decl_id: None,
             docs: data.docs,
+            sig: None,
         }
     }
 }
@@ -471,6 +504,46 @@ impl From<MacroUseData> for MacroRef {
             span: data.span,
             qualname: data.qualname,
             callee_span: data.callee_span,
+        }
+    }
+}
+
+#[derive(Debug, RustcEncodable)]
+pub struct JsonSignature {
+    span: SpanData,
+    text: String,
+    ident_start: usize,
+    ident_end: usize,
+    defs: Vec<JsonSigElement>,
+    refs: Vec<JsonSigElement>,
+}
+
+impl From<Signature> for JsonSignature {
+    fn from(data: Signature) -> JsonSignature {
+        JsonSignature {
+            span: data.span,
+            text: data.text,
+            ident_start: data.ident_start,
+            ident_end: data.ident_end,
+            defs: data.defs.into_iter().map(|s| From::from(s)).collect(),
+            refs: data.refs.into_iter().map(|s| From::from(s)).collect(),
+        }
+    }
+}
+
+#[derive(Debug, RustcEncodable)]
+pub struct JsonSigElement {
+    id: Id,
+    start: usize,
+    end: usize,
+}
+
+impl From<SigElement> for JsonSigElement {
+    fn from(data: SigElement) -> JsonSigElement {
+        JsonSigElement {
+            id: From::from(data.id),
+            start: data.start,
+            end: data.end,
         }
     }
 }

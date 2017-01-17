@@ -20,7 +20,7 @@ use rustc::ty::{LvaluePreference, NoPreference, PreferMutLvalue};
 use rustc::hir;
 
 use syntax_pos::Span;
-use syntax::parse::token;
+use syntax::symbol::Symbol;
 
 #[derive(Copy, Clone, Debug)]
 enum AutoderefKind {
@@ -120,7 +120,7 @@ impl<'a, 'gcx, 'tcx> Autoderef<'a, 'gcx, 'tcx> {
         let normalized = traits::normalize_projection_type(&mut selcx,
                                                            ty::ProjectionTy {
                                                                trait_ref: trait_ref,
-                                                               item_name: token::intern("Target"),
+                                                               item_name: Symbol::intern("Target"),
                                                            },
                                                            cause,
                                                            0);
@@ -131,8 +131,16 @@ impl<'a, 'gcx, 'tcx> Autoderef<'a, 'gcx, 'tcx> {
         Some(self.fcx.resolve_type_vars_if_possible(&normalized.value))
     }
 
+    /// Returns the final type, generating an error if it is an
+    /// unresolved inference variable.
     pub fn unambiguous_final_ty(&self) -> Ty<'tcx> {
         self.fcx.structurally_resolved_type(self.span, self.cur_ty)
+    }
+
+    /// Returns the final type we ended up with, which may well be an
+    /// inference variable (we will resolve it first, if possible).
+    pub fn maybe_ambiguous_final_ty(&self) -> Ty<'tcx> {
+        self.fcx.resolve_type_vars_if_possible(&self.cur_ty)
     }
 
     pub fn finalize<'b, I>(self, pref: LvaluePreference, exprs: I)
@@ -198,7 +206,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             (PreferMutLvalue, Some(trait_did)) => {
                 self.lookup_method_in_trait(span,
                                             base_expr,
-                                            token::intern("deref_mut"),
+                                            Symbol::intern("deref_mut"),
                                             trait_did,
                                             base_ty,
                                             None)
@@ -211,7 +219,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             (None, Some(trait_did)) => {
                 self.lookup_method_in_trait(span,
                                             base_expr,
-                                            token::intern("deref"),
+                                            Symbol::intern("deref"),
                                             trait_did,
                                             base_ty,
                                             None)

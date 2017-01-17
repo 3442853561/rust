@@ -36,6 +36,10 @@ use core::{isize, usize};
 use core::convert::From;
 use heap::deallocate;
 
+/// A soft limit on the amount of references that may be made to an `Arc`.
+///
+/// Going above this limit will abort your program (although not
+/// necessarily) at _exactly_ `MAX_REFCOUNT + 1` references.
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 
 /// A thread-safe reference-counting pointer.
@@ -51,24 +55,24 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// [`RwLock`][rwlock], or one of the [`Atomic`][atomic] types.
 ///
 /// `Arc` uses atomic operations for reference counting, so `Arc`s can be
-/// sent between threads. In other words, `Arc<T>` implements [`Send`][send]
-/// as long as `T` implements `Send` and [`Sync`][sync]. The disadvantage is
+/// sent between threads. In other words, `Arc<T>` implements [`Send`]
+/// as long as `T` implements [`Send`] and [`Sync`][sync]. The disadvantage is
 /// that atomic operations are more expensive than ordinary memory accesses.
 /// If you are not sharing reference-counted values between threads, consider
-/// using [`rc::Rc`][rc] for lower overhead. `Rc` is a safe default, because
-/// the compiler will catch any attempt to send an `Rc` between threads.
+/// using [`rc::Rc`] for lower overhead. [`Rc`] is a safe default, because
+/// the compiler will catch any attempt to send an [`Rc`] between threads.
 /// However, a library might choose `Arc` in order to give library consumers
 /// more flexibility.
 ///
 /// The [`downgrade`][downgrade] method can be used to create a non-owning
-/// [`Weak`][weak] pointer. A `Weak` pointer can be [`upgrade`][upgrade]d
-/// to an `Arc`, but this will return [`None`][option] if the value has
-/// already been dropped.
+/// [`Weak`][weak] pointer. A [`Weak`][weak] pointer can be [`upgrade`][upgrade]d
+/// to an `Arc`, but this will return [`None`] if the value has already been
+/// dropped.
 ///
 /// A cycle between `Arc` pointers will never be deallocated. For this reason,
-/// `Weak` is used to break cycles. For example, a tree could have strong
-/// `Arc` pointers from parent nodes to children, and `Weak` pointers from
-/// children back to their parents.
+/// [`Weak`][weak] is used to break cycles. For example, a tree could have
+/// strong `Arc` pointers from parent nodes to children, and [`Weak`][weak]
+/// pointers from children back to their parents.
 ///
 /// `Arc<T>` automatically dereferences to `T` (via the [`Deref`][deref] trait),
 /// so you can call `T`'s methods on a value of type `Arc<T>`. To avoid name
@@ -82,22 +86,22 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// Arc::downgrade(&my_arc);
 /// ```
 ///
-/// `Weak<T>` does not auto-dereference to `T`, because the value may have
+/// [`Weak<T>`][weak] does not auto-dereference to `T`, because the value may have
 /// already been destroyed.
 ///
 /// [arc]: struct.Arc.html
 /// [weak]: struct.Weak.html
-/// [rc]: ../../std/rc/struct.Rc.html
+/// [`Rc`]: ../../std/rc/struct.Rc.html
 /// [clone]: ../../std/clone/trait.Clone.html#tymethod.clone
 /// [mutex]: ../../std/sync/struct.Mutex.html
 /// [rwlock]: ../../std/sync/struct.RwLock.html
 /// [atomic]: ../../std/sync/atomic/index.html
-/// [send]: ../../std/marker/trait.Send.html
+/// [`Send`]: ../../std/marker/trait.Send.html
 /// [sync]: ../../std/marker/trait.Sync.html
 /// [deref]: ../../std/ops/trait.Deref.html
 /// [downgrade]: struct.Arc.html#method.downgrade
 /// [upgrade]: struct.Weak.html#method.upgrade
-/// [option]: ../../std/option/enum.Option.html
+/// [`None`]: ../../std/option/enum.Option.html#variant.None
 /// [assoc]: ../../book/method-syntax.html#associated-functions
 ///
 /// # Examples
@@ -123,7 +127,9 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// }
 /// ```
 ///
-/// Sharing a mutable `AtomicUsize`:
+/// Sharing a mutable [`AtomicUsize`]:
+///
+/// [`AtomicUsize`]: ../../std/sync/atomic/struct.AtomicUsize.html
 ///
 /// ```no_run
 /// use std::sync::Arc;
@@ -270,6 +276,68 @@ impl<T> Arc<T> {
             Ok(elem)
         }
     }
+
+    /// Consumes the `Arc`, returning the wrapped pointer.
+    ///
+    /// To avoid a memory leak the pointer must be converted back to an `Arc` using
+    /// [`Arc::from_raw`][from_raw].
+    ///
+    /// [from_raw]: struct.Arc.html#method.from_raw
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(rc_raw)]
+    ///
+    /// use std::sync::Arc;
+    ///
+    /// let x = Arc::new(10);
+    /// let x_ptr = Arc::into_raw(x);
+    /// assert_eq!(unsafe { *x_ptr }, 10);
+    /// ```
+    #[unstable(feature = "rc_raw", issue = "37197")]
+    pub fn into_raw(this: Self) -> *mut T {
+        let ptr = unsafe { &mut (**this.ptr).data as *mut _ };
+        mem::forget(this);
+        ptr
+    }
+
+    /// Constructs an `Arc` from a raw pointer.
+    ///
+    /// The raw pointer must have been previously returned by a call to a
+    /// [`Arc::into_raw`][into_raw].
+    ///
+    /// This function is unsafe because improper use may lead to memory problems. For example, a
+    /// double-free may occur if the function is called twice on the same raw pointer.
+    ///
+    /// [into_raw]: struct.Arc.html#method.into_raw
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(rc_raw)]
+    ///
+    /// use std::sync::Arc;
+    ///
+    /// let x = Arc::new(10);
+    /// let x_ptr = Arc::into_raw(x);
+    ///
+    /// unsafe {
+    ///     // Convert back to an `Arc` to prevent leak.
+    ///     let x = Arc::from_raw(x_ptr);
+    ///     assert_eq!(*x, 10);
+    ///
+    ///     // Further calls to `Arc::from_raw(x_ptr)` would be memory unsafe.
+    /// }
+    ///
+    /// // The memory was freed when `x` went out of scope above, so `x_ptr` is now dangling!
+    /// ```
+    #[unstable(feature = "rc_raw", issue = "37197")]
+    pub unsafe fn from_raw(ptr: *mut T) -> Self {
+        // To find the corresponding pointer to the `ArcInner` we need to subtract the offset of the
+        // `data` field from the pointer.
+        Arc { ptr: Shared::new((ptr as *mut u8).offset(-offset_of!(ArcInner<T>, data)) as *mut _) }
+    }
 }
 
 impl<T: ?Sized> Arc<T> {
@@ -315,16 +383,17 @@ impl<T: ?Sized> Arc<T> {
 
     /// Gets the number of [`Weak`][weak] pointers to this value.
     ///
-    /// Be careful how you use this information, because another thread
-    /// may change the weak count at any time.
-    ///
     /// [weak]: struct.Weak.html
+    ///
+    /// # Safety
+    ///
+    /// This method by itself is safe, but using it correctly requires extra care.
+    /// Another thread can change the weak count at any time,
+    /// including potentially between calling this method and acting on the result.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(arc_counts)]
-    ///
     /// use std::sync::Arc;
     ///
     /// let five = Arc::new(5);
@@ -335,22 +404,22 @@ impl<T: ?Sized> Arc<T> {
     /// assert_eq!(1, Arc::weak_count(&five));
     /// ```
     #[inline]
-    #[unstable(feature = "arc_counts", reason = "not clearly useful, and racy",
-               issue = "28356")]
+    #[stable(feature = "arc_counts", since = "1.15.0")]
     pub fn weak_count(this: &Self) -> usize {
         this.inner().weak.load(SeqCst) - 1
     }
 
     /// Gets the number of strong (`Arc`) pointers to this value.
     ///
-    /// Be careful how you use this information, because another thread
-    /// may change the strong count at any time.
+    /// # Safety
+    ///
+    /// This method by itself is safe, but using it correctly requires extra care.
+    /// Another thread can change the strong count at any time,
+    /// including potentially between calling this method and acting on the result.
     ///
     /// # Examples
     ///
     /// ```
-    /// #![feature(arc_counts)]
-    ///
     /// use std::sync::Arc;
     ///
     /// let five = Arc::new(5);
@@ -361,8 +430,7 @@ impl<T: ?Sized> Arc<T> {
     /// assert_eq!(2, Arc::strong_count(&five));
     /// ```
     #[inline]
-    #[unstable(feature = "arc_counts", reason = "not clearly useful, and racy",
-               issue = "28356")]
+    #[stable(feature = "arc_counts", since = "1.15.0")]
     pub fn strong_count(this: &Self) -> usize {
         this.inner().strong.load(SeqCst)
     }
@@ -640,7 +708,7 @@ impl<T: ?Sized> Arc<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T: ?Sized> Drop for Arc<T> {
+unsafe impl<#[may_dangle] T: ?Sized> Drop for Arc<T> {
     /// Drops the `Arc`.
     ///
     /// This will decrement the strong reference count. If the strong reference
@@ -668,7 +736,6 @@ impl<T: ?Sized> Drop for Arc<T> {
     /// drop(foo);    // Doesn't print anything
     /// drop(foo2);   // Prints "dropped!"
     /// ```
-    #[unsafe_destructor_blind_to_params]
     #[inline]
     fn drop(&mut self) {
         // Because `fetch_sub` is already atomic, we do not need to synchronize
@@ -1177,6 +1244,23 @@ mod tests {
         let x = Arc::new(5);
         let _w = Arc::downgrade(&x);
         assert_eq!(Arc::try_unwrap(x), Ok(5));
+    }
+
+    #[test]
+    fn into_from_raw() {
+        let x = Arc::new(box "hello");
+        let y = x.clone();
+
+        let x_ptr = Arc::into_raw(x);
+        drop(y);
+        unsafe {
+            assert_eq!(**x_ptr, "hello");
+
+            let x = Arc::from_raw(x_ptr);
+            assert_eq!(**x, "hello");
+
+            assert_eq!(Arc::try_unwrap(x).map(|x| *x), Ok("hello"));
+        }
     }
 
     #[test]
