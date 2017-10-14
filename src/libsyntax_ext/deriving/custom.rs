@@ -16,34 +16,35 @@ use syntax::ast::{self, ItemKind, Attribute, Mac};
 use syntax::attr::{mark_used, mark_known};
 use syntax::codemap::Span;
 use syntax::ext::base::*;
-use syntax::fold::Folder;
 use syntax::visit::Visitor;
 
 struct MarkAttrs<'a>(&'a [ast::Name]);
 
 impl<'a> Visitor<'a> for MarkAttrs<'a> {
     fn visit_attribute(&mut self, attr: &Attribute) {
-        if self.0.contains(&attr.name()) {
-            mark_used(attr);
-            mark_known(attr);
+        if let Some(name) = attr.name() {
+            if self.0.contains(&name) {
+                mark_used(attr);
+                mark_known(attr);
+            }
         }
     }
 
     fn visit_mac(&mut self, _mac: &Mac) {}
 }
 
-pub struct CustomDerive {
+pub struct ProcMacroDerive {
     inner: fn(TokenStream) -> TokenStream,
     attrs: Vec<ast::Name>,
 }
 
-impl CustomDerive {
-    pub fn new(inner: fn(TokenStream) -> TokenStream, attrs: Vec<ast::Name>) -> CustomDerive {
-        CustomDerive { inner: inner, attrs: attrs }
+impl ProcMacroDerive {
+    pub fn new(inner: fn(TokenStream) -> TokenStream, attrs: Vec<ast::Name>) -> ProcMacroDerive {
+        ProcMacroDerive { inner: inner, attrs: attrs }
     }
 }
 
-impl MultiItemModifier for CustomDerive {
+impl MultiItemModifier for ProcMacroDerive {
     fn expand(&self,
               ecx: &mut ExtCtxt,
               span: Span,
@@ -54,7 +55,7 @@ impl MultiItemModifier for CustomDerive {
             Annotatable::Item(item) => item,
             Annotatable::ImplItem(_) |
             Annotatable::TraitItem(_) => {
-                ecx.span_err(span, "custom derive attributes may only be \
+                ecx.span_err(span, "proc-macro derives may only be \
                                     applied to struct/enum items");
                 return Vec::new()
             }
@@ -63,7 +64,7 @@ impl MultiItemModifier for CustomDerive {
             ItemKind::Struct(..) |
             ItemKind::Enum(..) => {},
             _ => {
-                ecx.span_err(span, "custom derive attributes may only be \
+                ecx.span_err(span, "proc-macro derives may only be \
                                     applied to struct/enum items");
                 return Vec::new()
             }
@@ -73,14 +74,15 @@ impl MultiItemModifier for CustomDerive {
         MarkAttrs(&self.attrs).visit_item(&item);
 
         let input = __internal::new_token_stream(ecx.resolver.eliminate_crate_var(item.clone()));
-        let res = __internal::set_parse_sess(&ecx.parse_sess, || {
+        let res = __internal::set_sess(ecx, || {
             let inner = self.inner;
             panic::catch_unwind(panic::AssertUnwindSafe(|| inner(input)))
         });
-        let new_items = match res {
-            Ok(stream) => __internal::token_stream_items(stream),
+
+        let stream = match res {
+            Ok(stream) => stream,
             Err(e) => {
-                let msg = "custom derive attribute panicked";
+                let msg = "proc-macro derive panicked";
                 let mut err = ecx.struct_span_fatal(span, msg);
                 if let Some(s) = e.downcast_ref::<String>() {
                     err.help(&format!("message: {}", s));
@@ -94,12 +96,16 @@ impl MultiItemModifier for CustomDerive {
             }
         };
 
-        let mut res = vec![Annotatable::Item(item)];
-        // Reassign spans of all expanded items to the input `item`
-        // for better errors here.
-        res.extend(new_items.into_iter().flat_map(|item| {
-            ChangeSpan { span: span }.fold_item(item)
-        }).map(Annotatable::Item));
-        res
+        __internal::set_sess(ecx, || {
+            match __internal::token_stream_parse_items(stream) {
+                Ok(new_items) => new_items.into_iter().map(Annotatable::Item).collect(),
+                Err(_) => {
+                    // FIXME: handle this better
+                    let msg = "proc-macro derive produced unparseable tokens";
+                    ecx.struct_span_fatal(span, msg).emit();
+                    panic!(FatalError);
+                }
+            }
+        })
     }
 }

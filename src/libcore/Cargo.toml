@@ -9,11 +9,13 @@ path = "lib.rs"
 test = false
 bench = false
 
-[[test]]
-name = "coretest"
-path = "../libcoretest/lib.rs"
+[dev-dependencies]
+rand = { path = "../librand" }
 
-# FIXME: need to extract benchmarks to a separate crate
-#[[bench]]
-#name = "coretest"
-#path = "../libcoretest/lib.rs"
+[[test]]
+name = "coretests"
+path = "../libcore/tests/lib.rs"
+
+[[bench]]
+name = "corebenches"
+path = "../libcore/benches/lib.rs"

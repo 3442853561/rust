@@ -20,6 +20,11 @@ use time::Duration;
 
 use sys_common::thread::*;
 
+#[cfg(not(target_os = "l4re"))]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
+#[cfg(target_os = "l4re")]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
+
 pub struct Thread {
     id: libc::pthread_t,
 }
@@ -52,6 +57,7 @@ impl Thread {
         assert_eq!(libc::pthread_attr_init(&mut attr), 0);
 
         let stack_size = cmp::max(stack, min_stack_size(&attr));
+
         match pthread_attr_setstacksize(&mut attr,
                                         stack_size) {
             0 => {}
@@ -131,6 +137,7 @@ impl Thread {
     #[cfg(any(target_env = "newlib",
               target_os = "solaris",
               target_os = "haiku",
+              target_os = "l4re",
               target_os = "emscripten"))]
     pub fn set_name(_name: &CStr) {
         // Newlib, Illumos, Haiku, and Emscripten have no way to set a thread name.
@@ -168,7 +175,8 @@ impl Thread {
         unsafe {
             let ret = libc::pthread_join(self.id, ptr::null_mut());
             mem::forget(self);
-            debug_assert_eq!(ret, 0);
+            assert!(ret == 0,
+                    "failed to join thread: {}", io::Error::from_raw_os_error(ret));
         }
     }
 
@@ -225,7 +233,7 @@ pub mod guard {
     }
 
     #[cfg(any(target_os = "android", target_os = "freebsd",
-              target_os = "linux", target_os = "netbsd"))]
+              target_os = "linux", target_os = "netbsd", target_os = "l4re"))]
     unsafe fn get_stack_start() -> Option<*mut libc::c_void> {
         let mut ret = None;
         let mut attr: libc::pthread_attr_t = ::mem::zeroed();
@@ -264,23 +272,37 @@ pub mod guard {
                 as *mut libc::c_void;
         }
 
-        // Rellocate the last page of the stack.
-        // This ensures SIGBUS will be raised on
-        // stack overflow.
-        let result = mmap(stackaddr, psize, PROT_NONE,
-                          MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-
-        if result != stackaddr || result == MAP_FAILED {
-            panic!("failed to allocate a guard page");
-        }
-
-        let offset = if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            2
+        if cfg!(target_os = "linux") {
+            // Linux doesn't allocate the whole stack right away, and
+            // the kernel has its own stack-guard mechanism to fault
+            // when growing too close to an existing mapping.  If we map
+            // our own guard, then the kernel starts enforcing a rather
+            // large gap above that, rendering much of the possible
+            // stack space useless.  See #43052.
+            //
+            // Instead, we'll just note where we expect rlimit to start
+            // faulting, so our handler can report "stack overflow", and
+            // trust that the kernel's own stack guard will work.
+            Some(stackaddr as usize)
         } else {
-            1
-        };
+            // Reallocate the last page of the stack.
+            // This ensures SIGBUS will be raised on
+            // stack overflow.
+            let result = mmap(stackaddr, psize, PROT_NONE,
+                              MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
 
-        Some(stackaddr as usize + offset * psize)
+            if result != stackaddr || result == MAP_FAILED {
+                panic!("failed to allocate a guard page");
+            }
+
+            let offset = if cfg!(target_os = "freebsd") {
+                2
+            } else {
+                1
+            };
+
+            Some(stackaddr as usize + offset * psize)
+        }
     }
 
     #[cfg(target_os = "solaris")]
@@ -313,7 +335,7 @@ pub mod guard {
     }
 
     #[cfg(any(target_os = "android", target_os = "freebsd",
-              target_os = "linux", target_os = "netbsd"))]
+              target_os = "linux", target_os = "netbsd", target_os = "l4re"))]
     pub unsafe fn current() -> Option<usize> {
         let mut ret = None;
         let mut attr: libc::pthread_attr_t = ::mem::zeroed();

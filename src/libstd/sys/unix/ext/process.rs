@@ -47,7 +47,7 @@ pub trait CommandExt {
     /// # Notes
     ///
     /// This closure will be run in the context of the child process after a
-    /// `fork`. This primarily means that any modificatons made to memory on
+    /// `fork`. This primarily means that any modifications made to memory on
     /// behalf of this closure will **not** be visible to the parent process.
     /// This is often a very constrained environment where normal operations
     /// like `malloc` or acquiring a mutex are not guaranteed to work (due to
@@ -67,9 +67,19 @@ pub trait CommandExt {
     /// an error indicating why the exec (or another part of the setup of the
     /// `Command`) failed.
     ///
+    /// `exec` not returning has the same implications as calling
+    /// [`process::exit`] – no destructors on the current stack or any other
+    /// thread’s stack will be run. Therefore, it is recommended to only call
+    /// `exec` at a point where it is fine to not run any destructors. Note,
+    /// that the `execvp` syscall independently guarantees that all memory is
+    /// freed and all file descriptors with the `CLOEXEC` option (set by default
+    /// on all file descriptors opened by the standard library) are closed.
+    ///
     /// This function, unlike `spawn`, will **not** `fork` the process to create
     /// a new child. Like spawn, however, the default behavior for the stdio
     /// descriptors will be to inherited from the current process.
+    ///
+    /// [`process::exit`]: ../../../process/fn.exit.html
     ///
     /// # Notes
     ///

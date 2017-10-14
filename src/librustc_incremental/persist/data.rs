@@ -10,64 +10,16 @@
 
 //! The data that we will serialize and deserialize.
 
-use rustc::dep_graph::{DepNode, WorkProduct, WorkProductId};
+use rustc::dep_graph::{WorkProduct, WorkProductId};
 use rustc::hir::def_id::DefIndex;
-use std::sync::Arc;
+use rustc::hir::map::DefPathHash;
+use rustc::middle::cstore::EncodedMetadataHash;
 use rustc_data_structures::fx::FxHashMap;
-use ich::Fingerprint;
-
-use super::directory::DefPathIndex;
-
-/// Data for use when recompiling the **current crate**.
-#[derive(Debug, RustcEncodable, RustcDecodable)]
-pub struct SerializedDepGraph {
-    pub edges: Vec<SerializedEdge>,
-
-    /// These are hashes of two things:
-    /// - the HIR nodes in this crate
-    /// - the metadata nodes from dependent crates we use
-    ///
-    /// In each case, we store a hash summarizing the contents of
-    /// those items as they were at the time we did this compilation.
-    /// In the case of HIR nodes, this hash is derived by walking the
-    /// HIR itself. In the case of metadata nodes, the hash is loaded
-    /// from saved state.
-    ///
-    /// When we do the next compile, we will load these back up and
-    /// compare them against the hashes we see at that time, which
-    /// will tell us what has changed, either in this crate or in some
-    /// crate that we depend on.
-    ///
-    /// Because they will be reloaded, we don't store the DefId (which
-    /// will be different when we next compile) related to each node,
-    /// but rather the `DefPathIndex`. This can then be retraced
-    /// to find the current def-id.
-    pub hashes: Vec<SerializedHash>,
-}
-
-/// Represents a "reduced" dependency edge. Unlike the full dep-graph,
-/// the dep-graph we serialize contains only edges `S -> T` where the
-/// source `S` is something hashable (a HIR node or foreign metadata)
-/// and the target `T` is something significant, like a work-product.
-/// Normally, significant nodes are only those that have saved data on
-/// disk, but in unit-testing the set of significant nodes can be
-/// increased.
-pub type SerializedEdge = (DepNode<DefPathIndex>, DepNode<DefPathIndex>);
-
-#[derive(Debug, RustcEncodable, RustcDecodable)]
-pub struct SerializedHash {
-    /// def-id of thing being hashed
-    pub dep_node: DepNode<DefPathIndex>,
-
-    /// the hash as of previous compilation, computed by code in
-    /// `hash` module
-    pub hash: Fingerprint,
-}
 
 #[derive(Debug, RustcEncodable, RustcDecodable)]
 pub struct SerializedWorkProduct {
     /// node that produced the work-product
-    pub id: Arc<WorkProductId>,
+    pub id: WorkProductId,
 
     /// work-product data itself
     pub work_product: WorkProduct,
@@ -94,7 +46,7 @@ pub struct SerializedMetadataHashes {
     /// where `X` refers to some item in this crate. That `X` will be
     /// a `DefPathIndex` that gets retracted to the current `DefId`
     /// (matching the one found in this structure).
-    pub hashes: Vec<SerializedMetadataHash>,
+    pub entry_hashes: Vec<EncodedMetadataHash>,
 
     /// For each DefIndex (as it occurs in SerializedMetadataHash), this
     /// map stores the DefPathIndex (as it occurs in DefIdDirectory), so
@@ -106,16 +58,5 @@ pub struct SerializedMetadataHashes {
     /// is only populated if -Z query-dep-graph is specified. It will be
     /// empty otherwise. Importing crates are perfectly happy with just having
     /// the DefIndex.
-    pub index_map: FxHashMap<DefIndex, DefPathIndex>
-}
-
-/// The hash for some metadata that (when saving) will be exported
-/// from this crate, or which (when importing) was exported by an
-/// upstream crate.
-#[derive(Debug, RustcEncodable, RustcDecodable)]
-pub struct SerializedMetadataHash {
-    pub def_index: DefIndex,
-
-    /// the hash itself, computed by `calculate_item_hash`
-    pub hash: Fingerprint,
+    pub index_map: FxHashMap<DefIndex, DefPathHash>
 }

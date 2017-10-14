@@ -9,8 +9,7 @@
 // except according to those terms.
 
 use borrow::{Borrow, Cow};
-use fmt::{self, Debug};
-use mem;
+use fmt;
 use ops;
 use cmp;
 use hash::{Hash, Hasher};
@@ -29,18 +28,69 @@ use sys_common::{AsInner, IntoInner, FromInner};
 /// * On Windows, strings are often arbitrary sequences of non-zero 16-bit
 ///   values, interpreted as UTF-16 when it is valid to do so.
 ///
-/// * In Rust, strings are always valid UTF-8, but may contain zeros.
+/// * In Rust, strings are always valid UTF-8, which may contain zeros.
 ///
-/// `OsString` and `OsStr` bridge this gap by simultaneously representing Rust
+/// `OsString` and [`OsStr`] bridge this gap by simultaneously representing Rust
 /// and platform-native string values, and in particular allowing a Rust string
-/// to be converted into an "OS" string with no cost.
+/// to be converted into an "OS" string with no cost if possible.
+///
+/// `OsString` is to [`OsStr`] as [`String`] is to [`&str`]: the former
+/// in each pair are owned strings; the latter are borrowed
+/// references.
+///
+/// # Creating an `OsString`
+///
+/// **From a Rust string**: `OsString` implements
+/// [`From`]`<`[`String`]`>`, so you can use `my_string.`[`from`] to
+/// create an `OsString` from a normal Rust string.
+///
+/// **From slices:** Just like you can start with an empty Rust
+/// [`String`] and then [`push_str`][String.push_str] `&str`
+/// sub-string slices into it, you can create an empty `OsString` with
+/// the [`new`] method and then push string slices into it with the
+/// [`push`] method.
+///
+/// # Extracting a borrowed reference to the whole OS string
+///
+/// You can use the [`as_os_str`] method to get an `&`[`OsStr`] from
+/// an `OsString`; this is effectively a borrowed reference to the
+/// whole string.
+///
+/// # Conversions
+///
+/// See the [module's toplevel documentation about conversions][conversions] for a discussion on
+/// the traits which `OsString` implements for conversions from/to native representations.
+///
+/// [`OsStr`]: struct.OsStr.html
+/// [`From`]: ../convert/trait.From.html
+/// [`from`]: ../convert/trait.From.html#tymethod.from
+/// [`String`]: ../string/struct.String.html
+/// [`&str`]: ../primitive.str.html
+/// [`u8`]: ../primitive.u8.html
+/// [`u16`]: ../primitive.u16.html
+/// [String.push_str]: ../string/struct.String.html#method.push_str
+/// [`new`]: #method.new
+/// [`push`]: #method.push
+/// [`as_os_str`]: #method.as_os_str
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct OsString {
     inner: Buf
 }
 
-/// Slices into OS strings (see `OsString`).
+/// Borrowed reference to an OS string (see [`OsString`]).
+///
+/// This type represents a borrowed reference to a string in the operating system's preferred
+/// representation.
+///
+/// `OsStr` is to [`OsString`] as [`String`] is to [`&str`]: the former in each pair are borrowed
+/// references; the latter are owned strings.
+///
+/// See the [module's toplevel documentation about conversions][conversions] for a discussion on
+/// the traits which `OsStr` implements for conversions from/to native representations.
+///
+/// [`OsString`]: struct.OsString.html
+/// [conversions]: index.html#conversions
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct OsStr {
     inner: Slice
@@ -48,26 +98,70 @@ pub struct OsStr {
 
 impl OsString {
     /// Constructs a new empty `OsString`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let os_string = OsString::new();
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn new() -> OsString {
         OsString { inner: Buf::from_string(String::new()) }
     }
 
-    /// Converts to an `OsStr` slice.
+    /// Converts to an [`OsStr`] slice.
+    ///
+    /// [`OsStr`]: struct.OsStr.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::{OsString, OsStr};
+    ///
+    /// let os_string = OsString::from("foo");
+    /// let os_str = OsStr::new("foo");
+    /// assert_eq!(os_string.as_os_str(), os_str);
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn as_os_str(&self) -> &OsStr {
         self
     }
 
-    /// Converts the `OsString` into a `String` if it contains valid Unicode data.
+    /// Converts the `OsString` into a [`String`] if it contains valid Unicode data.
     ///
     /// On failure, ownership of the original `OsString` is returned.
+    ///
+    /// [`String`]: ../../std/string/struct.String.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let os_string = OsString::from("foo");
+    /// let string = os_string.into_string();
+    /// assert_eq!(string, Ok(String::from("foo")));
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn into_string(self) -> Result<String, OsString> {
         self.inner.into_string().map_err(|buf| OsString { inner: buf} )
     }
 
-    /// Extends the string with the given `&OsStr` slice.
+    /// Extends the string with the given [`&OsStr`] slice.
+    ///
+    /// [`&OsStr`]: struct.OsStr.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut os_string = OsString::from("foo");
+    /// os_string.push("bar");
+    /// assert_eq!(&os_string, "foobar");
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn push<T: AsRef<OsStr>>(&mut self, s: T) {
         self.inner.push_slice(&s.as_ref().inner)
@@ -75,11 +169,25 @@ impl OsString {
 
     /// Creates a new `OsString` with the given capacity.
     ///
-    /// The string will be able to hold exactly `capacity` lenth units of other
+    /// The string will be able to hold exactly `capacity` length units of other
     /// OS strings without reallocating. If `capacity` is 0, the string will not
     /// allocate.
     ///
     /// See main `OsString` documentation information about encoding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut os_string = OsString::with_capacity(10);
+    /// let capacity = os_string.capacity();
+    ///
+    /// // This push is done without reallocating
+    /// os_string.push("foo");
+    ///
+    /// assert_eq!(capacity, os_string.capacity());
+    /// ```
     #[stable(feature = "osstring_simple_functions", since = "1.9.0")]
     pub fn with_capacity(capacity: usize) -> OsString {
         OsString {
@@ -88,6 +196,18 @@ impl OsString {
     }
 
     /// Truncates the `OsString` to zero length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut os_string = OsString::from("foo");
+    /// assert_eq!(&os_string, "foo");
+    ///
+    /// os_string.clear();
+    /// assert_eq!(&os_string, "");
+    /// ```
     #[stable(feature = "osstring_simple_functions", since = "1.9.0")]
     pub fn clear(&mut self) {
         self.inner.clear()
@@ -96,6 +216,15 @@ impl OsString {
     /// Returns the capacity this `OsString` can hold without reallocating.
     ///
     /// See `OsString` introduction for information about encoding.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut os_string = OsString::with_capacity(10);
+    /// assert!(os_string.capacity() >= 10);
+    /// ```
     #[stable(feature = "osstring_simple_functions", since = "1.9.0")]
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
@@ -105,6 +234,16 @@ impl OsString {
     /// in the given `OsString`.
     ///
     /// The collection may reserve more space to avoid frequent reallocations.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut s = OsString::new();
+    /// s.reserve(10);
+    /// assert!(s.capacity() >= 10);
+    /// ```
     #[stable(feature = "osstring_simple_functions", since = "1.9.0")]
     pub fn reserve(&mut self, additional: usize) {
         self.inner.reserve(additional)
@@ -117,9 +256,58 @@ impl OsString {
     /// Note that the allocator may give the collection more space than it
     /// requests. Therefore capacity can not be relied upon to be precisely
     /// minimal. Prefer reserve if future insertions are expected.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut s = OsString::new();
+    /// s.reserve_exact(10);
+    /// assert!(s.capacity() >= 10);
+    /// ```
     #[stable(feature = "osstring_simple_functions", since = "1.9.0")]
     pub fn reserve_exact(&mut self, additional: usize) {
         self.inner.reserve_exact(additional)
+    }
+
+    /// Shrinks the capacity of the `OsString` to match its length.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::OsString;
+    ///
+    /// let mut s = OsString::from("foo");
+    ///
+    /// s.reserve(100);
+    /// assert!(s.capacity() >= 100);
+    ///
+    /// s.shrink_to_fit();
+    /// assert_eq!(3, s.capacity());
+    /// ```
+    #[stable(feature = "osstring_shrink_to_fit", since = "1.19.0")]
+    pub fn shrink_to_fit(&mut self) {
+        self.inner.shrink_to_fit()
+    }
+
+    /// Converts this `OsString` into a boxed [`OsStr`].
+    ///
+    /// [`OsStr`]: struct.OsStr.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::{OsString, OsStr};
+    ///
+    /// let s = OsString::from("hello");
+    ///
+    /// let b: Box<OsStr> = s.into_boxed_os_str();
+    /// ```
+    #[stable(feature = "into_boxed_os_str", since = "1.20.0")]
+    pub fn into_boxed_os_str(self) -> Box<OsStr> {
+        let rw = Box::into_raw(self.inner.into_box()) as *mut OsStr;
+        unsafe { Box::from_raw(rw) }
     }
 }
 
@@ -167,8 +355,8 @@ impl Default for OsString {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Debug for OsString {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+impl fmt::Debug for OsString {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, formatter)
     }
 }
@@ -253,12 +441,14 @@ impl OsStr {
     }
 
     fn from_inner(inner: &Slice) -> &OsStr {
-        unsafe { mem::transmute(inner) }
+        unsafe { &*(inner as *const Slice as *const OsStr) }
     }
 
-    /// Yields a `&str` slice if the `OsStr` is valid Unicode.
+    /// Yields a [`&str`] slice if the `OsStr` is valid Unicode.
     ///
     /// This conversion may entail doing a check for UTF-8 validity.
+    ///
+    /// [`&str`]: ../../std/primitive.str.html
     ///
     /// # Examples
     ///
@@ -273,9 +463,12 @@ impl OsStr {
         self.inner.to_str()
     }
 
-    /// Converts an `OsStr` to a `Cow<str>`.
+    /// Converts an `OsStr` to a [`Cow`]`<`[`str`]`>`.
     ///
     /// Any non-Unicode sequences are replaced with U+FFFD REPLACEMENT CHARACTER.
+    ///
+    /// [`Cow`]: ../../std/borrow/enum.Cow.html
+    /// [`str`]: ../../std/primitive.str.html
     ///
     /// # Examples
     ///
@@ -295,7 +488,19 @@ impl OsStr {
         self.inner.to_string_lossy()
     }
 
-    /// Copies the slice into an owned `OsString`.
+    /// Copies the slice into an owned [`OsString`].
+    ///
+    /// [`OsString`]: struct.OsString.html
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::ffi::{OsStr, OsString};
+    ///
+    /// let os_str = OsStr::new("foo");
+    /// let os_string = os_str.to_os_string();
+    /// assert_eq!(os_string, OsString::from("foo"));
+    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn to_os_string(&self) -> OsString {
         OsString { inner: self.inner.to_owned() }
@@ -322,11 +527,14 @@ impl OsStr {
     /// Returns the length of this `OsStr`.
     ///
     /// Note that this does **not** return the number of bytes in this string
-    /// as, for example, OS strings on Windows are encoded as a list of `u16`
+    /// as, for example, OS strings on Windows are encoded as a list of [`u16`]
     /// rather than a list of bytes. This number is simply useful for passing to
-    /// other methods like `OsString::with_capacity` to avoid reallocations.
+    /// other methods like [`OsString::with_capacity`] to avoid reallocations.
     ///
     /// See `OsStr` introduction for more information about encoding.
+    ///
+    /// [`u16`]: ../primitive.u16.html
+    /// [`OsString::with_capacity`]: struct.OsString.html#method.with_capacity
     ///
     /// # Examples
     ///
@@ -344,12 +552,52 @@ impl OsStr {
         self.inner.inner.len()
     }
 
+    /// Converts a [`Box`]`<OsStr>` into an [`OsString`] without copying or allocating.
+    ///
+    /// [`Box`]: ../boxed/struct.Box.html
+    /// [`OsString`]: struct.OsString.html
+    #[stable(feature = "into_boxed_os_str", since = "1.20.0")]
+    pub fn into_os_string(self: Box<OsStr>) -> OsString {
+        let boxed = unsafe { Box::from_raw(Box::into_raw(self) as *mut Slice) };
+        OsString { inner: Buf::from_box(boxed) }
+    }
+
     /// Gets the underlying byte representation.
     ///
     /// Note: it is *crucial* that this API is private, to avoid
     /// revealing the internal, platform-specific encodings.
     fn bytes(&self) -> &[u8] {
-        unsafe { mem::transmute(&self.inner) }
+        unsafe { &*(&self.inner as *const _ as *const [u8]) }
+    }
+}
+
+#[stable(feature = "box_from_os_str", since = "1.17.0")]
+impl<'a> From<&'a OsStr> for Box<OsStr> {
+    fn from(s: &'a OsStr) -> Box<OsStr> {
+        let rw = Box::into_raw(s.inner.into_box()) as *mut OsStr;
+        unsafe { Box::from_raw(rw) }
+    }
+}
+
+#[stable(feature = "os_string_from_box", since = "1.18.0")]
+impl From<Box<OsStr>> for OsString {
+    fn from(boxed: Box<OsStr>) -> OsString {
+        boxed.into_os_string()
+    }
+}
+
+#[stable(feature = "box_from_os_string", since = "1.20.0")]
+impl From<OsString> for Box<OsStr> {
+    fn from(s: OsString) -> Box<OsStr> {
+        s.into_boxed_os_str()
+    }
+}
+
+#[stable(feature = "box_default_extra", since = "1.17.0")]
+impl Default for Box<OsStr> {
+    fn default() -> Box<OsStr> {
+        let rw = Box::into_raw(Slice::empty_box()) as *mut OsStr;
+        unsafe { Box::from_raw(rw) }
     }
 }
 
@@ -466,9 +714,15 @@ impl Hash for OsStr {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Debug for OsStr {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        self.inner.fmt(formatter)
+impl fmt::Debug for OsStr {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&self.inner, formatter)
+    }
+}
+
+impl OsStr {
+    pub(crate) fn display(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.inner, formatter)
     }
 }
 
@@ -480,7 +734,13 @@ impl Borrow<OsStr> for OsString {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl ToOwned for OsStr {
     type Owned = OsString;
-    fn to_owned(&self) -> OsString { self.to_os_string() }
+    fn to_owned(&self) -> OsString {
+        self.to_os_string()
+    }
+    fn clone_into(&self, target: &mut OsString) {
+        target.clear();
+        target.push(self);
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -648,5 +908,32 @@ mod tests {
     fn test_os_str_default() {
         let os_str: &OsStr = Default::default();
         assert_eq!("", os_str);
+    }
+
+    #[test]
+    fn into_boxed() {
+        let orig = "Hello, world!";
+        let os_str = OsStr::new(orig);
+        let boxed: Box<OsStr> = Box::from(os_str);
+        let os_string = os_str.to_owned().into_boxed_os_str().into_os_string();
+        assert_eq!(os_str, &*boxed);
+        assert_eq!(&*boxed, &*os_string);
+        assert_eq!(&*os_string, os_str);
+    }
+
+    #[test]
+    fn boxed_default() {
+        let boxed = <Box<OsStr>>::default();
+        assert!(boxed.is_empty());
+    }
+
+    #[test]
+    fn test_os_str_clone_into() {
+        let mut os_string = OsString::with_capacity(123);
+        os_string.push("hello");
+        let os_str = OsStr::new("bonjour");
+        os_str.clone_into(&mut os_string);
+        assert_eq!(os_str, os_string);
+        assert!(os_string.capacity() >= 123);
     }
 }

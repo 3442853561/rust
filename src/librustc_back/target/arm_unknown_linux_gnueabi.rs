@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use LinkerFlavor;
 use target::{Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
@@ -17,14 +18,16 @@ pub fn target() -> TargetResult {
         llvm_target: "arm-unknown-linux-gnueabi".to_string(),
         target_endian: "little".to_string(),
         target_pointer_width: "32".to_string(),
+        target_c_int_width: "32".to_string(),
         data_layout: "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64".to_string(),
         arch: "arm".to_string(),
         target_os: "linux".to_string(),
         target_env: "gnu".to_string(),
         target_vendor: "unknown".to_string(),
+        linker_flavor: LinkerFlavor::Gcc,
 
         options: TargetOptions {
-            features: "+v6".to_string(),
+            features: "+strict-align,+v6".to_string(),
             abi_blacklist: super::arm_base::abi_blacklist(),
             .. base
         },

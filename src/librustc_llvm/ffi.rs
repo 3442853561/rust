@@ -8,6 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// FIXME: Rename 'DIGlobalVariable' to 'DIGlobalVariableExpression'
+// once support for LLVM 3.9 is dropped.
+//
+// This method was changed in this LLVM patch:
+// https://reviews.llvm.org/D26769
+
 use debuginfo::{DIBuilderRef, DIDescriptor, DIFile, DILexicalBlock, DISubprogram, DIType,
                 DIBasicType, DIDerivedType, DICompositeType, DIScope, DIVariable,
                 DIGlobalVariable, DIArray, DISubrange, DITemplateTypeParameter, DIEnumerator,
@@ -42,10 +48,13 @@ pub enum CallConv {
     X86StdcallCallConv = 64,
     X86FastcallCallConv = 65,
     ArmAapcsCallConv = 67,
+    Msp430Intr = 69,
+    X86_ThisCall = 70,
     PtxKernel = 71,
     X86_64_SysV = 78,
     X86_64_Win64 = 79,
     X86_VectorCall = 80,
+    X86_Intr = 83,
 }
 
 /// LLVMRustLinkage
@@ -119,6 +128,9 @@ pub enum Attribute {
     UWTable         = 17,
     ZExt            = 18,
     InReg           = 19,
+    SanitizeThread  = 20,
+    SanitizeAddress = 21,
+    SanitizeMemory  = 22,
 }
 
 /// LLVMIntPredicate
@@ -273,10 +285,13 @@ pub enum CodeGenOptLevel {
 #[derive(Copy, Clone, PartialEq)]
 #[repr(C)]
 pub enum RelocMode {
-    Default = 0,
-    Static = 1,
-    PIC = 2,
-    DynamicNoPic = 3,
+    Default,
+    Static,
+    PIC,
+    DynamicNoPic,
+    ROPI,
+    RWPI,
+    ROPI_RWPI,
 }
 
 /// LLVMRustCodeModel
@@ -328,6 +343,20 @@ pub enum PassKind {
     Other,
     Function,
     Module,
+}
+
+/// LLVMRustThinLTOData
+pub enum ThinLTOData {}
+
+/// LLVMRustThinLTOBuffer
+pub enum ThinLTOBuffer {}
+
+/// LLVMRustThinLTOModule
+#[repr(C)]
+pub struct ThinLTOModule {
+    pub identifier: *const c_char,
+    pub data: *const u8,
+    pub len: usize,
 }
 
 // Opaque pointer types
@@ -439,29 +468,31 @@ pub mod debuginfo {
     // These values **must** match with LLVMRustDIFlags!!
     bitflags! {
         #[repr(C)]
-        #[derive(Debug, Default)]
-        flags DIFlags: ::libc::uint32_t {
-            const FlagZero                = 0,
-            const FlagPrivate             = 1,
-            const FlagProtected           = 2,
-            const FlagPublic              = 3,
-            const FlagFwdDecl             = (1 << 2),
-            const FlagAppleBlock          = (1 << 3),
-            const FlagBlockByrefStruct    = (1 << 4),
-            const FlagVirtual             = (1 << 5),
-            const FlagArtificial          = (1 << 6),
-            const FlagExplicit            = (1 << 7),
-            const FlagPrototyped          = (1 << 8),
-            const FlagObjcClassComplete   = (1 << 9),
-            const FlagObjectPointer       = (1 << 10),
-            const FlagVector              = (1 << 11),
-            const FlagStaticMember        = (1 << 12),
-            const FlagLValueReference     = (1 << 13),
-            const FlagRValueReference     = (1 << 14),
+        #[derive(Default)]
+        pub struct DIFlags: ::libc::uint32_t {
+            const FlagZero                = 0;
+            const FlagPrivate             = 1;
+            const FlagProtected           = 2;
+            const FlagPublic              = 3;
+            const FlagFwdDecl             = (1 << 2);
+            const FlagAppleBlock          = (1 << 3);
+            const FlagBlockByrefStruct    = (1 << 4);
+            const FlagVirtual             = (1 << 5);
+            const FlagArtificial          = (1 << 6);
+            const FlagExplicit            = (1 << 7);
+            const FlagPrototyped          = (1 << 8);
+            const FlagObjcClassComplete   = (1 << 9);
+            const FlagObjectPointer       = (1 << 10);
+            const FlagVector              = (1 << 11);
+            const FlagStaticMember        = (1 << 12);
+            const FlagLValueReference     = (1 << 13);
+            const FlagRValueReference     = (1 << 14);
+            const FlagMainSubprogram      = (1 << 21);
         }
     }
 }
 
+pub enum ModuleBuffer {}
 
 // Link to our native llvm bindings (things that we need to use the C++ api
 // for) and because llvm is written in C++ we need to link against libstdc++
@@ -495,6 +526,7 @@ extern "C" {
 
     /// See Module::setModuleInlineAsm.
     pub fn LLVMSetModuleInlineAsm(M: ModuleRef, Asm: *const c_char);
+    pub fn LLVMRustAppendModuleInlineAsm(M: ModuleRef, Asm: *const c_char);
 
     /// See llvm::LLVMTypeKind::getTypeID.
     pub fn LLVMRustGetTypeKind(Ty: TypeRef) -> TypeKind;
@@ -574,12 +606,13 @@ extern "C" {
     pub fn LLVMIsUndef(Val: ValueRef) -> Bool;
 
     // Operations on metadata
+    pub fn LLVMMDStringInContext(C: ContextRef, Str: *const c_char, SLen: c_uint) -> ValueRef;
     pub fn LLVMMDNodeInContext(C: ContextRef, Vals: *const ValueRef, Count: c_uint) -> ValueRef;
+    pub fn LLVMAddNamedMetadataOperand(M: ModuleRef, Name: *const c_char, Val: ValueRef);
 
     // Operations on scalar constants
     pub fn LLVMConstInt(IntTy: TypeRef, N: c_ulonglong, SignExtend: Bool) -> ValueRef;
     pub fn LLVMConstIntOfArbitraryPrecision(IntTy: TypeRef, Wn: c_uint, Ws: *const u64) -> ValueRef;
-    pub fn LLVMConstReal(RealTy: TypeRef, N: f64) -> ValueRef;
     pub fn LLVMConstIntGetZExtValue(ConstantVal: ValueRef) -> c_ulonglong;
     pub fn LLVMConstIntGetSExtValue(ConstantVal: ValueRef) -> c_longlong;
     pub fn LLVMRustConstInt128Get(ConstantVal: ValueRef, SExt: bool,
@@ -679,6 +712,7 @@ extern "C" {
     pub fn LLVMIsGlobalConstant(GlobalVar: ValueRef) -> Bool;
     pub fn LLVMSetGlobalConstant(GlobalVar: ValueRef, IsConstant: Bool);
     pub fn LLVMRustGetNamedValue(M: ModuleRef, Name: *const c_char) -> ValueRef;
+    pub fn LLVMSetTailCall(CallInst: ValueRef, IsTailCall: Bool);
 
     // Operations on functions
     pub fn LLVMAddFunction(M: ModuleRef, Name: *const c_char, FunctionTy: TypeRef) -> ValueRef;
@@ -803,7 +837,7 @@ extern "C" {
                                     Name: *const c_char)
                                     -> ValueRef;
     pub fn LLVMRustAddHandler(CatchSwitch: ValueRef, Handler: BasicBlockRef);
-    pub fn LLVMRustSetPersonalityFn(B: BuilderRef, Pers: ValueRef);
+    pub fn LLVMSetPersonalityFn(Func: ValueRef, Pers: ValueRef);
 
     // Add a case to the switch instruction
     pub fn LLVMAddCase(Switch: ValueRef, OnVal: ValueRef, Dest: BasicBlockRef);
@@ -1073,11 +1107,11 @@ extern "C" {
                                 DestTy: TypeRef,
                                 Name: *const c_char)
                                 -> ValueRef;
-    pub fn LLVMBuildIntCast(B: BuilderRef,
-                            Val: ValueRef,
-                            DestTy: TypeRef,
-                            Name: *const c_char)
-                            -> ValueRef;
+    pub fn LLVMRustBuildIntCast(B: BuilderRef,
+                                Val: ValueRef,
+                                DestTy: TypeRef,
+                                IsSized: bool)
+                                -> ValueRef;
     pub fn LLVMBuildFPCast(B: BuilderRef,
                            Val: ValueRef,
                            DestTy: TypeRef,
@@ -1251,6 +1285,9 @@ extern "C" {
                                                         PM: PassManagerRef,
                                                         Internalize: Bool,
                                                         RunInliner: Bool);
+    pub fn LLVMRustPassManagerBuilderPopulateThinLTOPassManager(
+        PMB: PassManagerBuilderRef,
+        PM: PassManagerRef) -> bool;
 
     // Stuff that's in rustllvm/ because it's not upstream yet.
 
@@ -1315,6 +1352,8 @@ extern "C" {
 
     pub fn LLVMRustAddModuleFlag(M: ModuleRef, name: *const c_char, value: u32);
 
+    pub fn LLVMRustMetadataAsValue(C: ContextRef, MD: MetadataRef) -> ValueRef;
+
     pub fn LLVMRustDIBuilderCreate(M: ModuleRef) -> DIBuilderRef;
 
     pub fn LLVMRustDIBuilderDispose(Builder: DIBuilderRef);
@@ -1323,8 +1362,7 @@ extern "C" {
 
     pub fn LLVMRustDIBuilderCreateCompileUnit(Builder: DIBuilderRef,
                                               Lang: c_uint,
-                                              File: *const c_char,
-                                              Dir: *const c_char,
+                                              File: DIFile,
                                               Producer: *const c_char,
                                               isOptimized: bool,
                                               Flags: *const c_char,
@@ -1362,14 +1400,14 @@ extern "C" {
     pub fn LLVMRustDIBuilderCreateBasicType(Builder: DIBuilderRef,
                                             Name: *const c_char,
                                             SizeInBits: u64,
-                                            AlignInBits: u64,
+                                            AlignInBits: u32,
                                             Encoding: c_uint)
                                             -> DIBasicType;
 
     pub fn LLVMRustDIBuilderCreatePointerType(Builder: DIBuilderRef,
                                               PointeeTy: DIType,
                                               SizeInBits: u64,
-                                              AlignInBits: u64,
+                                              AlignInBits: u32,
                                               Name: *const c_char)
                                               -> DIDerivedType;
 
@@ -1379,7 +1417,7 @@ extern "C" {
                                              File: DIFile,
                                              LineNumber: c_uint,
                                              SizeInBits: u64,
-                                             AlignInBits: u64,
+                                             AlignInBits: u32,
                                              Flags: DIFlags,
                                              DerivedFrom: DIType,
                                              Elements: DIArray,
@@ -1394,7 +1432,7 @@ extern "C" {
                                              File: DIFile,
                                              LineNo: c_uint,
                                              SizeInBits: u64,
-                                             AlignInBits: u64,
+                                             AlignInBits: u32,
                                              OffsetInBits: u64,
                                              Flags: DIFlags,
                                              Ty: DIType)
@@ -1422,7 +1460,7 @@ extern "C" {
                                                  isLocalToUnit: bool,
                                                  Val: ValueRef,
                                                  Decl: DIDescriptor,
-                                                 AlignInBits: u64)
+                                                 AlignInBits: u32)
                                                  -> DIGlobalVariable;
 
     pub fn LLVMRustDIBuilderCreateVariable(Builder: DIBuilderRef,
@@ -1435,19 +1473,19 @@ extern "C" {
                                            AlwaysPreserve: bool,
                                            Flags: DIFlags,
                                            ArgNo: c_uint,
-                                           AlignInBits: u64)
+                                           AlignInBits: u32)
                                            -> DIVariable;
 
     pub fn LLVMRustDIBuilderCreateArrayType(Builder: DIBuilderRef,
                                             Size: u64,
-                                            AlignInBits: u64,
+                                            AlignInBits: u32,
                                             Ty: DIType,
                                             Subscripts: DIArray)
                                             -> DIType;
 
     pub fn LLVMRustDIBuilderCreateVectorType(Builder: DIBuilderRef,
                                              Size: u64,
-                                             AlignInBits: u64,
+                                             AlignInBits: u32,
                                              Ty: DIType,
                                              Subscripts: DIArray)
                                              -> DIType;
@@ -1482,7 +1520,7 @@ extern "C" {
                                                   File: DIFile,
                                                   LineNumber: c_uint,
                                                   SizeInBits: u64,
-                                                  AlignInBits: u64,
+                                                  AlignInBits: u32,
                                                   Elements: DIArray,
                                                   ClassType: DIType)
                                                   -> DIType;
@@ -1493,7 +1531,7 @@ extern "C" {
                                             File: DIFile,
                                             LineNumber: c_uint,
                                             SizeInBits: u64,
-                                            AlignInBits: u64,
+                                            AlignInBits: u32,
                                             Flags: DIFlags,
                                             Elements: DIArray,
                                             RunTimeLang: c_uint,
@@ -1577,12 +1615,19 @@ extern "C" {
                                    Output: *const c_char,
                                    FileType: FileType)
                                    -> LLVMRustResult;
-    pub fn LLVMRustPrintModule(PM: PassManagerRef, M: ModuleRef, Output: *const c_char);
+    pub fn LLVMRustPrintModule(PM: PassManagerRef,
+                               M: ModuleRef,
+                               Output: *const c_char,
+                               Demangle: extern fn(*const c_char,
+                                                   size_t,
+                                                   *mut c_char,
+                                                   size_t) -> size_t);
     pub fn LLVMRustSetLLVMOptions(Argc: c_int, Argv: *const *const c_char);
     pub fn LLVMRustPrintPasses();
     pub fn LLVMRustSetNormalizedTarget(M: ModuleRef, triple: *const c_char);
     pub fn LLVMRustAddAlwaysInlinePass(P: PassManagerBuilderRef, AddLifetimes: bool);
     pub fn LLVMRustLinkInExternalBitcode(M: ModuleRef, bc: *const c_char, len: size_t) -> bool;
+    pub fn LLVMRustLinkInParsedExternalBitcode(M: ModuleRef, M: ModuleRef) -> bool;
     pub fn LLVMRustRunRestrictionPass(M: ModuleRef, syms: *const *const c_char, len: size_t);
     pub fn LLVMRustMarkAllFunctionsNounwind(M: ModuleRef);
 
@@ -1606,7 +1651,9 @@ extern "C" {
     pub fn LLVMRustUnpackOptimizationDiagnostic(DI: DiagnosticInfoRef,
                                                 pass_name_out: RustStringRef,
                                                 function_out: *mut ValueRef,
-                                                debugloc_out: *mut DebugLocRef,
+                                                loc_line_out: *mut c_uint,
+                                                loc_column_out: *mut c_uint,
+                                                loc_filename_out: RustStringRef,
                                                 message_out: RustStringRef);
     pub fn LLVMRustUnpackInlineAsmDiagnostic(DI: DiagnosticInfoRef,
                                              cookie_out: *mut c_uint,
@@ -1650,11 +1697,48 @@ extern "C" {
     pub fn LLVMRustSetComdat(M: ModuleRef, V: ValueRef, Name: *const c_char);
     pub fn LLVMRustUnsetComdat(V: ValueRef);
     pub fn LLVMRustSetModulePIELevel(M: ModuleRef);
+    pub fn LLVMRustModuleBufferCreate(M: ModuleRef) -> *mut ModuleBuffer;
+    pub fn LLVMRustModuleBufferPtr(p: *const ModuleBuffer) -> *const u8;
+    pub fn LLVMRustModuleBufferLen(p: *const ModuleBuffer) -> usize;
+    pub fn LLVMRustModuleBufferFree(p: *mut ModuleBuffer);
+    pub fn LLVMRustModuleCost(M: ModuleRef) -> u64;
+
+    pub fn LLVMRustThinLTOAvailable() -> bool;
+    pub fn LLVMRustWriteThinBitcodeToFile(PMR: PassManagerRef,
+                                          M: ModuleRef,
+                                          BC: *const c_char) -> bool;
+    pub fn LLVMRustThinLTOBufferCreate(M: ModuleRef) -> *mut ThinLTOBuffer;
+    pub fn LLVMRustThinLTOBufferFree(M: *mut ThinLTOBuffer);
+    pub fn LLVMRustThinLTOBufferPtr(M: *const ThinLTOBuffer) -> *const c_char;
+    pub fn LLVMRustThinLTOBufferLen(M: *const ThinLTOBuffer) -> size_t;
+    pub fn LLVMRustCreateThinLTOData(
+        Modules: *const ThinLTOModule,
+        NumModules: c_uint,
+        PreservedSymbols: *const *const c_char,
+        PreservedSymbolsLen: c_uint,
+    ) -> *mut ThinLTOData;
+    pub fn LLVMRustPrepareThinLTORename(
+        Data: *const ThinLTOData,
+        Module: ModuleRef,
+    ) -> bool;
+    pub fn LLVMRustPrepareThinLTOResolveWeak(
+        Data: *const ThinLTOData,
+        Module: ModuleRef,
+    ) -> bool;
+    pub fn LLVMRustPrepareThinLTOInternalize(
+        Data: *const ThinLTOData,
+        Module: ModuleRef,
+    ) -> bool;
+    pub fn LLVMRustPrepareThinLTOImport(
+        Data: *const ThinLTOData,
+        Module: ModuleRef,
+    ) -> bool;
+    pub fn LLVMRustFreeThinLTOData(Data: *mut ThinLTOData);
+    pub fn LLVMRustParseBitcodeForThinLTO(
+        Context: ContextRef,
+        Data: *const u8,
+        len: usize,
+        Identifier: *const c_char,
+    ) -> ModuleRef;
+    pub fn LLVMGetModuleIdentifier(M: ModuleRef, size: *mut usize) -> *const c_char;
 }
-
-
-// LLVM requires symbols from this library, but apparently they're not printed
-// during llvm-config?
-#[cfg(windows)]
-#[link(name = "ole32")]
-extern "C" {}

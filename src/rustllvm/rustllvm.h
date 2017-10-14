@@ -55,6 +55,8 @@
   (LLVM_VERSION_MAJOR < (major) ||                                             \
    LLVM_VERSION_MAJOR == (major) && LLVM_VERSION_MINOR <= (minor))
 
+#define LLVM_VERSION_LT(major, minor) (!LLVM_VERSION_GE((major), (minor)))
+
 #if LLVM_VERSION_GE(3, 7)
 #include "llvm/IR/LegacyPassManager.h"
 #else
@@ -98,6 +100,9 @@ enum LLVMRustAttribute {
   UWTable = 17,
   ZExt = 18,
   InReg = 19,
+  SanitizeThread = 20,
+  SanitizeAddress = 21,
+  SanitizeMemory = 22,
 };
 
 typedef struct OpaqueRustString *RustStringRef;

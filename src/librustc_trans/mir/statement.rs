@@ -11,13 +11,13 @@
 use rustc::mir;
 
 use base;
+use asm;
 use common;
 use builder::Builder;
 
 use super::MirContext;
 use super::LocalRef;
 use super::super::adt;
-use super::super::disr::Disr;
 
 impl<'a, 'tcx> MirContext<'a, 'tcx> {
     pub fn trans_statement(&mut self,
@@ -64,28 +64,41 @@ impl<'a, 'tcx> MirContext<'a, 'tcx> {
                 adt::trans_set_discr(&bcx,
                     ty,
                     lvalue_transed.llval,
-                    Disr::from(variant_index));
+                    variant_index as u64);
                 bcx
             }
-            mir::StatementKind::StorageLive(ref lvalue) => {
-                self.trans_storage_liveness(bcx, lvalue, base::Lifetime::Start)
+            mir::StatementKind::StorageLive(local) => {
+                self.trans_storage_liveness(bcx, local, base::Lifetime::Start)
             }
-            mir::StatementKind::StorageDead(ref lvalue) => {
-                self.trans_storage_liveness(bcx, lvalue, base::Lifetime::End)
+            mir::StatementKind::StorageDead(local) => {
+                self.trans_storage_liveness(bcx, local, base::Lifetime::End)
             }
+            mir::StatementKind::InlineAsm { ref asm, ref outputs, ref inputs } => {
+                let outputs = outputs.iter().map(|output| {
+                    let lvalue = self.trans_lvalue(&bcx, output);
+                    (lvalue.llval, lvalue.ty.to_ty(bcx.tcx()))
+                }).collect();
+
+                let input_vals = inputs.iter().map(|input| {
+                    self.trans_operand(&bcx, input).immediate()
+                }).collect();
+
+                asm::trans_inline_asm(&bcx, asm, outputs, input_vals);
+                bcx
+            }
+            mir::StatementKind::EndRegion(_) |
+            mir::StatementKind::Validate(..) |
             mir::StatementKind::Nop => bcx,
         }
     }
 
     fn trans_storage_liveness(&self,
                               bcx: Builder<'a, 'tcx>,
-                              lvalue: &mir::Lvalue<'tcx>,
+                              index: mir::Local,
                               intrinsic: base::Lifetime)
                               -> Builder<'a, 'tcx> {
-        if let mir::Lvalue::Local(index) = *lvalue {
-            if let LocalRef::Lvalue(tr_lval) = self.locals[index] {
-                intrinsic.call(&bcx, tr_lval.llval);
-            }
+        if let LocalRef::Lvalue(tr_lval) = self.locals[index] {
+            intrinsic.call(&bcx, tr_lval.llval);
         }
         bcx
     }

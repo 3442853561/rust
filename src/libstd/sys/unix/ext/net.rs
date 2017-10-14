@@ -12,21 +12,32 @@
 
 //! Unix-specific networking functionality
 
+#[cfg(unix)]
 use libc;
+
+// FIXME(#43348): Make libc adapt #[doc(cfg(...))] so we don't need these fake definitions here?
+#[cfg(not(unix))]
+mod libc {
+    pub use libc::c_int;
+    pub type socklen_t = u32;
+    pub struct sockaddr;
+    #[derive(Clone)]
+    pub struct sockaddr_un;
+}
 
 use ascii;
 use ffi::OsStr;
 use fmt;
-use io;
+use io::{self, Initializer};
 use mem;
-use net::Shutdown;
+use net::{self, Shutdown};
 use os::unix::ffi::OsStrExt;
 use os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
 use path::Path;
 use time::Duration;
-use sys::cvt;
+use sys::{self, cvt};
 use sys::net::Socket;
-use sys_common::{AsInner, FromInner, IntoInner};
+use sys_common::{self, AsInner, FromInner, IntoInner};
 
 #[cfg(any(target_os = "linux", target_os = "android",
           target_os = "dragonfly", target_os = "freebsd",
@@ -130,8 +141,8 @@ impl SocketAddr {
         }
 
         Ok(SocketAddr {
-            addr: addr,
-            len: len,
+            addr,
+            len,
         })
     }
 
@@ -204,7 +215,7 @@ impl SocketAddr {
         let len = self.len as usize - sun_path_offset();
         let path = unsafe { mem::transmute::<&[libc::c_char], &[u8]>(&self.addr.sun_path) };
 
-        // OSX seems to return a len of 16 and a zeroed sun_path for unnamed addresses
+        // macOS seems to return a len of 16 and a zeroed sun_path for unnamed addresses
         if len == 0 || (cfg!(not(target_os = "linux")) && self.addr.sun_path[0] == 0) {
             AddressKind::Unnamed
         } else if self.addr.sun_path[0] == 0 {
@@ -327,7 +338,7 @@ impl UnixStream {
     ///
     /// The returned `UnixStream` is a reference to the same stream that this
     /// object references. Both handles will read and write the same stream of
-    /// data, and options set on one stream will be propogated to the other
+    /// data, and options set on one stream will be propagated to the other
     /// stream.
     ///
     /// # Examples
@@ -375,12 +386,12 @@ impl UnixStream {
 
     /// Sets the read timeout for the socket.
     ///
-    /// If the provided value is [`None`], then [`read()`] calls will block
+    /// If the provided value is [`None`], then [`read`] calls will block
     /// indefinitely. It is an error to pass the zero [`Duration`] to this
     /// method.
     ///
     /// [`None`]: ../../../../std/option/enum.Option.html#variant.None
-    /// [`read()`]: ../../../../std/io/trait.Read.html#tymethod.read
+    /// [`read`]: ../../../../std/io/trait.Read.html#tymethod.read
     /// [`Duration`]: ../../../../std/time/struct.Duration.html
     ///
     /// # Examples
@@ -399,12 +410,12 @@ impl UnixStream {
 
     /// Sets the write timeout for the socket.
     ///
-    /// If the provided value is [`None`], then [`write()`] calls will block
+    /// If the provided value is [`None`], then [`write`] calls will block
     /// indefinitely. It is an error to pass the zero [`Duration`] to this
     /// method.
     ///
     /// [`None`]: ../../../../std/option/enum.Option.html#variant.None
-    /// [`read()`]: ../../../../std/io/trait.Write.html#tymethod.write
+    /// [`read`]: ../../../../std/io/trait.Write.html#tymethod.write
     /// [`Duration`]: ../../../../std/time/struct.Duration.html
     ///
     /// # Examples
@@ -516,8 +527,9 @@ impl io::Read for UnixStream {
         io::Read::read(&mut &*self, buf)
     }
 
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        io::Read::read_to_end(&mut &*self, buf)
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -527,8 +539,9 @@ impl<'a> io::Read for &'a UnixStream {
         self.0.read(buf)
     }
 
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.0.read_to_end(buf)
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -572,6 +585,64 @@ impl FromRawFd for UnixStream {
 impl IntoRawFd for UnixStream {
     fn into_raw_fd(self) -> RawFd {
         self.0.into_inner()
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl AsRawFd for net::TcpStream {
+    fn as_raw_fd(&self) -> RawFd { *self.as_inner().socket().as_inner() }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl AsRawFd for net::TcpListener {
+    fn as_raw_fd(&self) -> RawFd { *self.as_inner().socket().as_inner() }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl AsRawFd for net::UdpSocket {
+    fn as_raw_fd(&self) -> RawFd { *self.as_inner().socket().as_inner() }
+}
+
+#[stable(feature = "from_raw_os", since = "1.1.0")]
+impl FromRawFd for net::TcpStream {
+    unsafe fn from_raw_fd(fd: RawFd) -> net::TcpStream {
+        let socket = sys::net::Socket::from_inner(fd);
+        net::TcpStream::from_inner(sys_common::net::TcpStream::from_inner(socket))
+    }
+}
+
+#[stable(feature = "from_raw_os", since = "1.1.0")]
+impl FromRawFd for net::TcpListener {
+    unsafe fn from_raw_fd(fd: RawFd) -> net::TcpListener {
+        let socket = sys::net::Socket::from_inner(fd);
+        net::TcpListener::from_inner(sys_common::net::TcpListener::from_inner(socket))
+    }
+}
+
+#[stable(feature = "from_raw_os", since = "1.1.0")]
+impl FromRawFd for net::UdpSocket {
+    unsafe fn from_raw_fd(fd: RawFd) -> net::UdpSocket {
+        let socket = sys::net::Socket::from_inner(fd);
+        net::UdpSocket::from_inner(sys_common::net::UdpSocket::from_inner(socket))
+    }
+}
+
+#[stable(feature = "into_raw_os", since = "1.4.0")]
+impl IntoRawFd for net::TcpStream {
+    fn into_raw_fd(self) -> RawFd {
+        self.into_inner().into_socket().into_inner()
+    }
+}
+#[stable(feature = "into_raw_os", since = "1.4.0")]
+impl IntoRawFd for net::TcpListener {
+    fn into_raw_fd(self) -> RawFd {
+        self.into_inner().into_socket().into_inner()
+    }
+}
+#[stable(feature = "into_raw_os", since = "1.4.0")]
+impl IntoRawFd for net::UdpSocket {
+    fn into_raw_fd(self) -> RawFd {
+        self.into_inner().into_socket().into_inner()
     }
 }
 
@@ -641,7 +712,7 @@ impl UnixListener {
                 let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
                 let (addr, len) = sockaddr_un(path)?;
 
-                cvt(libc::bind(*inner.as_inner(), &addr as *const _ as *const _, len))?;
+                cvt(libc::bind(*inner.as_inner(), &addr as *const _ as *const _, len as _))?;
                 cvt(libc::listen(*inner.as_inner(), 128))?;
 
                 Ok(UnixListener(inner))
@@ -653,7 +724,7 @@ impl UnixListener {
     /// Accepts a new incoming connection to this listener.
     ///
     /// This function will block the calling thread until a new Unix connection
-    /// is established. When established, the corersponding [`UnixStream`] and
+    /// is established. When established, the corresponding [`UnixStream`] and
     /// the remote peer's address will be returned.
     ///
     /// [`UnixStream`]: ../../../../std/os/unix/net/struct.UnixStream.html
@@ -920,7 +991,7 @@ impl UnixDatagram {
                 let socket = UnixDatagram::unbound()?;
                 let (addr, len) = sockaddr_un(path)?;
 
-                cvt(libc::bind(*socket.0.as_inner(), &addr as *const _ as *const _, len))?;
+                cvt(libc::bind(*socket.0.as_inner(), &addr as *const _ as *const _, len as _))?;
 
                 Ok(socket)
             }
@@ -974,12 +1045,12 @@ impl UnixDatagram {
 
     /// Connects the socket to the specified address.
     ///
-    /// The [`send()`] method may be used to send data to the specified address.
-    /// [`recv()`] and [`recv_from()`] will only receive data from that address.
+    /// The [`send`] method may be used to send data to the specified address.
+    /// [`recv`] and [`recv_from`] will only receive data from that address.
     ///
-    /// [`send()`]: #method.send
-    /// [`recv()`]: #method.recv
-    /// [`recv_from()`]: #method.recv_from
+    /// [`send`]: #method.send
+    /// [`recv`]: #method.recv
+    /// [`recv_from`]: #method.recv_from
     ///
     /// # Examples
     ///
@@ -1047,9 +1118,9 @@ impl UnixDatagram {
 
     /// Returns the address of this socket's peer.
     ///
-    /// The [`connect()`] method will connect the socket to a peer.
+    /// The [`connect`] method will connect the socket to a peer.
     ///
-    /// [`connect()`]: #method.connect
+    /// [`connect`]: #method.connect
     ///
     /// # Examples
     ///
@@ -1178,13 +1249,13 @@ impl UnixDatagram {
 
     /// Sets the read timeout for the socket.
     ///
-    /// If the provided value is [`None`], then [`recv()`] and [`recv_from()`] calls will
+    /// If the provided value is [`None`], then [`recv`] and [`recv_from`] calls will
     /// block indefinitely. It is an error to pass the zero [`Duration`] to this
     /// method.
     ///
     /// [`None`]: ../../../../std/option/enum.Option.html#variant.None
-    /// [`recv()`]: #method.recv
-    /// [`recv_from()`]: #method.recv_from
+    /// [`recv`]: #method.recv
+    /// [`recv_from`]: #method.recv_from
     /// [`Duration`]: ../../../../std/time/struct.Duration.html
     ///
     /// # Examples
@@ -1203,13 +1274,13 @@ impl UnixDatagram {
 
     /// Sets the write timeout for the socket.
     ///
-    /// If the provided value is [`None`], then [`send()`] and [`send_to()`] calls will
+    /// If the provided value is [`None`], then [`send`] and [`send_to`] calls will
     /// block indefinitely. It is an error to pass the zero [`Duration`] to this
     /// method.
     ///
     /// [`None`]: ../../../../std/option/enum.Option.html#variant.None
-    /// [`send()`]: #method.send
-    /// [`send_to()`]: #method.send_to
+    /// [`send`]: #method.send
+    /// [`send_to`]: #method.send_to
     /// [`Duration`]: ../../../../std/time/struct.Duration.html
     ///
     /// # Examples

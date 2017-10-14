@@ -8,78 +8,122 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use common::*;
 use rustc::hir::def_id::DefId;
-use rustc::infer::TransNormalize;
+use rustc::middle::lang_items::DropInPlaceFnLangItem;
 use rustc::traits;
-use rustc::ty::fold::{TypeFolder, TypeFoldable};
-use rustc::ty::subst::{Subst, Substs};
+use rustc::ty::adjustment::CustomCoerceUnsized;
+use rustc::ty::subst::{Kind, Subst, Substs};
 use rustc::ty::{self, Ty, TyCtxt};
-use rustc::util::ppaux;
-use rustc::util::common::MemoizationMap;
 
-use syntax::codemap::DUMMY_SP;
+pub use rustc::ty::Instance;
 
-use std::fmt;
+fn fn_once_adapter_instance<'a, 'tcx>(
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    closure_did: DefId,
+    substs: ty::ClosureSubsts<'tcx>,
+    ) -> Instance<'tcx> {
+    debug!("fn_once_adapter_shim({:?}, {:?})",
+           closure_did,
+           substs);
+    let fn_once = tcx.lang_items().fn_once_trait().unwrap();
+    let call_once = tcx.associated_items(fn_once)
+        .find(|it| it.kind == ty::AssociatedKind::Method)
+        .unwrap().def_id;
+    let def = ty::InstanceDef::ClosureOnceShim { call_once };
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Instance<'tcx> {
-    pub def: DefId,
-    pub substs: &'tcx Substs<'tcx>,
+    let self_ty = tcx.mk_closure_from_closure_substs(
+        closure_did, substs);
+
+    let sig = tcx.fn_sig(closure_did).subst(tcx, substs.substs);
+    let sig = tcx.erase_late_bound_regions_and_normalize(&sig);
+    assert_eq!(sig.inputs().len(), 1);
+    let substs = tcx.mk_substs([
+        Kind::from(self_ty),
+        Kind::from(sig.inputs()[0]),
+    ].iter().cloned());
+
+    debug!("fn_once_adapter_shim: self_ty={:?} sig={:?}", self_ty, sig);
+    Instance { def, substs }
 }
 
-impl<'tcx> fmt::Display for Instance<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        ppaux::parameterized(f, &self.substs, self.def, &[])
-    }
-}
-
-impl<'a, 'tcx> Instance<'tcx> {
-    pub fn new(def_id: DefId, substs: &'tcx Substs<'tcx>)
-               -> Instance<'tcx> {
-        assert!(substs.regions().all(|&r| r == ty::ReErased));
-        Instance { def: def_id, substs: substs }
-    }
-
-    pub fn mono(scx: &SharedCrateContext<'a, 'tcx>, def_id: DefId) -> Instance<'tcx> {
-        Instance::new(def_id, scx.empty_substs_for_def_id(def_id))
-    }
-
-    /// For associated constants from traits, return the impl definition.
-    pub fn resolve_const(&self, scx: &SharedCrateContext<'a, 'tcx>) -> Self {
-        if let Some(trait_id) = scx.tcx().trait_of_item(self.def) {
-            let trait_ref = ty::TraitRef::new(trait_id, self.substs);
-            let trait_ref = ty::Binder(trait_ref);
-            let vtable = fulfill_obligation(scx, DUMMY_SP, trait_ref);
-            if let traits::VtableImpl(vtable_impl) = vtable {
-                let name = scx.tcx().item_name(self.def);
-                let ac = scx.tcx().associated_items(vtable_impl.impl_def_id)
-                    .find(|item| item.kind == ty::AssociatedKind::Const && item.name == name);
-                if let Some(ac) = ac {
-                    return Instance::new(ac.def_id, vtable_impl.substs);
-                }
-            }
-        }
-
-        *self
-    }
-}
-
-/// Monomorphizes a type from the AST by first applying the in-scope
-/// substitutions and then normalizing any associated types.
-pub fn apply_param_substs<'a, 'tcx, T>(scx: &SharedCrateContext<'a, 'tcx>,
-                                       param_substs: &Substs<'tcx>,
-                                       value: &T)
-                                       -> T
-    where T: TransNormalize<'tcx>
+fn needs_fn_once_adapter_shim(actual_closure_kind: ty::ClosureKind,
+                              trait_closure_kind: ty::ClosureKind)
+                              -> Result<bool, ()>
 {
-    let tcx = scx.tcx();
-    debug!("apply_param_substs(param_substs={:?}, value={:?})", param_substs, value);
-    let substituted = value.subst(tcx, param_substs);
-    let substituted = scx.tcx().erase_regions(&substituted);
-    AssociatedTypeNormalizer::new(scx).fold(&substituted)
+    match (actual_closure_kind, trait_closure_kind) {
+        (ty::ClosureKind::Fn, ty::ClosureKind::Fn) |
+        (ty::ClosureKind::FnMut, ty::ClosureKind::FnMut) |
+        (ty::ClosureKind::FnOnce, ty::ClosureKind::FnOnce) => {
+            // No adapter needed.
+           Ok(false)
+        }
+        (ty::ClosureKind::Fn, ty::ClosureKind::FnMut) => {
+            // The closure fn `llfn` is a `fn(&self, ...)`.  We want a
+            // `fn(&mut self, ...)`. In fact, at trans time, these are
+            // basically the same thing, so we can just return llfn.
+            Ok(false)
+        }
+        (ty::ClosureKind::Fn, ty::ClosureKind::FnOnce) |
+        (ty::ClosureKind::FnMut, ty::ClosureKind::FnOnce) => {
+            // The closure fn `llfn` is a `fn(&self, ...)` or `fn(&mut
+            // self, ...)`.  We want a `fn(self, ...)`. We can produce
+            // this by doing something like:
+            //
+            //     fn call_once(self, ...) { call_mut(&self, ...) }
+            //     fn call_once(mut self, ...) { call_mut(&mut self, ...) }
+            //
+            // These are both the same at trans time.
+            Ok(true)
+        }
+        _ => Err(()),
+    }
 }
 
+pub fn resolve_closure<'a, 'tcx> (
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    def_id: DefId,
+    substs: ty::ClosureSubsts<'tcx>,
+    requested_kind: ty::ClosureKind)
+    -> Instance<'tcx>
+{
+    let actual_kind = tcx.closure_kind(def_id);
+
+    match needs_fn_once_adapter_shim(actual_kind, requested_kind) {
+        Ok(true) => fn_once_adapter_instance(tcx, def_id, substs),
+        _ => Instance::new(def_id, substs.substs)
+    }
+}
+
+pub fn resolve_drop_in_place<'a, 'tcx>(
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    ty: Ty<'tcx>)
+    -> ty::Instance<'tcx>
+{
+    let def_id = tcx.require_lang_item(DropInPlaceFnLangItem);
+    let substs = tcx.intern_substs(&[Kind::from(ty)]);
+    Instance::resolve(tcx, ty::ParamEnv::empty(traits::Reveal::All), def_id, substs).unwrap()
+}
+
+pub fn custom_coerce_unsize_info<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                                           source_ty: Ty<'tcx>,
+                                           target_ty: Ty<'tcx>)
+                                           -> CustomCoerceUnsized {
+    let def_id = tcx.lang_items().coerce_unsized_trait().unwrap();
+
+    let trait_ref = ty::Binder(ty::TraitRef {
+        def_id: def_id,
+        substs: tcx.mk_substs_trait(source_ty, &[target_ty])
+    });
+
+    match tcx.trans_fulfill_obligation( (ty::ParamEnv::empty(traits::Reveal::All), trait_ref)) {
+        traits::VtableImpl(traits::VtableImplData { impl_def_id, .. }) => {
+            tcx.coerce_unsized_info(impl_def_id).custom_kind.unwrap()
+        }
+        vtable => {
+            bug!("invalid CoerceUnsized vtable: {:?}", vtable);
+        }
+    }
+}
 
 /// Returns the normalized type of a struct field
 pub fn field_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
@@ -90,39 +134,3 @@ pub fn field_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     tcx.normalize_associated_type(&f.ty(tcx, param_substs))
 }
 
-struct AssociatedTypeNormalizer<'a, 'b: 'a, 'gcx: 'b> {
-    shared: &'a SharedCrateContext<'b, 'gcx>,
-}
-
-impl<'a, 'b, 'gcx> AssociatedTypeNormalizer<'a, 'b, 'gcx> {
-    fn new(shared: &'a SharedCrateContext<'b, 'gcx>) -> Self {
-        AssociatedTypeNormalizer {
-            shared: shared,
-        }
-    }
-
-    fn fold<T:TypeFoldable<'gcx>>(&mut self, value: &T) -> T {
-        if !value.has_projection_types() {
-            value.clone()
-        } else {
-            value.fold_with(self)
-        }
-    }
-}
-
-impl<'a, 'b, 'gcx> TypeFolder<'gcx, 'gcx> for AssociatedTypeNormalizer<'a, 'b, 'gcx> {
-    fn tcx<'c>(&'c self) -> TyCtxt<'c, 'gcx, 'gcx> {
-        self.shared.tcx()
-    }
-
-    fn fold_ty(&mut self, ty: Ty<'gcx>) -> Ty<'gcx> {
-        if !ty.has_projection_types() {
-            ty
-        } else {
-            self.shared.project_cache().memoize(ty, || {
-                debug!("AssociatedTypeNormalizer: ty={:?}", ty);
-                self.shared.tcx().normalize_associated_type(&ty)
-            })
-        }
-    }
-}

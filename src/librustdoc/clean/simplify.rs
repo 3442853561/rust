@@ -15,13 +15,8 @@
 //! the AST (e.g. see all of `clean::inline`), but this is not always a
 //! non-lossy transformation. The current format of storage for where clauses
 //! for functions and such is simply a list of predicates. One example of this
-//! is that the AST predicate of:
-//!
-//!     where T: Trait<Foo=Bar>
-//!
-//! is encoded as:
-//!
-//!     where T: Trait, <T as Trait>::Foo = Bar
+//! is that the AST predicate of: `where T: Trait<Foo=Bar>` is encoded as:
+//! `where T: Trait, <T as Trait>::Foo = Bar`.
 //!
 //! This module attempts to reconstruct the original where and/or parameter
 //! bounds by special casing scenarios such as these. Fun!
@@ -153,7 +148,7 @@ fn trait_is_same_or_supertrait(cx: &DocContext, child: DefId,
     if child == trait_ {
         return true
     }
-    let predicates = cx.tcx.item_super_predicates(child).predicates;
+    let predicates = cx.tcx.super_predicates_of(child).predicates;
     predicates.iter().filter_map(|pred| {
         if let ty::Predicate::Trait(ref pred) = *pred {
             if pred.0.trait_ref.self_ty().is_self() {

@@ -19,21 +19,55 @@ use self::pattern::{Searcher, ReverseSearcher, DoubleEndedSearcher};
 
 use char;
 use fmt;
-use iter::{Map, Cloned, FusedIterator};
+use iter::{Map, Cloned, FusedIterator, TrustedLen};
+use iter_private::TrustedRandomAccess;
+use slice::{self, SliceIndex};
 use mem;
-use slice;
 
 pub mod pattern;
 
 /// A trait to abstract the idea of creating a new instance of a type from a
 /// string.
 ///
-/// `FromStr`'s [`from_str()`] method is often used implicitly, through
-/// [`str`]'s [`parse()`] method. See [`parse()`]'s documentation for examples.
+/// `FromStr`'s [`from_str`] method is often used implicitly, through
+/// [`str`]'s [`parse`] method. See [`parse`]'s documentation for examples.
 ///
-/// [`from_str()`]: #tymethod.from_str
+/// [`from_str`]: #tymethod.from_str
 /// [`str`]: ../../std/primitive.str.html
-/// [`parse()`]: ../../std/primitive.str.html#method.parse
+/// [`parse`]: ../../std/primitive.str.html#method.parse
+///
+/// # Examples
+///
+/// Basic implementation of `FromStr` on an example `Point` type:
+///
+/// ```
+/// use std::str::FromStr;
+/// use std::num::ParseIntError;
+///
+/// #[derive(Debug, PartialEq)]
+/// struct Point {
+///     x: i32,
+///     y: i32
+/// }
+///
+/// impl FromStr for Point {
+///     type Err = ParseIntError;
+///
+///     fn from_str(s: &str) -> Result<Self, Self::Err> {
+///         let coords: Vec<&str> = s.trim_matches(|p| p == '(' || p == ')' )
+///                                  .split(",")
+///                                  .collect();
+///
+///         let x_fromstr = coords[0].parse::<i32>()?;
+///         let y_fromstr = coords[1].parse::<i32>()?;
+///
+///         Ok(Point { x: x_fromstr, y: y_fromstr })
+///     }
+/// }
+///
+/// let p = Point::from_str("(1,2)");
+/// assert_eq!(p.unwrap(), Point{ x: 1, y: 2} )
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait FromStr: Sized {
     /// The associated error which can be returned from parsing.
@@ -100,7 +134,9 @@ impl FromStr for bool {
     }
 }
 
-/// An error returned when parsing a `bool` from a string fails.
+/// An error returned when parsing a `bool` using [`from_str`] fails
+///
+/// [`from_str`]: ../../std/primitive.bool.html#method.from_str
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct ParseBoolError { _priv: () }
@@ -116,22 +152,28 @@ impl fmt::Display for ParseBoolError {
 Section: Creating a string
 */
 
-/// Errors which can occur when attempting to interpret a sequence of `u8`
+/// Errors which can occur when attempting to interpret a sequence of [`u8`]
 /// as a string.
 ///
-/// As such, the `from_utf8` family of functions and methods for both `String`s
-/// and `&str`s make use of this error, for example.
+/// [`u8`]: ../../std/primitive.u8.html
+///
+/// As such, the `from_utf8` family of functions and methods for both [`String`]s
+/// and [`&str`]s make use of this error, for example.
+///
+/// [`String`]: ../../std/string/struct.String.html#method.from_utf8
+/// [`&str`]: ../../std/str/fn.from_utf8.html
 #[derive(Copy, Eq, PartialEq, Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Utf8Error {
     valid_up_to: usize,
+    error_len: Option<u8>,
 }
 
 impl Utf8Error {
     /// Returns the index in the given string up to which valid UTF-8 was
     /// verified.
     ///
-    /// It is the maximum index such that `from_utf8(input[..index])`
+    /// It is the maximum index such that `from_utf8(&input[..index])`
     /// would return `Ok(_)`.
     ///
     /// # Examples
@@ -152,31 +194,55 @@ impl Utf8Error {
     /// ```
     #[stable(feature = "utf8_error", since = "1.5.0")]
     pub fn valid_up_to(&self) -> usize { self.valid_up_to }
+
+    /// Provide more information about the failure:
+    ///
+    /// * `None`: the end of the input was reached unexpectedly.
+    ///   `self.valid_up_to()` is 1 to 3 bytes from the end of the input.
+    ///   If a byte stream (such as a file or a network socket) is being decoded incrementally,
+    ///   this could be a valid `char` whose UTF-8 byte sequence is spanning multiple chunks.
+    ///
+    /// * `Some(len)`: an unexpected byte was encountered.
+    ///   The length provided is that of the invalid byte sequence
+    ///   that starts at the index given by `valid_up_to()`.
+    ///   Decoding should resume after that sequence
+    ///   (after inserting a U+FFFD REPLACEMENT CHARACTER) in case of lossy decoding.
+    #[stable(feature = "utf8_error_error_len", since = "1.20.0")]
+    pub fn error_len(&self) -> Option<usize> {
+        self.error_len.map(|len| len as usize)
+    }
 }
 
 /// Converts a slice of bytes to a string slice.
 ///
-/// A string slice (`&str`) is made of bytes (`u8`), and a byte slice (`&[u8]`)
-/// is made of bytes, so this function converts between the two. Not all byte
-/// slices are valid string slices, however: `&str` requires that it is valid
-/// UTF-8. `from_utf8()` checks to ensure that the bytes are valid UTF-8, and
-/// then does the conversion.
+/// A string slice ([`&str`]) is made of bytes ([`u8`]), and a byte slice
+/// ([`&[u8]`][byteslice]) is made of bytes, so this function converts between
+/// the two. Not all byte slices are valid string slices, however: [`&str`] requires
+/// that it is valid UTF-8. `from_utf8()` checks to ensure that the bytes are valid
+/// UTF-8, and then does the conversion.
+///
+/// [`&str`]: ../../std/primitive.str.html
+/// [`u8`]: ../../std/primitive.u8.html
+/// [byteslice]: ../../std/primitive.slice.html
 ///
 /// If you are sure that the byte slice is valid UTF-8, and you don't want to
 /// incur the overhead of the validity check, there is an unsafe version of
-/// this function, [`from_utf8_unchecked()`][fromutf8u], which has the same
+/// this function, [`from_utf8_unchecked`][fromutf8u], which has the same
 /// behavior but skips the check.
 ///
 /// [fromutf8u]: fn.from_utf8_unchecked.html
 ///
 /// If you need a `String` instead of a `&str`, consider
-/// [`String::from_utf8()`][string].
+/// [`String::from_utf8`][string].
 ///
 /// [string]: ../../std/string/struct.String.html#method.from_utf8
 ///
-/// Because you can stack-allocate a `[u8; N]`, and you can take a `&[u8]` of
-/// it, this function is one way to have a stack-allocated string. There is
-/// an example of this in the examples section below.
+/// Because you can stack-allocate a `[u8; N]`, and you can take a
+/// [`&[u8]`][byteslice] of it, this function is one way to have a
+/// stack-allocated string. There is an example of this in the
+/// examples section below.
+///
+/// [byteslice]: ../../std/primitive.slice.html
 ///
 /// # Errors
 ///
@@ -234,6 +300,44 @@ pub fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
     Ok(unsafe { from_utf8_unchecked(v) })
 }
 
+/// Converts a mutable slice of bytes to a mutable string slice.
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// use std::str;
+///
+/// // "Hello, Rust!" as a mutable vector
+/// let mut hellorust = vec![72, 101, 108, 108, 111, 44, 32, 82, 117, 115, 116, 33];
+///
+/// // As we know these bytes are valid, we can use `unwrap()`
+/// let outstr = str::from_utf8_mut(&mut hellorust).unwrap();
+///
+/// assert_eq!("Hello, Rust!", outstr);
+/// ```
+///
+/// Incorrect bytes:
+///
+/// ```
+/// use std::str;
+///
+/// // Some invalid bytes in a mutable vector
+/// let mut invalid = vec![128, 223];
+///
+/// assert!(str::from_utf8_mut(&mut invalid).is_err());
+/// ```
+/// See the docs for [`Utf8Error`][error] for more details on the kinds of
+/// errors that can be returned.
+///
+/// [error]: struct.Utf8Error.html
+#[stable(feature = "str_mut_extras", since = "1.20.0")]
+pub fn from_utf8_mut(v: &mut [u8]) -> Result<&mut str, Utf8Error> {
+    run_utf8_validation(v)?;
+    Ok(unsafe { from_utf8_unchecked_mut(v) })
+}
+
 /// Forms a str from a pointer and a length.
 ///
 /// The `len` argument is the number of bytes in the string.
@@ -246,7 +350,10 @@ pub fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
 ///
 /// The data must be valid UTF-8
 ///
-/// `p` must be non-null, even for zero-length str.
+/// `p` must be non-null, even for zero-length strs, because non-zero bits
+/// are required to distinguish between a zero-length str within `Some()`
+/// from `None`. `p` can be a bogus non-dereferencable pointer, such as `0x1`,
+/// for zero-length strs, though.
 ///
 /// # Caveat
 ///
@@ -259,13 +366,13 @@ pub fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
 /// str is returned.
 ///
 unsafe fn from_raw_parts_mut<'a>(p: *mut u8, len: usize) -> &'a mut str {
-    mem::transmute::<&mut [u8], &mut str>(slice::from_raw_parts_mut(p, len))
+    from_utf8_unchecked_mut(slice::from_raw_parts_mut(p, len))
 }
 
 /// Converts a slice of bytes to a string slice without checking
 /// that the string contains valid UTF-8.
 ///
-/// See the safe version, [`from_utf8()`][fromutf8], for more information.
+/// See the safe version, [`from_utf8`][fromutf8], for more information.
 ///
 /// [fromutf8]: fn.from_utf8.html
 ///
@@ -273,7 +380,9 @@ unsafe fn from_raw_parts_mut<'a>(p: *mut u8, len: usize) -> &'a mut str {
 ///
 /// This function is unsafe because it does not check that the bytes passed to
 /// it are valid UTF-8. If this constraint is violated, undefined behavior
-/// results, as the rest of Rust assumes that `&str`s are valid UTF-8.
+/// results, as the rest of Rust assumes that [`&str`]s are valid UTF-8.
+///
+/// [`&str`]: ../../std/primitive.str.html
 ///
 /// # Examples
 ///
@@ -291,16 +400,46 @@ unsafe fn from_raw_parts_mut<'a>(p: *mut u8, len: usize) -> &'a mut str {
 ///
 /// assert_eq!("💖", sparkle_heart);
 /// ```
-#[inline(always)]
+#[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
-    mem::transmute(v)
+    &*(v as *const [u8] as *const str)
+}
+
+/// Converts a slice of bytes to a string slice without checking
+/// that the string contains valid UTF-8; mutable version.
+///
+/// See the immutable version, [`from_utf8_unchecked()`][fromutf8], for more information.
+///
+/// [fromutf8]: fn.from_utf8_unchecked.html
+///
+/// # Examples
+///
+/// Basic usage:
+///
+/// ```
+/// use std::str;
+///
+/// let mut heart = vec![240, 159, 146, 150];
+/// let heart = unsafe { str::from_utf8_unchecked_mut(&mut heart) };
+///
+/// assert_eq!("💖", heart);
+/// ```
+#[inline]
+#[stable(feature = "str_mut_extras", since = "1.20.0")]
+pub unsafe fn from_utf8_unchecked_mut(v: &mut [u8]) -> &mut str {
+    &mut *(v as *mut [u8] as *mut str)
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Display for Utf8Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "invalid utf-8: invalid byte near index {}", self.valid_up_to)
+        if let Some(error_len) = self.error_len {
+            write!(f, "invalid utf-8 sequence of {} bytes from index {}",
+                   error_len, self.valid_up_to)
+        } else {
+            write!(f, "incomplete utf-8 byte sequence from index {}", self.valid_up_to)
+        }
     }
 }
 
@@ -308,24 +447,28 @@ impl fmt::Display for Utf8Error {
 Section: Iterators
 */
 
-/// Iterator for the char (representing *Unicode Scalar Values*) of a string
+/// An iterator over the [`char`]s of a string slice.
 ///
-/// Created with the method [`chars()`].
+/// [`char`]: ../../std/primitive.char.html
 ///
-/// [`chars()`]: ../../std/primitive.str.html#method.chars
+/// This struct is created by the [`chars`] method on [`str`].
+/// See its documentation for more.
+///
+/// [`chars`]: ../../std/primitive.str.html#method.chars
+/// [`str`]: ../../std/primitive.str.html
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Chars<'a> {
     iter: slice::Iter<'a, u8>
 }
 
-/// Return the initial codepoint accumulator for the first byte.
+/// Returns the initial codepoint accumulator for the first byte.
 /// The first byte is special, only want bottom 5 bits for width 2, 4 bits
 /// for width 3, and 3 bits for width 4.
 #[inline]
 fn utf8_first_byte(byte: u8, width: u32) -> u32 { (byte & (0x7F >> width)) as u32 }
 
-/// Return the value of `ch` updated with continuation byte `byte`.
+/// Returns the value of `ch` updated with continuation byte `byte`.
 #[inline]
 fn utf8_acc_cont_byte(ch: u32, byte: u8) -> u32 { (ch << 6) | (byte & CONT_MASK) as u32 }
 
@@ -492,7 +635,15 @@ impl<'a> Chars<'a> {
     }
 }
 
-/// Iterator for a string's characters and their byte offsets.
+/// An iterator over the [`char`]s of a string slice, and their positions.
+///
+/// [`char`]: ../../std/primitive.char.html
+///
+/// This struct is created by the [`char_indices`] method on [`str`].
+/// See its documentation for more.
+///
+/// [`char_indices`]: ../../std/primitive.str.html#method.char_indices
+/// [`str`]: ../../std/primitive.str.html
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct CharIndices<'a> {
@@ -564,12 +715,13 @@ impl<'a> CharIndices<'a> {
     }
 }
 
-/// External iterator for a string's bytes.
-/// Use with the `std::iter` module.
+/// An iterator over the bytes of a string slice.
 ///
-/// Created with the method [`bytes()`].
+/// This struct is created by the [`bytes`] method on [`str`].
+/// See its documentation for more.
 ///
-/// [`bytes()`]: ../../std/primitive.str.html#method.bytes
+/// [`bytes`]: ../../std/primitive.str.html#method.bytes
+/// [`str`]: ../../std/primitive.str.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Clone, Debug)]
 pub struct Bytes<'a>(Cloned<slice::Iter<'a, u8>>);
@@ -602,6 +754,37 @@ impl<'a> Iterator for Bytes<'a> {
     fn nth(&mut self, n: usize) -> Option<Self::Item> {
         self.0.nth(n)
     }
+
+    #[inline]
+    fn all<F>(&mut self, f: F) -> bool where F: FnMut(Self::Item) -> bool {
+        self.0.all(f)
+    }
+
+    #[inline]
+    fn any<F>(&mut self, f: F) -> bool where F: FnMut(Self::Item) -> bool {
+        self.0.any(f)
+    }
+
+    #[inline]
+    fn find<P>(&mut self, predicate: P) -> Option<Self::Item> where
+        P: FnMut(&Self::Item) -> bool
+    {
+        self.0.find(predicate)
+    }
+
+    #[inline]
+    fn position<P>(&mut self, predicate: P) -> Option<usize> where
+        P: FnMut(Self::Item) -> bool
+    {
+        self.0.position(predicate)
+    }
+
+    #[inline]
+    fn rposition<P>(&mut self, predicate: P) -> Option<usize> where
+        P: FnMut(Self::Item) -> bool
+    {
+        self.0.rposition(predicate)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -609,6 +792,13 @@ impl<'a> DoubleEndedIterator for Bytes<'a> {
     #[inline]
     fn next_back(&mut self) -> Option<u8> {
         self.0.next_back()
+    }
+
+    #[inline]
+    fn rfind<P>(&mut self, predicate: P) -> Option<Self::Item> where
+        P: FnMut(&Self::Item) -> bool
+    {
+        self.0.rfind(predicate)
     }
 }
 
@@ -627,6 +817,17 @@ impl<'a> ExactSizeIterator for Bytes<'a> {
 
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a> FusedIterator for Bytes<'a> {}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<'a> TrustedLen for Bytes<'a> {}
+
+#[doc(hidden)]
+unsafe impl<'a> TrustedRandomAccess for Bytes<'a> {
+    unsafe fn get_unchecked(&mut self, i: usize) -> u8 {
+        self.0.get_unchecked(i)
+    }
+    fn may_have_side_effect() -> bool { false }
+}
 
 /// This macro generates a Clone impl for string pattern API
 /// wrapper types of the form X<'a, P>
@@ -701,7 +902,7 @@ macro_rules! generate_pattern_iterators {
         internal:
             $internal_iterator:ident yielding ($iterty:ty);
 
-        // Kind of delgation - either single ended or double ended
+        // Kind of delegation - either single ended or double ended
         delegate $($t:tt)*
     } => {
         $(#[$forward_iterator_attribute])*
@@ -902,14 +1103,14 @@ impl<'a, P: Pattern<'a>> SplitInternal<'a, P> {
 
 generate_pattern_iterators! {
     forward:
-        /// Created with the method [`split()`].
+        /// Created with the method [`split`].
         ///
-        /// [`split()`]: ../../std/primitive.str.html#method.split
+        /// [`split`]: ../../std/primitive.str.html#method.split
         struct Split;
     reverse:
-        /// Created with the method [`rsplit()`].
+        /// Created with the method [`rsplit`].
         ///
-        /// [`rsplit()`]: ../../std/primitive.str.html#method.rsplit
+        /// [`rsplit`]: ../../std/primitive.str.html#method.rsplit
         struct RSplit;
     stability:
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -920,14 +1121,14 @@ generate_pattern_iterators! {
 
 generate_pattern_iterators! {
     forward:
-        /// Created with the method [`split_terminator()`].
+        /// Created with the method [`split_terminator`].
         ///
-        /// [`split_terminator()`]: ../../std/primitive.str.html#method.split_terminator
+        /// [`split_terminator`]: ../../std/primitive.str.html#method.split_terminator
         struct SplitTerminator;
     reverse:
-        /// Created with the method [`rsplit_terminator()`].
+        /// Created with the method [`rsplit_terminator`].
         ///
-        /// [`rsplit_terminator()`]: ../../std/primitive.str.html#method.rsplit_terminator
+        /// [`rsplit_terminator`]: ../../std/primitive.str.html#method.rsplit_terminator
         struct RSplitTerminator;
     stability:
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -980,14 +1181,14 @@ impl<'a, P: Pattern<'a>> SplitNInternal<'a, P> {
 
 generate_pattern_iterators! {
     forward:
-        /// Created with the method [`splitn()`].
+        /// Created with the method [`splitn`].
         ///
-        /// [`splitn()`]: ../../std/primitive.str.html#method.splitn
+        /// [`splitn`]: ../../std/primitive.str.html#method.splitn
         struct SplitN;
     reverse:
-        /// Created with the method [`rsplitn()`].
+        /// Created with the method [`rsplitn`].
         ///
-        /// [`rsplitn()`]: ../../std/primitive.str.html#method.rsplitn
+        /// [`rsplitn`]: ../../std/primitive.str.html#method.rsplitn
         struct RSplitN;
     stability:
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -1031,14 +1232,14 @@ impl<'a, P: Pattern<'a>> MatchIndicesInternal<'a, P> {
 
 generate_pattern_iterators! {
     forward:
-        /// Created with the method [`match_indices()`].
+        /// Created with the method [`match_indices`].
         ///
-        /// [`match_indices()`]: ../../std/primitive.str.html#method.match_indices
+        /// [`match_indices`]: ../../std/primitive.str.html#method.match_indices
         struct MatchIndices;
     reverse:
-        /// Created with the method [`rmatch_indices()`].
+        /// Created with the method [`rmatch_indices`].
         ///
-        /// [`rmatch_indices()`]: ../../std/primitive.str.html#method.rmatch_indices
+        /// [`rmatch_indices`]: ../../std/primitive.str.html#method.rmatch_indices
         struct RMatchIndices;
     stability:
         #[stable(feature = "str_match_indices", since = "1.5.0")]
@@ -1084,14 +1285,14 @@ impl<'a, P: Pattern<'a>> MatchesInternal<'a, P> {
 
 generate_pattern_iterators! {
     forward:
-        /// Created with the method [`matches()`].
+        /// Created with the method [`matches`].
         ///
-        /// [`matches()`]: ../../std/primitive.str.html#method.matches
+        /// [`matches`]: ../../std/primitive.str.html#method.matches
         struct Matches;
     reverse:
-        /// Created with the method [`rmatches()`].
+        /// Created with the method [`rmatches`].
         ///
-        /// [`rmatches()`]: ../../std/primitive.str.html#method.rmatches
+        /// [`rmatches`]: ../../std/primitive.str.html#method.rmatches
         struct RMatches;
     stability:
         #[stable(feature = "str_matches", since = "1.2.0")]
@@ -1100,9 +1301,13 @@ generate_pattern_iterators! {
     delegate double ended;
 }
 
-/// Created with the method [`lines()`].
+/// An iterator over the lines of a string, as string slices.
 ///
-/// [`lines()`]: ../../std/primitive.str.html#method.lines
+/// This struct is created with the [`lines`] method on [`str`].
+/// See its documentation for more.
+///
+/// [`lines`]: ../../std/primitive.str.html#method.lines
+/// [`str`]: ../../std/primitive.str.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Clone, Debug)]
 pub struct Lines<'a>(Map<SplitTerminator<'a, char>, LinesAnyMap>);
@@ -1133,9 +1338,9 @@ impl<'a> DoubleEndedIterator for Lines<'a> {
 #[unstable(feature = "fused", issue = "35602")]
 impl<'a> FusedIterator for Lines<'a> {}
 
-/// Created with the method [`lines_any()`].
+/// Created with the method [`lines_any`].
 ///
-/// [`lines_any()`]: ../../std/primitive.str.html#method.lines_any
+/// [`lines_any`]: ../../std/primitive.str.html#method.lines_any
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_deprecated(since = "1.4.0", reason = "use lines()/Lines instead now")]
 #[derive(Clone, Debug)]
@@ -1201,36 +1406,23 @@ impl<'a> DoubleEndedIterator for LinesAny<'a> {
 impl<'a> FusedIterator for LinesAny<'a> {}
 
 /*
-Section: Comparing strings
-*/
-
-/// Bytewise slice equality
-/// NOTE: This function is (ab)used in rustc::middle::trans::_match
-/// to compare &[u8] byte slices that are not necessarily valid UTF-8.
-#[lang = "str_eq"]
-#[inline]
-fn eq_slice(a: &str, b: &str) -> bool {
-    a.as_bytes() == b.as_bytes()
-}
-
-/*
 Section: UTF-8 validation
 */
 
 // use truncation to fit u64 into usize
 const NONASCII_MASK: usize = 0x80808080_80808080u64 as usize;
 
-/// Return `true` if any byte in the word `x` is nonascii (>= 128).
+/// Returns `true` if any byte in the word `x` is nonascii (>= 128).
 #[inline]
 fn contains_nonascii(x: usize) -> bool {
     (x & NONASCII_MASK) != 0
 }
 
-/// Walk through `iter` checking that it's a valid UTF-8 sequence,
+/// Walks through `iter` checking that it's a valid UTF-8 sequence,
 /// returning `true` in that case, or, if it is invalid, `false` with
 /// `iter` reset such that it is pointing at the first byte in the
 /// invalid sequence.
-#[inline(always)]
+#[inline]
 fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
     let mut index = 0;
     let len = v.len();
@@ -1241,17 +1433,20 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
 
     while index < len {
         let old_offset = index;
-        macro_rules! err { () => {{
-            return Err(Utf8Error {
-                valid_up_to: old_offset
-            })
-        }}}
+        macro_rules! err {
+            ($error_len: expr) => {
+                return Err(Utf8Error {
+                    valid_up_to: old_offset,
+                    error_len: $error_len,
+                })
+            }
+        }
 
         macro_rules! next { () => {{
             index += 1;
             // we needed data, but there was none: error!
             if index >= len {
-                err!()
+                err!(None)
             }
             v[index]
         }}}
@@ -1259,7 +1454,6 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
         let first = v[index];
         if first >= 128 {
             let w = UTF8_CHAR_WIDTH[first as usize];
-            let second = next!();
             // 2-byte encoding is for codepoints  \u{0080} to  \u{07ff}
             //        first  C2 80        last DF BF
             // 3-byte encoding is for codepoints  \u{0800} to  \u{ffff}
@@ -1279,25 +1473,36 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
             // UTF8-4      = %xF0 %x90-BF 2( UTF8-tail ) / %xF1-F3 3( UTF8-tail ) /
             //               %xF4 %x80-8F 2( UTF8-tail )
             match w {
-                2 => if second & !CONT_MASK != TAG_CONT_U8 {err!()},
+                2 => if next!() & !CONT_MASK != TAG_CONT_U8 {
+                    err!(Some(1))
+                },
                 3 => {
-                    match (first, second, next!() & !CONT_MASK) {
-                        (0xE0         , 0xA0 ... 0xBF, TAG_CONT_U8) |
-                        (0xE1 ... 0xEC, 0x80 ... 0xBF, TAG_CONT_U8) |
-                        (0xED         , 0x80 ... 0x9F, TAG_CONT_U8) |
-                        (0xEE ... 0xEF, 0x80 ... 0xBF, TAG_CONT_U8) => {}
-                        _ => err!()
+                    match (first, next!()) {
+                        (0xE0         , 0xA0 ... 0xBF) |
+                        (0xE1 ... 0xEC, 0x80 ... 0xBF) |
+                        (0xED         , 0x80 ... 0x9F) |
+                        (0xEE ... 0xEF, 0x80 ... 0xBF) => {}
+                        _ => err!(Some(1))
+                    }
+                    if next!() & !CONT_MASK != TAG_CONT_U8 {
+                        err!(Some(2))
                     }
                 }
                 4 => {
-                    match (first, second, next!() & !CONT_MASK, next!() & !CONT_MASK) {
-                        (0xF0         , 0x90 ... 0xBF, TAG_CONT_U8, TAG_CONT_U8) |
-                        (0xF1 ... 0xF3, 0x80 ... 0xBF, TAG_CONT_U8, TAG_CONT_U8) |
-                        (0xF4         , 0x80 ... 0x8F, TAG_CONT_U8, TAG_CONT_U8) => {}
-                        _ => err!()
+                    match (first, next!()) {
+                        (0xF0         , 0x90 ... 0xBF) |
+                        (0xF1 ... 0xF3, 0x80 ... 0xBF) |
+                        (0xF4         , 0x80 ... 0x8F) => {}
+                        _ => err!(Some(1))
+                    }
+                    if next!() & !CONT_MASK != TAG_CONT_U8 {
+                        err!(Some(2))
+                    }
+                    if next!() & !CONT_MASK != TAG_CONT_U8 {
+                        err!(Some(3))
                     }
                 }
-                _ => err!()
+                _ => err!(Some(1))
             }
             index += 1;
         } else {
@@ -1305,7 +1510,10 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
             // When the pointer is aligned, read 2 words of data per iteration
             // until we find a word containing a non-ascii byte.
             let ptr = v.as_ptr();
-            let align = (ptr as usize + index) & (usize_bytes - 1);
+            let align = unsafe {
+                // the offset is safe, because `index` is guaranteed inbounds
+                ptr.offset(index as isize).align_offset(usize_bytes)
+            };
             if align == 0 {
                 while index < blocks_end {
                     unsafe {
@@ -1352,9 +1560,16 @@ static UTF8_CHAR_WIDTH: [u8; 256] = [
 4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0, // 0xFF
 ];
 
-/// Mask of the value bits of a continuation byte
+/// Given a first byte, determines how many bytes are in this UTF-8 character.
+#[unstable(feature = "str_internals", issue = "0")]
+#[inline]
+pub fn utf8_char_width(b: u8) -> usize {
+    return UTF8_CHAR_WIDTH[b as usize] as usize;
+}
+
+/// Mask of the value bits of a continuation byte.
 const CONT_MASK: u8 = 0b0011_1111;
-/// Value of the tag bits (tag mask is !CONT_MASK) of a continuation byte
+/// Value of the tag bits (tag mask is !CONT_MASK) of a continuation byte.
 const TAG_CONT_U8: u8 = 0b1000_0000;
 
 /*
@@ -1364,8 +1579,15 @@ Section: Trait implementations
 mod traits {
     use cmp::Ordering;
     use ops;
-    use str::eq_slice;
+    use slice::{self, SliceIndex};
 
+    /// Implements ordering of strings.
+    ///
+    /// Strings are ordered  lexicographically by their byte values.  This orders Unicode code
+    /// points based on their positions in the code charts.  This is not necessarily the same as
+    /// "alphabetical" order, which varies by language and locale.  Sorting strings according to
+    /// culturally-accepted standards requires locale-specific data that is outside the scope of
+    /// the `str` type.
     #[stable(feature = "rust1", since = "1.0.0")]
     impl Ord for str {
         #[inline]
@@ -1378,7 +1600,7 @@ mod traits {
     impl PartialEq for str {
         #[inline]
         fn eq(&self, other: &str) -> bool {
-            eq_slice(self, other)
+            self.as_bytes() == other.as_bytes()
         }
         #[inline]
         fn ne(&self, other: &str) -> bool { !(*self).eq(other) }
@@ -1387,6 +1609,13 @@ mod traits {
     #[stable(feature = "rust1", since = "1.0.0")]
     impl Eq for str {}
 
+    /// Implements comparison operations on strings.
+    ///
+    /// Strings are compared lexicographically by their byte values.  This compares Unicode code
+    /// points based on their positions in the code charts.  This is not necessarily the same as
+    /// "alphabetical" order, which varies by language and locale.  Comparing strings according to
+    /// culturally-accepted standards requires locale-specific data that is outside the scope of
+    /// the `str` type.
     #[stable(feature = "rust1", since = "1.0.0")]
     impl PartialOrd for str {
         #[inline]
@@ -1432,14 +1661,7 @@ mod traits {
         type Output = str;
         #[inline]
         fn index(&self, index: ops::Range<usize>) -> &str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if index.start <= index.end &&
-               self.is_char_boundary(index.start) &&
-               self.is_char_boundary(index.end) {
-                unsafe { self.slice_unchecked(index.start, index.end) }
-            } else {
-                super::slice_error_fail(self, index.start, index.end)
-            }
+            index.index(self)
         }
     }
 
@@ -1457,18 +1679,11 @@ mod traits {
     /// byte offset of a character (as defined by `is_char_boundary`).
     /// Requires that `begin <= end` and `end <= len` where `len` is the
     /// length of the string.
-    #[stable(feature = "derefmut_for_string", since = "1.2.0")]
+    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
     impl ops::IndexMut<ops::Range<usize>> for str {
         #[inline]
         fn index_mut(&mut self, index: ops::Range<usize>) -> &mut str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if index.start <= index.end &&
-               self.is_char_boundary(index.start) &&
-               self.is_char_boundary(index.end) {
-                unsafe { self.slice_mut_unchecked(index.start, index.end) }
-            } else {
-                super::slice_error_fail(self, index.start, index.end)
-            }
+            index.index_mut(self)
         }
     }
 
@@ -1484,12 +1699,7 @@ mod traits {
 
         #[inline]
         fn index(&self, index: ops::RangeTo<usize>) -> &str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if self.is_char_boundary(index.end) {
-                unsafe { self.slice_unchecked(0, index.end) }
-            } else {
-                super::slice_error_fail(self, 0, index.end)
-            }
+            index.index(self)
         }
     }
 
@@ -1499,16 +1709,11 @@ mod traits {
     /// `end`.
     ///
     /// Equivalent to `&mut self[0 .. end]`.
-    #[stable(feature = "derefmut_for_string", since = "1.2.0")]
+    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
     impl ops::IndexMut<ops::RangeTo<usize>> for str {
         #[inline]
         fn index_mut(&mut self, index: ops::RangeTo<usize>) -> &mut str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if self.is_char_boundary(index.end) {
-                unsafe { self.slice_mut_unchecked(0, index.end) }
-            } else {
-                super::slice_error_fail(self, 0, index.end)
-            }
+            index.index_mut(self)
         }
     }
 
@@ -1524,12 +1729,7 @@ mod traits {
 
         #[inline]
         fn index(&self, index: ops::RangeFrom<usize>) -> &str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if self.is_char_boundary(index.start) {
-                unsafe { self.slice_unchecked(index.start, self.len()) }
-            } else {
-                super::slice_error_fail(self, index.start, self.len())
-            }
+            index.index(self)
         }
     }
 
@@ -1539,17 +1739,11 @@ mod traits {
     /// to the end of the string.
     ///
     /// Equivalent to `&mut self[begin .. len]`.
-    #[stable(feature = "derefmut_for_string", since = "1.2.0")]
+    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
     impl ops::IndexMut<ops::RangeFrom<usize>> for str {
         #[inline]
         fn index_mut(&mut self, index: ops::RangeFrom<usize>) -> &mut str {
-            // is_char_boundary checks that the index is in [0, .len()]
-            if self.is_char_boundary(index.start) {
-                let len = self.len();
-                unsafe { self.slice_mut_unchecked(index.start, len) }
-            } else {
-                super::slice_error_fail(self, index.start, self.len())
-            }
+            index.index_mut(self)
         }
     }
 
@@ -1575,7 +1769,7 @@ mod traits {
     /// never panic.
     ///
     /// Equivalent to `&mut self[0 .. len]`.
-    #[stable(feature = "derefmut_for_string", since = "1.2.0")]
+    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
     impl ops::IndexMut<ops::RangeFull> for str {
         #[inline]
         fn index_mut(&mut self, _index: ops::RangeFull) -> &mut str {
@@ -1591,15 +1785,10 @@ mod traits {
 
         #[inline]
         fn index(&self, index: ops::RangeInclusive<usize>) -> &str {
-            match index {
-                ops::RangeInclusive::Empty { .. } => "",
-                ops::RangeInclusive::NonEmpty { end, .. } if end == usize::max_value() =>
-                    panic!("attempted to index slice up to maximum usize"),
-                ops::RangeInclusive::NonEmpty { start, end } =>
-                    self.index(start .. end+1)
-            }
+            index.index(self)
         }
     }
+
     #[unstable(feature = "inclusive_range",
                reason = "recently added, follows RFC",
                issue = "28237")]
@@ -1608,7 +1797,7 @@ mod traits {
 
         #[inline]
         fn index(&self, index: ops::RangeToInclusive<usize>) -> &str {
-            self.index(0...index.end)
+            index.index(self)
         }
     }
 
@@ -1618,13 +1807,7 @@ mod traits {
     impl ops::IndexMut<ops::RangeInclusive<usize>> for str {
         #[inline]
         fn index_mut(&mut self, index: ops::RangeInclusive<usize>) -> &mut str {
-            match index {
-                ops::RangeInclusive::Empty { .. } => &mut self[0..0], // `&mut ""` doesn't work
-                ops::RangeInclusive::NonEmpty { end, .. } if end == usize::max_value() =>
-                    panic!("attempted to index str up to maximum usize"),
-                    ops::RangeInclusive::NonEmpty { start, end } =>
-                        self.index_mut(start .. end+1)
-            }
+            index.index_mut(self)
         }
     }
     #[unstable(feature = "inclusive_range",
@@ -1633,10 +1816,278 @@ mod traits {
     impl ops::IndexMut<ops::RangeToInclusive<usize>> for str {
         #[inline]
         fn index_mut(&mut self, index: ops::RangeToInclusive<usize>) -> &mut str {
-            self.index_mut(0...index.end)
+            index.index_mut(self)
         }
     }
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::RangeFull {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            Some(slice)
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            Some(slice)
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            slice
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            slice
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            slice
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            slice
+        }
+    }
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::Range<usize> {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            if self.start <= self.end &&
+               slice.is_char_boundary(self.start) &&
+               slice.is_char_boundary(self.end) {
+                Some(unsafe { self.get_unchecked(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            if self.start <= self.end &&
+               slice.is_char_boundary(self.start) &&
+               slice.is_char_boundary(self.end) {
+                Some(unsafe { self.get_unchecked_mut(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            let ptr = slice.as_ptr().offset(self.start as isize);
+            let len = self.end - self.start;
+            super::from_utf8_unchecked(slice::from_raw_parts(ptr, len))
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            let ptr = slice.as_ptr().offset(self.start as isize);
+            let len = self.end - self.start;
+            super::from_utf8_unchecked_mut(slice::from_raw_parts_mut(ptr as *mut u8, len))
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            let (start, end) = (self.start, self.end);
+            self.get(slice).unwrap_or_else(|| super::slice_error_fail(slice, start, end))
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            // is_char_boundary checks that the index is in [0, .len()]
+            // canot reuse `get` as above, because of NLL trouble
+            if self.start <= self.end &&
+               slice.is_char_boundary(self.start) &&
+               slice.is_char_boundary(self.end) {
+                unsafe { self.get_unchecked_mut(slice) }
+            } else {
+                super::slice_error_fail(slice, self.start, self.end)
+            }
+        }
+    }
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::RangeTo<usize> {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            if slice.is_char_boundary(self.end) {
+                Some(unsafe { self.get_unchecked(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            if slice.is_char_boundary(self.end) {
+                Some(unsafe { self.get_unchecked_mut(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            let ptr = slice.as_ptr();
+            super::from_utf8_unchecked(slice::from_raw_parts(ptr, self.end))
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            let ptr = slice.as_ptr();
+            super::from_utf8_unchecked_mut(slice::from_raw_parts_mut(ptr as *mut u8, self.end))
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            let end = self.end;
+            self.get(slice).unwrap_or_else(|| super::slice_error_fail(slice, 0, end))
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            // is_char_boundary checks that the index is in [0, .len()]
+            if slice.is_char_boundary(self.end) {
+                unsafe { self.get_unchecked_mut(slice) }
+            } else {
+                super::slice_error_fail(slice, 0, self.end)
+            }
+        }
+    }
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::RangeFrom<usize> {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            if slice.is_char_boundary(self.start) {
+                Some(unsafe { self.get_unchecked(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            if slice.is_char_boundary(self.start) {
+                Some(unsafe { self.get_unchecked_mut(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            let ptr = slice.as_ptr().offset(self.start as isize);
+            let len = slice.len() - self.start;
+            super::from_utf8_unchecked(slice::from_raw_parts(ptr, len))
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            let ptr = slice.as_ptr().offset(self.start as isize);
+            let len = slice.len() - self.start;
+            super::from_utf8_unchecked_mut(slice::from_raw_parts_mut(ptr as *mut u8, len))
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            let (start, end) = (self.start, slice.len());
+            self.get(slice).unwrap_or_else(|| super::slice_error_fail(slice, start, end))
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            // is_char_boundary checks that the index is in [0, .len()]
+            if slice.is_char_boundary(self.start) {
+                unsafe { self.get_unchecked_mut(slice) }
+            } else {
+                super::slice_error_fail(slice, self.start, slice.len())
+            }
+        }
+    }
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::RangeInclusive<usize> {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            if let Some(end) = self.end.checked_add(1) {
+                (self.start..end).get(slice)
+            } else {
+                None
+            }
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            if let Some(end) = self.end.checked_add(1) {
+                (self.start..end).get_mut(slice)
+            } else {
+                None
+            }
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            (self.start..self.end+1).get_unchecked(slice)
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            (self.start..self.end+1).get_unchecked_mut(slice)
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            assert!(self.end != usize::max_value(),
+                "attempted to index str up to maximum usize");
+            (self.start..self.end+1).index(slice)
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            assert!(self.end != usize::max_value(),
+                "attempted to index str up to maximum usize");
+            (self.start..self.end+1).index_mut(slice)
+        }
+    }
+
+
+
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    impl SliceIndex<str> for ops::RangeToInclusive<usize> {
+        type Output = str;
+        #[inline]
+        fn get(self, slice: &str) -> Option<&Self::Output> {
+            if self.end < usize::max_value() && slice.is_char_boundary(self.end + 1) {
+                Some(unsafe { self.get_unchecked(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        fn get_mut(self, slice: &mut str) -> Option<&mut Self::Output> {
+            if self.end < usize::max_value() && slice.is_char_boundary(self.end + 1) {
+                Some(unsafe { self.get_unchecked_mut(slice) })
+            } else {
+                None
+            }
+        }
+        #[inline]
+        unsafe fn get_unchecked(self, slice: &str) -> &Self::Output {
+            let ptr = slice.as_ptr();
+            super::from_utf8_unchecked(slice::from_raw_parts(ptr, self.end + 1))
+        }
+        #[inline]
+        unsafe fn get_unchecked_mut(self, slice: &mut str) -> &mut Self::Output {
+            let ptr = slice.as_ptr();
+            super::from_utf8_unchecked_mut(slice::from_raw_parts_mut(ptr as *mut u8, self.end + 1))
+        }
+        #[inline]
+        fn index(self, slice: &str) -> &Self::Output {
+            assert!(self.end != usize::max_value(),
+                "attempted to index str up to maximum usize");
+            let end = self.end + 1;
+            self.get(slice).unwrap_or_else(|| super::slice_error_fail(slice, 0, end))
+        }
+        #[inline]
+        fn index_mut(self, slice: &mut str) -> &mut Self::Output {
+            assert!(self.end != usize::max_value(),
+                "attempted to index str up to maximum usize");
+            if slice.is_char_boundary(self.end) {
+                unsafe { self.get_unchecked_mut(slice) }
+            } else {
+                super::slice_error_fail(slice, 0, self.end + 1)
+            }
+        }
+    }
+
 }
+
 
 /// Methods for string slices
 #[allow(missing_docs)]
@@ -1646,7 +2097,7 @@ mod traits {
            issue = "32110")]
 pub trait StrExt {
     // NB there are no docs here are they're all located on the StrExt trait in
-    // libcollections, not here.
+    // liballoc, not here.
 
     #[stable(feature = "core", since = "1.6.0")]
     fn contains<'a, P: Pattern<'a>>(&'a self, pat: P) -> bool;
@@ -1687,6 +2138,14 @@ pub trait StrExt {
     #[rustc_deprecated(since = "1.6.0", reason = "use lines() instead now")]
     #[allow(deprecated)]
     fn lines_any(&self) -> LinesAny;
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    fn get<I: SliceIndex<str>>(&self, i: I) -> Option<&I::Output>;
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    fn get_mut<I: SliceIndex<str>>(&mut self, i: I) -> Option<&mut I::Output>;
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    unsafe fn get_unchecked<I: SliceIndex<str>>(&self, i: I) -> &I::Output;
+    #[stable(feature = "str_checked_slicing", since = "1.20.0")]
+    unsafe fn get_unchecked_mut<I: SliceIndex<str>>(&mut self, i: I) -> &mut I::Output;
     #[stable(feature = "core", since = "1.6.0")]
     unsafe fn slice_unchecked(&self, begin: usize, end: usize) -> &str;
     #[stable(feature = "core", since = "1.6.0")]
@@ -1708,6 +2167,8 @@ pub trait StrExt {
     fn is_char_boundary(&self, index: usize) -> bool;
     #[stable(feature = "core", since = "1.6.0")]
     fn as_bytes(&self) -> &[u8];
+    #[stable(feature = "str_mut_extras", since = "1.20.0")]
+    unsafe fn as_bytes_mut(&mut self) -> &mut [u8];
     #[stable(feature = "core", since = "1.6.0")]
     fn find<'a, P: Pattern<'a>>(&'a self, pat: P) -> Option<usize>;
     #[stable(feature = "core", since = "1.6.0")]
@@ -1816,7 +2277,7 @@ impl StrExt for str {
     fn splitn<'a, P: Pattern<'a>>(&'a self, count: usize, pat: P) -> SplitN<'a, P> {
         SplitN(SplitNInternal {
             iter: self.split(pat).0,
-            count: count,
+            count,
         })
     }
 
@@ -1877,17 +2338,33 @@ impl StrExt for str {
     }
 
     #[inline]
+    fn get<I: SliceIndex<str>>(&self, i: I) -> Option<&I::Output> {
+        i.get(self)
+    }
+
+    #[inline]
+    fn get_mut<I: SliceIndex<str>>(&mut self, i: I) -> Option<&mut I::Output> {
+        i.get_mut(self)
+    }
+
+    #[inline]
+    unsafe fn get_unchecked<I: SliceIndex<str>>(&self, i: I) -> &I::Output {
+        i.get_unchecked(self)
+    }
+
+    #[inline]
+    unsafe fn get_unchecked_mut<I: SliceIndex<str>>(&mut self, i: I) -> &mut I::Output {
+        i.get_unchecked_mut(self)
+    }
+
+    #[inline]
     unsafe fn slice_unchecked(&self, begin: usize, end: usize) -> &str {
-        let ptr = self.as_ptr().offset(begin as isize);
-        let len = end - begin;
-        from_utf8_unchecked(slice::from_raw_parts(ptr, len))
+        (begin..end).get_unchecked(self)
     }
 
     #[inline]
     unsafe fn slice_mut_unchecked(&mut self, begin: usize, end: usize) -> &mut str {
-        let ptr = self.as_ptr().offset(begin as isize);
-        let len = end - begin;
-        mem::transmute(slice::from_raw_parts_mut(ptr as *mut u8, len))
+        (begin..end).get_unchecked_mut(self)
     }
 
     #[inline]
@@ -1966,7 +2443,12 @@ impl StrExt for str {
 
     #[inline]
     fn as_bytes(&self) -> &[u8] {
-        unsafe { mem::transmute(self) }
+        unsafe { &*(self as *const str as *const [u8]) }
+    }
+
+    #[inline]
+    unsafe fn as_bytes_mut(&mut self) -> &mut [u8] {
+        &mut *(self as *mut str as *mut [u8])
     }
 
     fn find<'a, P: Pattern<'a>>(&'a self, pat: P) -> Option<usize> {

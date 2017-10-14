@@ -41,7 +41,7 @@ macro_rules! t {
 }
 
 fn main() {
-    let docs = env::args().nth(1).unwrap();
+    let docs = env::args_os().nth(1).unwrap();
     let docs = env::current_dir().unwrap().join(docs);
     let mut errors = false;
     walk(&mut HashMap::new(), &docs, &docs, &mut errors);
@@ -72,7 +72,7 @@ type Cache = HashMap<PathBuf, FileEntry>;
 impl FileEntry {
     fn parse_ids(&mut self, file: &Path, contents: &str, errors: &mut bool) {
         if self.ids.is_empty() {
-            with_attrs_in_source(contents, " id", |fragment, i| {
+            with_attrs_in_source(contents, " id", |fragment, i, _| {
                 let frag = fragment.trim_left_matches("#").to_owned();
                 if !self.ids.insert(frag) {
                     *errors = true;
@@ -106,9 +106,8 @@ fn check(cache: &mut Cache,
          file: &Path,
          errors: &mut bool)
          -> Option<PathBuf> {
-    // ignore js files as they are not prone to errors as the rest of the
-    // documentation is and they otherwise bring up false positives.
-    if file.extension().and_then(|s| s.to_str()) == Some("js") {
+    // Ignore none HTML files.
+    if file.extension().and_then(|s| s.to_str()) != Some("html") {
         return None;
     }
 
@@ -119,18 +118,19 @@ fn check(cache: &mut Cache,
         return None;
     }
     // FIXME(#32553)
-    if file.ends_with("collections/string/struct.String.html") {
+    if file.ends_with("string/struct.String.html") {
         return None;
     }
     // FIXME(#32130)
     if file.ends_with("btree_set/struct.BTreeSet.html") ||
-       file.ends_with("collections/struct.BTreeSet.html") ||
-       file.ends_with("collections/btree_map/struct.BTreeMap.html") ||
-       file.ends_with("collections/hash_map/struct.HashMap.html") {
+       file.ends_with("struct.BTreeSet.html") ||
+       file.ends_with("btree_map/struct.BTreeMap.html") ||
+       file.ends_with("hash_map/struct.HashMap.html") ||
+       file.ends_with("hash_set/struct.HashSet.html") {
         return None;
     }
 
-    let res = load_file(cache, root, PathBuf::from(file), SkipRedirect);
+    let res = load_file(cache, root, file, SkipRedirect);
     let (pretty_file, contents) = match res {
         Ok(res) => res,
         Err(_) => return None,
@@ -142,7 +142,7 @@ fn check(cache: &mut Cache,
     }
 
     // Search for anything that's the regex 'href[ ]*=[ ]*".*?"'
-    with_attrs_in_source(&contents, " href", |url, i| {
+    with_attrs_in_source(&contents, " href", |url, i, base| {
         // Ignore external URLs
         if url.starts_with("http:") || url.starts_with("https:") ||
            url.starts_with("javascript:") || url.starts_with("ftp:") ||
@@ -151,9 +151,6 @@ fn check(cache: &mut Cache,
         }
         let mut parts = url.splitn(2, "#");
         let url = parts.next().unwrap();
-        if url.is_empty() {
-            return
-        }
         let fragment = parts.next();
         let mut parts = url.splitn(2, "?");
         let url = parts.next().unwrap();
@@ -161,14 +158,16 @@ fn check(cache: &mut Cache,
         // Once we've plucked out the URL, parse it using our base url and
         // then try to extract a file path.
         let mut path = file.to_path_buf();
-        path.pop();
-        for part in Path::new(url).components() {
-            match part {
-                Component::Prefix(_) |
-                Component::RootDir => panic!(),
-                Component::CurDir => {}
-                Component::ParentDir => { path.pop(); }
-                Component::Normal(s) => { path.push(s); }
+        if !base.is_empty() || !url.is_empty() {
+            path.pop();
+            for part in Path::new(base).join(url).components() {
+                match part {
+                    Component::Prefix(_) |
+                    Component::RootDir => panic!(),
+                    Component::CurDir => {}
+                    Component::ParentDir => { path.pop(); }
+                    Component::Normal(s) => { path.push(s); }
+                }
             }
         }
 
@@ -186,10 +185,18 @@ fn check(cache: &mut Cache,
                          pretty_path.display());
                 return;
             }
-            let res = load_file(cache, root, path.clone(), FromRedirect(false));
+            if let Some(extension) = path.extension() {
+                // Ignore none HTML files.
+                if extension != "html" {
+                    return;
+                }
+            }
+            let res = load_file(cache, root, &path, FromRedirect(false));
             let (pretty_path, contents) = match res {
                 Ok(res) => res,
-                Err(LoadError::IOError(err)) => panic!(format!("{}", err)),
+                Err(LoadError::IOError(err)) => {
+                    panic!("error loading {}: {}", path.display(), err);
+                }
                 Err(LoadError::BrokenRedirect(target, _)) => {
                     *errors = true;
                     println!("{}:{}: broken redirect to {}",
@@ -214,7 +221,7 @@ fn check(cache: &mut Cache,
 
                 if !entry.ids.contains(*fragment) {
                     *errors = true;
-                    print!("{}:{}: broken link fragment  ",
+                    print!("{}:{}: broken link fragment ",
                            pretty_file.display(),
                            i + 1);
                     println!("`#{}` pointing to `{}`", fragment, pretty_path.display());
@@ -232,7 +239,7 @@ fn check(cache: &mut Cache,
 
 fn load_file(cache: &mut Cache,
              root: &Path,
-             mut file: PathBuf,
+             file: &Path,
              redirect: Redirect)
              -> Result<(PathBuf, String), LoadError> {
     let mut contents = String::new();
@@ -244,9 +251,9 @@ fn load_file(cache: &mut Cache,
             None
         }
         Entry::Vacant(entry) => {
-            let mut fp = File::open(file.clone()).map_err(|err| {
+            let mut fp = File::open(file).map_err(|err| {
                 if let FromRedirect(true) = redirect {
-                    LoadError::BrokenRedirect(file.clone(), err)
+                    LoadError::BrokenRedirect(file.to_path_buf(), err)
                 } else {
                     LoadError::IOError(err)
                 }
@@ -267,11 +274,9 @@ fn load_file(cache: &mut Cache,
             maybe
         }
     };
-    file.pop();
-    match maybe_redirect.map(|url| file.join(url)) {
+    match maybe_redirect.map(|url| file.parent().unwrap().join(url)) {
         Some(redirect_file) => {
-            let path = PathBuf::from(redirect_file);
-            load_file(cache, root, path, FromRedirect(true))
+            load_file(cache, root, &redirect_file, FromRedirect(true))
         }
         None => Ok((pretty_file, contents)),
     }
@@ -293,10 +298,14 @@ fn maybe_redirect(source: &str) -> Option<String> {
     })
 }
 
-fn with_attrs_in_source<F: FnMut(&str, usize)>(contents: &str, attr: &str, mut f: F) {
+fn with_attrs_in_source<F: FnMut(&str, usize, &str)>(contents: &str, attr: &str, mut f: F) {
+    let mut base = "";
     for (i, mut line) in contents.lines().enumerate() {
         while let Some(j) = line.find(attr) {
             let rest = &line[j + attr.len()..];
+            // The base tag should always be the first link in the document so
+            // we can get away with using one pass.
+            let is_base = line[..j].ends_with("<base");
             line = rest;
             let pos_equals = match rest.find("=") {
                 Some(i) => i,
@@ -322,7 +331,11 @@ fn with_attrs_in_source<F: FnMut(&str, usize)>(contents: &str, attr: &str, mut f
                 Some(i) => &rest[..i],
                 None => continue,
             };
-            f(url, i)
+            if is_base {
+                base = url;
+                continue;
+            }
+            f(url, i, base)
         }
     }
 }

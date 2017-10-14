@@ -11,29 +11,29 @@
 // The crate store - a central repo for information collected about external
 // crates and libraries
 
-use locator;
 use schema;
 
-use rustc::dep_graph::DepGraph;
-use rustc::hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE, CrateNum, DefIndex, DefId};
+use rustc::hir::def_id::{CRATE_DEF_INDEX, CrateNum, DefIndex};
 use rustc::hir::map::definitions::DefPathTable;
 use rustc::hir::svh::Svh;
-use rustc::middle::cstore::{DepKind, ExternCrate};
+use rustc::middle::cstore::{DepKind, ExternCrate, MetadataLoader};
 use rustc_back::PanicStrategy;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc::util::nodemap::{FxHashMap, FxHashSet, NodeMap, DefIdMap};
+use rustc::util::nodemap::{FxHashMap, FxHashSet, NodeMap};
 
 use std::cell::{RefCell, Cell};
 use std::rc::Rc;
-use flate::Bytes;
+use owning_ref::ErasedBoxRef;
 use syntax::{ast, attr};
 use syntax::ext::base::SyntaxExtension;
 use syntax::symbol::Symbol;
 use syntax_pos;
 
 pub use rustc::middle::cstore::{NativeLibrary, NativeLibraryKind, LinkagePreference};
-pub use rustc::middle::cstore::{NativeStatic, NativeFramework, NativeUnknown};
-pub use rustc::middle::cstore::{CrateSource, LinkMeta, LibSource};
+pub use rustc::middle::cstore::NativeLibraryKind::*;
+pub use rustc::middle::cstore::{CrateSource, LibSource};
+
+pub use cstore_impl::{provide, provide_local};
 
 // A map from external crate numbers (as decoded from some crate file) to
 // local crate numbers (as generated during this session). Each external
@@ -41,11 +41,7 @@ pub use rustc::middle::cstore::{CrateSource, LinkMeta, LibSource};
 // own crate numbers.
 pub type CrateNumMap = IndexVec<CrateNum, CrateNum>;
 
-pub enum MetadataBlob {
-    Inflated(Bytes),
-    Archive(locator::ArchiveMetadata),
-    Raw(Vec<u8>),
-}
+pub struct MetadataBlob(pub ErasedBoxRef<[u8]>);
 
 /// Holds information about a syntax_pos::FileMap imported from another crate.
 /// See `imported_filemaps()` for more information.
@@ -70,6 +66,7 @@ pub struct CrateMetadata {
     pub cnum_map: RefCell<CrateNumMap>,
     pub cnum: CrateNum,
     pub codemap_import_info: RefCell<Vec<ImportedFileMap>>,
+    pub attribute_cache: RefCell<[Vec<Option<Rc<[ast::Attribute]>>>; 2]>,
 
     pub root: schema::CrateRoot,
 
@@ -78,9 +75,11 @@ pub struct CrateMetadata {
     /// hashmap, which gives the reverse mapping.  This allows us to
     /// quickly retrace a `DefPath`, which is needed for incremental
     /// compilation support.
-    pub def_path_table: DefPathTable,
+    pub def_path_table: Rc<DefPathTable>,
 
     pub exported_symbols: FxHashSet<DefIndex>,
+
+    pub trait_impls: FxHashMap<(u32, DefIndex), schema::LazySeq<DefIndex>>,
 
     pub dep_kind: Cell<DepKind>,
     pub source: CrateSource,
@@ -91,28 +90,18 @@ pub struct CrateMetadata {
 }
 
 pub struct CStore {
-    pub dep_graph: DepGraph,
     metas: RefCell<FxHashMap<CrateNum, Rc<CrateMetadata>>>,
     /// Map from NodeId's of local extern crate statements to crate numbers
     extern_mod_crate_map: RefCell<NodeMap<CrateNum>>,
-    used_libraries: RefCell<Vec<NativeLibrary>>,
-    used_link_args: RefCell<Vec<String>>,
-    statically_included_foreign_items: RefCell<FxHashSet<DefIndex>>,
-    pub dllimport_foreign_items: RefCell<FxHashSet<DefIndex>>,
-    pub visible_parent_map: RefCell<DefIdMap<DefId>>,
+    pub metadata_loader: Box<MetadataLoader>,
 }
 
 impl CStore {
-    pub fn new(dep_graph: &DepGraph) -> CStore {
+    pub fn new(metadata_loader: Box<MetadataLoader>) -> CStore {
         CStore {
-            dep_graph: dep_graph.clone(),
             metas: RefCell::new(FxHashMap()),
             extern_mod_crate_map: RefCell::new(FxHashMap()),
-            used_libraries: RefCell::new(Vec::new()),
-            used_link_args: RefCell::new(Vec::new()),
-            statically_included_foreign_items: RefCell::new(FxHashSet()),
-            dllimport_foreign_items: RefCell::new(FxHashSet()),
-            visible_parent_map: RefCell::new(FxHashMap()),
+            metadata_loader,
         }
     }
 
@@ -122,10 +111,6 @@ impl CStore {
 
     pub fn get_crate_data(&self, cnum: CrateNum) -> Rc<CrateMetadata> {
         self.metas.borrow().get(&cnum).unwrap().clone()
-    }
-
-    pub fn get_crate_hash(&self, cnum: CrateNum) -> Svh {
-        self.get_crate_data(cnum).hash()
     }
 
     pub fn set_crate_data(&self, cnum: CrateNum, data: Rc<CrateMetadata>) {
@@ -138,14 +123,6 @@ impl CStore {
         for (&k, v) in self.metas.borrow().iter() {
             i(k, v);
         }
-    }
-
-    pub fn reset(&self) {
-        self.metas.borrow_mut().clear();
-        self.extern_mod_crate_map.borrow_mut().clear();
-        self.used_libraries.borrow_mut().clear();
-        self.used_link_args.borrow_mut().clear();
-        self.statically_included_foreign_items.borrow_mut().clear();
     }
 
     pub fn crate_dependencies_in_rpo(&self, krate: CrateNum) -> Vec<CrateNum> {
@@ -170,84 +147,16 @@ impl CStore {
         ordering.push(krate);
     }
 
-    // This method is used when generating the command line to pass through to
-    // system linker. The linker expects undefined symbols on the left of the
-    // command line to be defined in libraries on the right, not the other way
-    // around. For more info, see some comments in the add_used_library function
-    // below.
-    //
-    // In order to get this left-to-right dependency ordering, we perform a
-    // topological sort of all crates putting the leaves at the right-most
-    // positions.
-    pub fn do_get_used_crates(&self,
-                              prefer: LinkagePreference)
-                              -> Vec<(CrateNum, LibSource)> {
+    pub fn do_postorder_cnums_untracked(&self) -> Vec<CrateNum> {
         let mut ordering = Vec::new();
         for (&num, _) in self.metas.borrow().iter() {
             self.push_dependencies_in_postorder(&mut ordering, num);
         }
-        info!("topological ordering: {:?}", ordering);
-        ordering.reverse();
-        let mut libs = self.metas
-            .borrow()
-            .iter()
-            .filter_map(|(&cnum, data)| {
-                if data.dep_kind.get().macros_only() { return None; }
-                let path = match prefer {
-                    LinkagePreference::RequireDynamic => data.source.dylib.clone().map(|p| p.0),
-                    LinkagePreference::RequireStatic => data.source.rlib.clone().map(|p| p.0),
-                };
-                let path = match path {
-                    Some(p) => LibSource::Some(p),
-                    None => {
-                        if data.source.rmeta.is_some() {
-                            LibSource::MetadataOnly
-                        } else {
-                            LibSource::None
-                        }
-                    }
-                };
-                Some((cnum, path))
-            })
-            .collect::<Vec<_>>();
-        libs.sort_by(|&(a, _), &(b, _)| {
-            let a = ordering.iter().position(|x| *x == a);
-            let b = ordering.iter().position(|x| *x == b);
-            a.cmp(&b)
-        });
-        libs
-    }
-
-    pub fn add_used_library(&self, lib: NativeLibrary) {
-        assert!(!lib.name.as_str().is_empty());
-        self.used_libraries.borrow_mut().push(lib);
-    }
-
-    pub fn get_used_libraries(&self) -> &RefCell<Vec<NativeLibrary>> {
-        &self.used_libraries
-    }
-
-    pub fn add_used_link_args(&self, args: &str) {
-        for s in args.split(' ').filter(|s| !s.is_empty()) {
-            self.used_link_args.borrow_mut().push(s.to_string());
-        }
-    }
-
-    pub fn get_used_link_args<'a>(&'a self) -> &'a RefCell<Vec<String>> {
-        &self.used_link_args
+        return ordering
     }
 
     pub fn add_extern_mod_stmt_cnum(&self, emod_id: ast::NodeId, cnum: CrateNum) {
         self.extern_mod_crate_map.borrow_mut().insert(emod_id, cnum);
-    }
-
-    pub fn add_statically_included_foreign_item(&self, id: DefIndex) {
-        self.statically_included_foreign_items.borrow_mut().insert(id);
-    }
-
-    pub fn do_is_statically_included_foreign_item(&self, def_id: DefId) -> bool {
-        assert!(def_id.krate == LOCAL_CRATE);
-        self.statically_included_foreign_items.borrow().contains(&def_id.index)
     }
 
     pub fn do_extern_mod_stmt_cnum(&self, emod_id: ast::NodeId) -> Option<CrateNum> {
@@ -266,20 +175,17 @@ impl CrateMetadata {
         self.root.disambiguator
     }
 
-    pub fn is_staged_api(&self) -> bool {
-        self.get_item_attrs(CRATE_DEF_INDEX)
-            .iter()
-            .any(|attr| attr.name() == "stable" || attr.name() == "unstable")
-    }
-
-    pub fn is_allocator(&self) -> bool {
-        let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
-        attr::contains_name(&attrs, "allocator")
-    }
-
     pub fn needs_allocator(&self) -> bool {
         let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
         attr::contains_name(&attrs, "needs_allocator")
+    }
+
+    pub fn has_global_allocator(&self) -> bool {
+        self.root.has_global_allocator.clone()
+    }
+
+    pub fn has_default_lib_allocator(&self) -> bool {
+        self.root.has_default_lib_allocator.clone()
     }
 
     pub fn is_panic_runtime(&self) -> bool {
@@ -297,9 +203,29 @@ impl CrateMetadata {
         attr::contains_name(&attrs, "compiler_builtins")
     }
 
+    pub fn is_sanitizer_runtime(&self) -> bool {
+        let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
+        attr::contains_name(&attrs, "sanitizer_runtime")
+    }
+
+    pub fn is_profiler_runtime(&self) -> bool {
+        let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
+        attr::contains_name(&attrs, "profiler_runtime")
+    }
+
     pub fn is_no_builtins(&self) -> bool {
         let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
         attr::contains_name(&attrs, "no_builtins")
+    }
+
+     pub fn has_copy_closures(&self) -> bool {
+        let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
+        attr::contains_feature_attr(&attrs, "copy_closures")
+    }
+
+    pub fn has_clone_closures(&self) -> bool {
+        let attrs = self.get_item_attrs(CRATE_DEF_INDEX);
+        attr::contains_feature_attr(&attrs, "clone_closures")
     }
 
     pub fn panic_strategy(&self) -> PanicStrategy {

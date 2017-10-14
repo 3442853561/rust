@@ -10,9 +10,6 @@
 
 //! Operations and constants for 32-bits floats (`f32` type)
 
-// FIXME: MIN_VALUE and MAX_VALUE literals are parsed as -inf and inf #14353
-#![allow(overflowing_literals)]
-
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use intrinsics;
@@ -143,36 +140,6 @@ pub mod consts {
            reason = "stable interface is via `impl f{32,64}` in later crates",
            issue = "32110")]
 impl Float for f32 {
-    #[inline]
-    fn nan() -> f32 {
-        NAN
-    }
-
-    #[inline]
-    fn infinity() -> f32 {
-        INFINITY
-    }
-
-    #[inline]
-    fn neg_infinity() -> f32 {
-        NEG_INFINITY
-    }
-
-    #[inline]
-    fn zero() -> f32 {
-        0.0
-    }
-
-    #[inline]
-    fn neg_zero() -> f32 {
-        -0.0
-    }
-
-    #[inline]
-    fn one() -> f32 {
-        1.0
-    }
-
     /// Returns `true` if the number is NaN.
     #[inline]
     fn is_nan(self) -> bool {
@@ -214,21 +181,6 @@ impl Float for f32 {
         }
     }
 
-    /// Returns the mantissa, exponent and sign as integers.
-    fn integer_decode(self) -> (u64, i16, i8) {
-        let bits: u32 = unsafe { mem::transmute(self) };
-        let sign: i8 = if bits >> 31 == 0 { 1 } else { -1 };
-        let mut exponent: i16 = ((bits >> 23) & 0xff) as i16;
-        let mantissa = if exponent == 0 {
-            (bits & 0x7fffff) << 1
-        } else {
-            (bits & 0x7fffff) | 0x800000
-        };
-        // Exponent bias + mantissa shift
-        exponent -= 127 + 23;
-        (mantissa as u64, exponent, sign)
-    }
-
     /// Computes the absolute value of `self`. Returns `Float::nan()` if the
     /// number is `Float::nan()`.
     #[inline]
@@ -250,18 +202,25 @@ impl Float for f32 {
         }
     }
 
-    /// Returns `true` if `self` is positive, including `+0.0` and
-    /// `Float::infinity()`.
+    /// Returns `true` if and only if `self` has a positive sign, including `+0.0`, `NaN`s with
+    /// positive sign bit and positive infinity.
     #[inline]
     fn is_sign_positive(self) -> bool {
-        self > 0.0 || (1.0 / self) == INFINITY
+        !self.is_sign_negative()
     }
 
-    /// Returns `true` if `self` is negative, including `-0.0` and
-    /// `Float::neg_infinity()`.
+    /// Returns `true` if and only if `self` has a negative sign, including `-0.0`, `NaN`s with
+    /// negative sign bit and negative infinity.
     #[inline]
     fn is_sign_negative(self) -> bool {
-        self < 0.0 || (1.0 / self) == NEG_INFINITY
+        // IEEE754 says: isSignMinus(x) is true if and only if x has negative sign. isSignMinus
+        // applies to zeros and NaNs as well.
+        #[repr(C)]
+        union F32Bytes {
+            f: f32,
+            b: u32
+        }
+        unsafe { F32Bytes { f: self }.b & 0x8000_0000 != 0 }
     }
 
     /// Returns the reciprocal (multiplicative inverse) of the number.
@@ -286,5 +245,33 @@ impl Float for f32 {
     fn to_radians(self) -> f32 {
         let value: f32 = consts::PI;
         self * (value / 180.0f32)
+    }
+
+    /// Returns the maximum of the two numbers.
+    #[inline]
+    fn max(self, other: f32) -> f32 {
+        // IEEE754 says: maxNum(x, y) is the canonicalized number y if x < y, x if y < x, the
+        // canonicalized number if one operand is a number and the other a quiet NaN. Otherwise it
+        // is either x or y, canonicalized (this means results might differ among implementations).
+        // When either x or y is a signalingNaN, then the result is according to 6.2.
+        //
+        // Since we do not support sNaN in Rust yet, we do not need to handle them.
+        // FIXME(nagisa): due to https://bugs.llvm.org/show_bug.cgi?id=33303 we canonicalize by
+        // multiplying by 1.0. Should switch to the `canonicalize` when it works.
+        (if self < other || self.is_nan() { other } else { self }) * 1.0
+    }
+
+    /// Returns the minimum of the two numbers.
+    #[inline]
+    fn min(self, other: f32) -> f32 {
+        // IEEE754 says: minNum(x, y) is the canonicalized number x if x < y, y if y < x, the
+        // canonicalized number if one operand is a number and the other a quiet NaN. Otherwise it
+        // is either x or y, canonicalized (this means results might differ among implementations).
+        // When either x or y is a signalingNaN, then the result is according to 6.2.
+        //
+        // Since we do not support sNaN in Rust yet, we do not need to handle them.
+        // FIXME(nagisa): due to https://bugs.llvm.org/show_bug.cgi?id=33303 we canonicalize by
+        // multiplying by 1.0. Should switch to the `canonicalize` when it works.
+        (if self < other || other.is_nan() { self } else { other }) * 1.0
     }
 }

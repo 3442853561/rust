@@ -8,8 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(more_struct_aliases)]
-
 struct Foo<A> { inner: A }
 
 trait Bar { fn bar(); }
@@ -22,17 +20,15 @@ impl Bar for Foo<i32> {
 }
 
 impl<T> Foo<T> {
-    fn new<U>(u: U) -> Foo<U> {
+    fn new<U>(u: U) -> Foo<U> { //~ NOTE expected `Foo<U>` because of return type
         Self {
         //~^ ERROR mismatched types
-        //~| expected type parameter, found a different type parameter
-        //~| expected type `Foo<U>`
-        //~| found type `Foo<T>`
+        //~| NOTE expected type parameter, found a different type parameter
+        //~| NOTE expected type `Foo<U>`
             inner: u
             //~^ ERROR mismatched types
-            //~| expected type parameter, found a different type parameter
-            //~| expected type `T`
-            //~| found type `U`
+            //~| NOTE expected type parameter, found a different type parameter
+            //~| NOTE expected type `T`
         }
     }
 }

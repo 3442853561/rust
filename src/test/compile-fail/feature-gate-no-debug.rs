@@ -8,5 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[no_debug] //~ ERROR the `#[no_debug]` attribute is
+#![allow(deprecated)]
+
+#[no_debug] //~ ERROR the `#[no_debug]` attribute was
 fn main() {}

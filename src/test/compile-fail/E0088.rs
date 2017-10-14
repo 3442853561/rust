@@ -9,12 +9,9 @@
 // except according to those terms.
 
 fn f() {}
-fn g<'a>() {}
+fn g<'a>() -> &'a u8 { loop {} }
 
 fn main() {
     f::<'static>(); //~ ERROR E0088
-    //~^ unexpected lifetime parameter
-
     g::<'static, 'static>(); //~ ERROR E0088
-    //~^ unexpected lifetime parameters
 }

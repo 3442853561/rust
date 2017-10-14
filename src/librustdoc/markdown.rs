@@ -11,43 +11,47 @@
 use std::default::Default;
 use std::fs::File;
 use std::io::prelude::*;
-use std::io;
 use std::path::{PathBuf, Path};
 
 use getopts;
 use testing;
 use rustc::session::search_paths::SearchPaths;
 use rustc::session::config::Externs;
+use syntax::codemap::DUMMY_SP;
 
 use externalfiles::{ExternalHtml, LoadStringError, load_string};
 
 use html::render::reset_ids;
 use html::escape::Escape;
 use html::markdown;
-use html::markdown::{Markdown, MarkdownWithToc, find_testable_code};
+use html::markdown::{Markdown, MarkdownWithToc, find_testable_code, old_find_testable_code};
+use html::markdown::RenderType;
 use test::{TestOptions, Collector};
 
-/// Separate any lines at the start of the file that begin with `%`.
+/// Separate any lines at the start of the file that begin with `# ` or `%`.
 fn extract_leading_metadata<'a>(s: &'a str) -> (Vec<&'a str>, &'a str) {
     let mut metadata = Vec::new();
     let mut count = 0;
+
     for line in s.lines() {
-        if line.starts_with("%") {
-            // remove %<whitespace>
+        if line.starts_with("# ") || line.starts_with("%") {
+            // trim the whitespace after the symbol
             metadata.push(line[1..].trim_left());
             count += line.len() + 1;
         } else {
             return (metadata, &s[count..]);
         }
     }
-    // if we're here, then all lines were metadata % lines.
+
+    // if we're here, then all lines were metadata `# ` or `%` lines.
     (metadata, "")
 }
 
 /// Render `input` (e.g. "foo.md") into an HTML file in `output`
 /// (e.g. output = "bar" => "bar/foo.html").
 pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
-              external_html: &ExternalHtml, include_toc: bool) -> isize {
+              external_html: &ExternalHtml, include_toc: bool,
+              render_type: RenderType) -> isize {
     let input_p = Path::new(input);
     output.push(input_p.file_stem().unwrap());
     output.set_extension("html");
@@ -70,9 +74,7 @@ pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
 
     let mut out = match File::create(&output) {
         Err(e) => {
-            let _ = writeln!(&mut io::stderr(),
-                             "rustdoc: {}: {}",
-                             output.display(), e);
+            eprintln!("rustdoc: {}: {}", output.display(), e);
             return 4;
         }
         Ok(f) => f
@@ -80,10 +82,7 @@ pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
 
     let (metadata, text) = extract_leading_metadata(&input_str);
     if metadata.is_empty() {
-        let _ = writeln!(
-            &mut io::stderr(),
-            "rustdoc: invalid markdown file: expecting initial line with `% ...TITLE...`"
-        );
+        eprintln!("rustdoc: invalid markdown file: no initial lines starting with `# ` or `%`");
         return 5;
     }
     let title = metadata[0];
@@ -91,9 +90,9 @@ pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
     reset_ids(false);
 
     let rendered = if include_toc {
-        format!("{}", MarkdownWithToc(text))
+        format!("{}", MarkdownWithToc(text, render_type))
     } else {
-        format!("{}", Markdown(text))
+        format!("{}", Markdown(text, render_type))
     };
 
     let err = write!(
@@ -133,9 +132,7 @@ pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
 
     match err {
         Err(e) => {
-            let _ = writeln!(&mut io::stderr(),
-                             "rustdoc: cannot write to `{}`: {}",
-                             output.display(), e);
+            eprintln!("rustdoc: cannot write to `{}`: {}", output.display(), e);
             6
         }
         Ok(_) => 0
@@ -144,7 +141,8 @@ pub fn render(input: &str, mut output: PathBuf, matches: &getopts::Matches,
 
 /// Run any tests/code examples in the markdown file `input`.
 pub fn test(input: &str, cfgs: Vec<String>, libs: SearchPaths, externs: Externs,
-            mut test_args: Vec<String>, maybe_sysroot: Option<PathBuf>) -> isize {
+            mut test_args: Vec<String>, maybe_sysroot: Option<PathBuf>,
+            render_type: RenderType, display_warnings: bool) -> isize {
     let input_str = match load_string(input) {
         Ok(s) => s,
         Err(LoadStringError::ReadFail) => return 1,
@@ -154,9 +152,17 @@ pub fn test(input: &str, cfgs: Vec<String>, libs: SearchPaths, externs: Externs,
     let mut opts = TestOptions::default();
     opts.no_crate_inject = true;
     let mut collector = Collector::new(input.to_string(), cfgs, libs, externs,
-                                       true, opts, maybe_sysroot);
-    find_testable_code(&input_str, &mut collector);
+                                       true, opts, maybe_sysroot, None,
+                                       Some(input.to_owned()),
+                                       render_type);
+    if render_type == RenderType::Pulldown {
+        old_find_testable_code(&input_str, &mut collector, DUMMY_SP);
+        find_testable_code(&input_str, &mut collector, DUMMY_SP);
+    } else {
+        old_find_testable_code(&input_str, &mut collector, DUMMY_SP);
+    }
     test_args.insert(0, "rustdoctest".to_string());
-    testing::test_main(&test_args, collector.tests);
+    testing::test_main(&test_args, collector.tests,
+                       testing::Options::new().display_output(display_warnings));
     0
 }

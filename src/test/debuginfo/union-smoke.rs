@@ -9,6 +9,7 @@
 // except according to those terms.
 
 // min-lldb-version: 310
+// ignore-gdb-version: 7.11.90 - 7.12.9
 
 // compile-flags:-g
 
@@ -33,7 +34,6 @@
 #![allow(unused)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![feature(untagged_unions)]
 
 union U {
     a: (u8, u8),

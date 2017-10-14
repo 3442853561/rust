@@ -30,7 +30,7 @@ impl UdpSocket {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
-        Ok(UdpSocket(File::open(&Path::new(path.as_str()), &options)?, UnsafeCell::new(None)))
+        Ok(UdpSocket(File::open(Path::new(path.as_str()), &options)?, UnsafeCell::new(None)))
     }
 
     fn get_conn(&self) -> &mut Option<SocketAddr> {
@@ -85,6 +85,14 @@ impl UdpSocket {
     pub fn socket_addr(&self) -> Result<SocketAddr> {
         let path = self.0.path()?;
         Ok(path_to_local_addr(path.to_str().unwrap_or("")))
+    }
+
+    pub fn peek(&self, _buf: &mut [u8]) -> Result<usize> {
+        Err(Error::new(ErrorKind::Other, "UdpSocket::peek not implemented"))
+    }
+
+    pub fn peek_from(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        Err(Error::new(ErrorKind::Other, "UdpSocket::peek_from not implemented"))
     }
 
     pub fn broadcast(&self) -> Result<bool> {

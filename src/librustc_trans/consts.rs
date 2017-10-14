@@ -8,25 +8,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
 use llvm;
 use llvm::{SetUnnamedAddr};
 use llvm::{ValueRef, True};
-use rustc_const_eval::ConstEvalErr;
 use rustc::hir::def_id::DefId;
 use rustc::hir::map as hir_map;
+use rustc::middle::const_val::ConstEvalErr;
 use {debuginfo, machine};
 use base;
-use trans_item::TransItem;
-use common::{CrateContext, val_ty};
+use trans_item::{TransItem, TransItemExt};
+use common::{self, CrateContext, val_ty};
 use declare;
-use monomorphize::{Instance};
+use monomorphize::Instance;
 use type_::Type;
 use type_of;
 use rustc::ty;
 
 use rustc::hir;
 
+use std::cmp;
 use std::ffi::{CStr, CString};
 use syntax::ast;
 use syntax::attr;
@@ -34,6 +34,31 @@ use syntax::attr;
 pub fn ptrcast(val: ValueRef, ty: Type) -> ValueRef {
     unsafe {
         llvm::LLVMConstPointerCast(val, ty.to_ref())
+    }
+}
+
+pub fn bitcast(val: ValueRef, ty: Type) -> ValueRef {
+    unsafe {
+        llvm::LLVMConstBitCast(val, ty.to_ref())
+    }
+}
+
+fn set_global_alignment(ccx: &CrateContext,
+                        gv: ValueRef,
+                        mut align: machine::llalign) {
+    // The target may require greater alignment for globals than the type does.
+    // Note: GCC and Clang also allow `__attribute__((aligned))` on variables,
+    // which can force it to be smaller.  Rust doesn't support this yet.
+    if let Some(min) = ccx.sess().target.target.options.min_global_align {
+        match ty::layout::Align::from_bits(min, min) {
+            Ok(min) => align = cmp::max(align, min.abi() as machine::llalign),
+            Err(err) => {
+                ccx.sess().err(&format!("invalid minimum global alignment: {}", err));
+            }
+        }
+    }
+    unsafe {
+        llvm::LLVMSetAlignment(gv, align);
     }
 }
 
@@ -48,7 +73,7 @@ pub fn addr_of_mut(ccx: &CrateContext,
             bug!("symbol `{}` is already defined", name);
         });
         llvm::LLVMSetInitializer(gv, cv);
-        llvm::LLVMSetAlignment(gv, align);
+        set_global_alignment(ccx, gv, align);
         llvm::LLVMRustSetLinkage(gv, llvm::Linkage::InternalLinkage);
         SetUnnamedAddr(gv, true);
         gv
@@ -79,33 +104,37 @@ pub fn addr_of(ccx: &CrateContext,
 }
 
 pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
-    let instance = Instance::mono(ccx.shared(), def_id);
+    let instance = Instance::mono(ccx.tcx(), def_id);
     if let Some(&g) = ccx.instances().borrow().get(&instance) {
         return g;
     }
 
-    let ty = ccx.tcx().item_type(def_id);
-    let g = if let Some(id) = ccx.tcx().map.as_local_node_id(def_id) {
+    let ty = common::instance_ty(ccx.tcx(), &instance);
+    let g = if let Some(id) = ccx.tcx().hir.as_local_node_id(def_id) {
 
         let llty = type_of::type_of(ccx, ty);
-        let (g, attrs) = match ccx.tcx().map.get(id) {
+        let (g, attrs) = match ccx.tcx().hir.get(id) {
             hir_map::NodeItem(&hir::Item {
                 ref attrs, span, node: hir::ItemStatic(..), ..
             }) => {
-                let sym = ccx.symbol_map()
-                             .get(TransItem::Static(id))
-                             .expect("Local statics should always be in the SymbolMap");
+                let sym = TransItem::Static(id).symbol_name(ccx.tcx());
 
                 let defined_in_current_codegen_unit = ccx.codegen_unit()
                                                          .items()
                                                          .contains_key(&TransItem::Static(id));
                 assert!(!defined_in_current_codegen_unit);
 
-                if declare::get_declared_value(ccx, sym).is_some() {
+                if declare::get_declared_value(ccx, &sym[..]).is_some() {
                     span_bug!(span, "trans: Conflicting symbol names for static?");
                 }
 
-                let g = declare::define_global(ccx, sym, llty).unwrap();
+                let g = declare::define_global(ccx, &sym[..], llty).unwrap();
+
+                if !ccx.tcx().is_exported_symbol(def_id) {
+                    unsafe {
+                        llvm::LLVMRustSetVisibility(g, llvm::Visibility::Hidden);
+                    }
+                }
 
                 (g, attrs)
             }
@@ -113,7 +142,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
             hir_map::NodeForeignItem(&hir::ForeignItem {
                 ref attrs, span, node: hir::ForeignItemStatic(..), ..
             }) => {
-                let sym = instance.symbol_name(ccx.shared());
+                let sym = ccx.tcx().symbol_name(instance);
                 let g = if let Some(name) =
                         attr::first_attr_value_str_by_name(&attrs, "linkage") {
                     // If this is a static with a linkage specified, then we need to handle
@@ -121,7 +150,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                     // extern "C" fn() from being non-null, so we can't just declare a
                     // static and call it a day. Some linkages (like weak) will make it such
                     // that the static actually has a null value.
-                    let linkage = match base::llvm_linkage_by_name(&name.as_str()) {
+                    let linkage = match base::linkage_by_name(&name.as_str()) {
                         Some(linkage) => linkage,
                         None => {
                             ccx.sess().span_fatal(span, "invalid linkage specified");
@@ -136,7 +165,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                     unsafe {
                         // Declare a symbol `foo` with the desired linkage.
                         let g1 = declare::declare_global(ccx, &sym, llty2);
-                        llvm::LLVMRustSetLinkage(g1, linkage);
+                        llvm::LLVMRustSetLinkage(g1, base::linkage_to_llvm(linkage));
 
                         // Declare an internal global `extern_with_linkage_foo` which
                         // is initialized with the address of `foo`.  If `foo` is
@@ -173,7 +202,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
 
         g
     } else {
-        let sym = instance.symbol_name(ccx.shared());
+        let sym = ccx.tcx().symbol_name(instance);
 
         // FIXME(nagisa): perhaps the map of externs could be offloaded to llvm somehow?
         // FIXME(nagisa): investigate whether it can be changed into define_global
@@ -189,7 +218,7 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
                 llvm::set_thread_local(g, true);
             }
         }
-        if ccx.use_dll_storage_attrs() && !ccx.sess().cstore.is_foreign_item(def_id) {
+        if ccx.use_dll_storage_attrs() && !ccx.tcx().is_foreign_item(def_id) {
             // This item is external but not foreign, i.e. it originates from an external Rust
             // crate. Since we don't know whether this crate will be linked dynamically or
             // statically in the final application, we always mark such symbols as 'dllimport'.
@@ -202,24 +231,25 @@ pub fn get_static(ccx: &CrateContext, def_id: DefId) -> ValueRef {
         g
     };
 
-    if ccx.use_dll_storage_attrs() && ccx.sess().cstore.is_dllimport_foreign_item(def_id) {
+    if ccx.use_dll_storage_attrs() && ccx.tcx().is_dllimport_foreign_item(def_id) {
         // For foreign (native) libs we know the exact storage type to use.
         unsafe {
             llvm::LLVMSetDLLStorageClass(g, llvm::DLLStorageClass::DllImport);
         }
     }
+
     ccx.instances().borrow_mut().insert(instance, g);
     ccx.statics().borrow_mut().insert(g, def_id);
     g
 }
 
-pub fn trans_static(ccx: &CrateContext,
-                    m: hir::Mutability,
-                    id: ast::NodeId,
-                    attrs: &[ast::Attribute])
-                    -> Result<ValueRef, ConstEvalErr> {
+pub fn trans_static<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                              m: hir::Mutability,
+                              id: ast::NodeId,
+                              attrs: &[ast::Attribute])
+                              -> Result<ValueRef, ConstEvalErr<'tcx>> {
     unsafe {
-        let def_id = ccx.tcx().map.local_def_id(id);
+        let def_id = ccx.tcx().hir.local_def_id(id);
         let g = get_static(ccx, def_id);
 
         let v = ::mir::trans_static_initializer(ccx, def_id)?;
@@ -234,7 +264,8 @@ pub fn trans_static(ccx: &CrateContext,
             v
         };
 
-        let ty = ccx.tcx().item_type(def_id);
+        let instance = Instance::mono(ccx.tcx(), def_id);
+        let ty = common::instance_ty(ccx.tcx(), &instance);
         let llty = type_of::type_of(ccx, ty);
         let g = if val_llty == llty {
             g
@@ -245,22 +276,29 @@ pub fn trans_static(ccx: &CrateContext,
             let name_str_ref = CStr::from_ptr(llvm::LLVMGetValueName(g));
             let name_string = CString::new(name_str_ref.to_bytes()).unwrap();
             llvm::LLVMSetValueName(g, empty_string.as_ptr());
+
+            let linkage = llvm::LLVMRustGetLinkage(g);
+            let visibility = llvm::LLVMRustGetVisibility(g);
+
             let new_g = llvm::LLVMRustGetOrInsertGlobal(
                 ccx.llmod(), name_string.as_ptr(), val_llty.to_ref());
+
+            llvm::LLVMRustSetLinkage(new_g, linkage);
+            llvm::LLVMRustSetVisibility(new_g, visibility);
+
             // To avoid breaking any invariants, we leave around the old
             // global for the moment; we'll replace all references to it
             // with the new global later. (See base::trans_crate.)
             ccx.statics_to_rauw().borrow_mut().push((g, new_g));
             new_g
         };
-        llvm::LLVMSetAlignment(g, type_of::align_of(ccx, ty));
+        set_global_alignment(ccx, g, ccx.align_of(ty));
         llvm::LLVMSetInitializer(g, v);
 
         // As an optimization, all shared statics which do not have interior
         // mutability are placed into read-only memory.
         if m != hir::MutMutable {
-            let tcontents = ty.type_contents(ccx.tcx());
-            if !tcontents.interior_unsafe() {
+            if ccx.shared().type_is_freeze(ty) {
                 llvm::LLVMSetGlobalConstant(g, llvm::True);
             }
         }
@@ -273,6 +311,12 @@ pub fn trans_static(ccx: &CrateContext,
         }
 
         base::set_link_section(ccx, g, attrs);
+
+        if attr::contains_name(attrs, "used") {
+            // This static will be stored in the llvm.used variable which is an array of i8*
+            let cast = llvm::LLVMConstPointerCast(g, Type::i8p(ccx).to_ref());
+            ccx.used_statics().borrow_mut().push(cast);
+        }
 
         Ok(g)
     }

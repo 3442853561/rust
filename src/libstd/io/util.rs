@@ -11,7 +11,8 @@
 #![allow(missing_copy_implementations)]
 
 use fmt;
-use io::{self, Read, Write, ErrorKind, BufRead};
+use io::{self, Read, Initializer, Write, ErrorKind, BufRead};
+use mem;
 
 /// Copies the entire contents of a reader into a writer.
 ///
@@ -37,17 +38,23 @@ use io::{self, Read, Write, ErrorKind, BufRead};
 /// let mut reader: &[u8] = b"hello";
 /// let mut writer: Vec<u8> = vec![];
 ///
-/// try!(io::copy(&mut reader, &mut writer));
+/// io::copy(&mut reader, &mut writer)?;
 ///
-/// assert_eq!(reader, &writer[..]);
+/// assert_eq!(&b"hello"[..], &writer[..]);
 /// # Ok(())
 /// # }
+/// # foo().unwrap();
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> io::Result<u64>
     where R: Read, W: Write
 {
-    let mut buf = [0; super::DEFAULT_BUF_SIZE];
+    let mut buf = unsafe {
+        let mut buf: [u8; super::DEFAULT_BUF_SIZE] = mem::uninitialized();
+        reader.initializer().initialize(&mut buf);
+        buf
+    };
+
     let mut written = 0;
     loop {
         let len = match reader.read(&mut buf) {
@@ -63,16 +70,18 @@ pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> io::Result<
 
 /// A reader which is always at EOF.
 ///
-/// This struct is generally created by calling [`empty()`][empty]. Please see
-/// the documentation of `empty()` for more details.
+/// This struct is generally created by calling [`empty`]. Please see
+/// the documentation of [`empty()`][`empty`] for more details.
 ///
-/// [empty]: fn.empty.html
+/// [`empty`]: fn.empty.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Empty { _priv: () }
 
 /// Constructs a new handle to an empty reader.
 ///
-/// All reads from the returned reader will return `Ok(0)`.
+/// All reads from the returned reader will return [`Ok`]`(0)`.
+///
+/// [`Ok`]: ../result/enum.Result.html#variant.Ok
 ///
 /// # Examples
 ///
@@ -90,15 +99,23 @@ pub fn empty() -> Empty { Empty { _priv: () } }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Read for Empty {
+    #[inline]
     fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> { Ok(0) }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
+    }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
 impl BufRead for Empty {
+    #[inline]
     fn fill_buf(&mut self) -> io::Result<&[u8]> { Ok(&[]) }
+    #[inline]
     fn consume(&mut self, _n: usize) {}
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Empty {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Empty { .. }")
@@ -107,7 +124,7 @@ impl fmt::Debug for Empty {
 
 /// A reader which yields one byte over and over and over and over and over and...
 ///
-/// This struct is generally created by calling [`repeat()`][repeat]. Please
+/// This struct is generally created by calling [`repeat`][repeat]. Please
 /// see the documentation of `repeat()` for more details.
 ///
 /// [repeat]: fn.repeat.html
@@ -133,15 +150,21 @@ pub fn repeat(byte: u8) -> Repeat { Repeat { byte: byte } }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Read for Repeat {
+    #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         for slot in &mut *buf {
             *slot = self.byte;
         }
         Ok(buf.len())
     }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
+    }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Repeat {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Repeat { .. }")
@@ -150,7 +173,7 @@ impl fmt::Debug for Repeat {
 
 /// A writer which will move data into the void.
 ///
-/// This struct is generally created by calling [`sink()`][sink]. Please
+/// This struct is generally created by calling [`sink`][sink]. Please
 /// see the documentation of `sink()` for more details.
 ///
 /// [sink]: fn.sink.html
@@ -176,11 +199,13 @@ pub fn sink() -> Sink { Sink { _priv: () } }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Write for Sink {
+    #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
+    #[inline]
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Sink {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Sink { .. }")

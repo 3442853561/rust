@@ -8,12 +8,11 @@
 # option. This file may not be copied, modified, or distributed
 # except according to those terms.
 
-include config.mk
-include $(CFG_SRC_DIR)mk/util.mk
-
 ifdef VERBOSE
+Q :=
 BOOTSTRAP_ARGS := -v
 else
+Q := @
 BOOTSTRAP_ARGS :=
 endif
 
@@ -54,6 +53,10 @@ check:
 check-aux:
 	$(Q)$(BOOTSTRAP) test \
 		src/tools/cargotest \
+		src/tools/cargo \
+		src/tools/rls \
+		src/tools/rustfmt \
+		src/tools/miri \
 		src/test/pretty \
 		src/test/run-pass/pretty \
 		src/test/run-fail/pretty \
@@ -61,15 +64,19 @@ check-aux:
 		src/test/run-pass-fulldeps/pretty \
 		src/test/run-fail-fulldeps/pretty \
 		$(BOOTSTRAP_ARGS)
+check-bootstrap:
+	$(Q)$(CFG_PYTHON) $(CFG_SRC_DIR)src/bootstrap/bootstrap_test.py
 dist:
 	$(Q)$(BOOTSTRAP) dist $(BOOTSTRAP_ARGS)
 distcheck:
 	$(Q)$(BOOTSTRAP) dist $(BOOTSTRAP_ARGS)
 	$(Q)$(BOOTSTRAP) test distcheck $(BOOTSTRAP_ARGS)
 install:
-	$(Q)$(BOOTSTRAP) dist --install $(BOOTSTRAP_ARGS)
+	$(Q)$(BOOTSTRAP) install $(BOOTSTRAP_ARGS)
 tidy:
 	$(Q)$(BOOTSTRAP) test src/tools/tidy $(BOOTSTRAP_ARGS)
+prepare:
+	$(Q)$(BOOTSTRAP) build nonexistent/path/to/trigger/cargo/metadata
 
 check-stage2-T-arm-linux-androideabi-H-x86_64-unknown-linux-gnu:
 	$(Q)$(BOOTSTRAP) test --target arm-linux-androideabi

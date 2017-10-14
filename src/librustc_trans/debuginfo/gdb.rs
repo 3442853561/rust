@@ -16,7 +16,7 @@ use common::{C_bytes, CrateContext, C_i32};
 use builder::Builder;
 use declare;
 use type_::Type;
-use session::config::NoDebugInfo;
+use rustc::session::config::NoDebugInfo;
 
 use std::ptr;
 use syntax::attr;
@@ -79,7 +79,7 @@ pub fn get_or_insert_gdb_debug_scripts_section_global(ccx: &CrateContext)
 
 pub fn needs_gdb_debug_scripts_section(ccx: &CrateContext) -> bool {
     let omit_gdb_pretty_printer_section =
-        attr::contains_name(&ccx.tcx().map.krate_attrs(),
+        attr::contains_name(&ccx.tcx().hir.krate_attrs(),
                             "omit_gdb_pretty_printer_section");
 
     !omit_gdb_pretty_printer_section &&

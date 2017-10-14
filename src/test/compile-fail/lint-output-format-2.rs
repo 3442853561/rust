@@ -8,18 +8,23 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-// compile-flags: -F unused_features
 // aux-build:lint_output_format.rs
 
-#![feature(foo)] //~ ERROR unused or unknown feature
+// FIXME(#44232) we should warn that this isn't used.
+#![feature(foo)]
 
 #![feature(test_feature)]
+#![feature(rustc_attrs)]
 
 extern crate lint_output_format;
 use lint_output_format::{foo, bar};
-//~^ WARNING use of deprecated item: text,
+//~^ WARNING use of deprecated item: text
+//~| NOTE #[warn(deprecated)] on by default
 
-fn main() {
-    let _x = foo(); //~ WARNING #[warn(deprecated)] on by default
+#[rustc_error]
+fn main() { //~ ERROR: compilation successful
+    let _x = foo();
+    //~^ WARNING use of deprecated item: text
+    //~| NOTE #[warn(deprecated)] on by default
     let _y = bar();
 }

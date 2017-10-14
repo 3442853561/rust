@@ -8,28 +8,23 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(plugin)]
-#![feature(plugin_registrar)]
-#![feature(rustc_private)]
-#![plugin(proc_macro_plugin)]
+// no-prefer-dynamic
 
-extern crate rustc_plugin;
-extern crate proc_macro_tokens;
-extern crate syntax;
+#![crate_type = "proc-macro"]
+#![feature(proc_macro, proc_macro_lib)]
 
-use syntax::ext::proc_macro_shim::prelude::*;
-use proc_macro_tokens::prelude::*;
+extern crate proc_macro;
 
-use rustc_plugin::Registry;
-
-#[plugin_registrar]
-pub fn plugin_registrar(reg: &mut Registry) {
-    reg.register_macro("hello", hello);
-}
+use proc_macro::{TokenStream, quote};
 
 // This macro is not very interesting, but it does contain delimited tokens with
 // no content - `()` and `{}` - which has caused problems in the past.
-fn hello<'cx>(cx: &'cx mut ExtCtxt, sp: Span, tts: &[TokenTree]) -> Box<MacResult + 'cx> {
-    let output = qquote!({ fn hello() {} hello(); });
-    build_block_emitter(cx, sp, output)
+// Also, it tests that we can escape `$` via `$$`.
+#[proc_macro]
+pub fn hello(_: TokenStream) -> TokenStream {
+    quote!({
+        fn hello() {}
+        macro_rules! m { ($$($$t:tt)*) => { $$($$t)* } }
+        m!(hello());
+    })
 }

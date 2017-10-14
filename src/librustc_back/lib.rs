@@ -21,10 +21,6 @@
 //! one that doesn't; the one that doesn't might get decent parallel
 //! build speedups.
 
-#![crate_name = "rustc_back"]
-#![unstable(feature = "rustc_private", issue = "27812")]
-#![crate_type = "dylib"]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
@@ -34,8 +30,6 @@
 #![feature(const_fn)]
 #![feature(libc)]
 #![feature(rand)]
-#![feature(rustc_private)]
-#![feature(staged_api)]
 #![cfg_attr(test, feature(rand))]
 
 extern crate syntax;
@@ -50,7 +44,51 @@ pub mod target;
 pub mod slice;
 pub mod dynamic_lib;
 
+use std::str::FromStr;
+
 use serialize::json::{Json, ToJson};
+
+macro_rules! linker_flavor {
+    ($(($variant:ident, $string:expr),)+) => {
+        #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
+                 RustcEncodable, RustcDecodable)]
+        pub enum LinkerFlavor {
+            $($variant,)+
+        }
+
+        impl LinkerFlavor {
+            pub const fn one_of() -> &'static str {
+                concat!("one of: ", $($string, " ",)+)
+            }
+
+            pub fn from_str(s: &str) -> Option<Self> {
+                Some(match s {
+                    $($string => LinkerFlavor::$variant,)+
+                    _ => return None,
+                })
+            }
+
+            pub fn desc(&self) -> &str {
+                match *self {
+                    $(LinkerFlavor::$variant => $string,)+
+                }
+            }
+        }
+
+        impl ToJson for LinkerFlavor {
+            fn to_json(&self) -> Json {
+                self.desc().to_json()
+            }
+        }
+    }
+}
+
+linker_flavor! {
+    (Em, "em"),
+    (Gcc, "gcc"),
+    (Ld, "ld"),
+    (Msvc, "msvc"),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
 pub enum PanicStrategy {
@@ -72,6 +110,46 @@ impl ToJson for PanicStrategy {
         match *self {
             PanicStrategy::Abort => "abort".to_json(),
             PanicStrategy::Unwind => "unwind".to_json(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+pub enum RelroLevel {
+    Full,
+    Partial,
+    Off,
+}
+
+impl RelroLevel {
+    pub fn desc(&self) -> &str {
+        match *self {
+            RelroLevel::Full => "full",
+            RelroLevel::Partial => "partial",
+            RelroLevel::Off => "off",
+        }
+    }
+}
+
+impl FromStr for RelroLevel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<RelroLevel, ()> {
+        match s {
+            "full" => Ok(RelroLevel::Full),
+            "partial" => Ok(RelroLevel::Partial),
+            "off" => Ok(RelroLevel::Off),
+            _ => Err(()),
+        }
+    }
+}
+
+impl ToJson for RelroLevel {
+    fn to_json(&self) -> Json {
+        match *self {
+            RelroLevel::Full => "full".to_json(),
+            RelroLevel::Partial => "partial".to_json(),
+            RelroLevel::Off => "off".to_json(),
         }
     }
 }

@@ -9,6 +9,9 @@
 // except according to those terms.
 
 // ignore-s390x
+// ignore-emscripten
+// ignore-powerpc
+// ignore-sparc
 
 #![feature(asm)]
 

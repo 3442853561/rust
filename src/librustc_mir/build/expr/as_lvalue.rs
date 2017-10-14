@@ -39,8 +39,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         let expr_span = expr.span;
         let source_info = this.source_info(expr_span);
         match expr.kind {
-            ExprKind::Scope { extent, value } => {
-                this.in_scope(extent, block, |this| this.as_lvalue(block, value))
+            ExprKind::Scope { region_scope, lint_level, value } => {
+                this.in_scope((region_scope, source_info), lint_level, block, |this| {
+                    this.as_lvalue(block, value)
+                })
             }
             ExprKind::Field { lhs, name } => {
                 let lvalue = unpack!(block = this.as_lvalue(block, lhs));
@@ -56,21 +58,24 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let (usize_ty, bool_ty) = (this.hir.usize_ty(), this.hir.bool_ty());
 
                 let slice = unpack!(block = this.as_lvalue(block, lhs));
-
-                let idx = unpack!(block = this.as_operand(block, index));
+                // region_scope=None so lvalue indexes live forever. They are scalars so they
+                // do not need storage annotations, and they are often copied between
+                // places.
+                let idx = unpack!(block = this.as_temp(block, None, index));
 
                 // bounds check:
-                let (len, lt) = (this.temp(usize_ty.clone()), this.temp(bool_ty));
+                let (len, lt) = (this.temp(usize_ty.clone(), expr_span),
+                                 this.temp(bool_ty, expr_span));
                 this.cfg.push_assign(block, source_info, // len = len(slice)
                                      &len, Rvalue::Len(slice.clone()));
                 this.cfg.push_assign(block, source_info, // lt = idx < len
                                      &lt, Rvalue::BinaryOp(BinOp::Lt,
-                                                           idx.clone(),
+                                                           Operand::Consume(Lvalue::Local(idx)),
                                                            Operand::Consume(len.clone())));
 
                 let msg = AssertMessage::BoundsCheck {
                     len: Operand::Consume(len),
-                    index: idx.clone()
+                    index: Operand::Consume(Lvalue::Local(idx))
                 };
                 let success = this.assert(block, Operand::Consume(lt), true,
                                           msg, expr_span);
@@ -84,7 +89,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 block.and(Lvalue::Local(index))
             }
             ExprKind::StaticRef { id } => {
-                block.and(Lvalue::Static(id))
+                block.and(Lvalue::Static(Box::new(Static { def_id: id, ty: expr.ty })))
             }
 
             ExprKind::Array { .. } |
@@ -99,6 +104,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::Use { .. } |
             ExprKind::NeverToAny { .. } |
             ExprKind::ReifyFnPointer { .. } |
+            ExprKind::ClosureFnPointer { .. } |
             ExprKind::UnsafeFnPointer { .. } |
             ExprKind::Unsize { .. } |
             ExprKind::Repeat { .. } |
@@ -114,13 +120,15 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::Return { .. } |
             ExprKind::Literal { .. } |
             ExprKind::InlineAsm { .. } |
+            ExprKind::Yield { .. } |
             ExprKind::Call { .. } => {
                 // these are not lvalues, so we need to make a temporary.
                 debug_assert!(match Category::of(&expr.kind) {
                     Some(Category::Lvalue) => false,
                     _ => true,
                 });
-                this.as_temp(block, expr)
+                let temp = unpack!(block = this.as_temp(block, expr.temp_lifetime, expr));
+                block.and(Lvalue::Local(temp))
             }
         }
     }

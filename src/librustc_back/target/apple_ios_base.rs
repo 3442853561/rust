@@ -8,9 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use LinkerFlavor;
 use std::io;
 use std::process::Command;
-use target::TargetOptions;
+use target::{LinkArgs, TargetOptions};
 
 use self::Arch::*;
 
@@ -60,7 +61,7 @@ pub fn get_sdk_root(sdk_name: &str) -> Result<String, String> {
     }
 }
 
-fn build_pre_link_args(arch: Arch) -> Result<Vec<String>, String> {
+fn build_pre_link_args(arch: Arch) -> Result<LinkArgs, String> {
     let sdk_name = match arch {
         Armv7 | Armv7s | Arm64 => "iphoneos",
         I386 | X86_64 => "iphonesimulator"
@@ -70,8 +71,14 @@ fn build_pre_link_args(arch: Arch) -> Result<Vec<String>, String> {
 
     let sdk_root = get_sdk_root(sdk_name)?;
 
-    Ok(vec!["-arch".to_string(), arch_name.to_string(),
-         "-Wl,-syslibroot".to_string(), sdk_root])
+    let mut args = LinkArgs::new();
+    args.insert(LinkerFlavor::Gcc,
+                vec!["-arch".to_string(),
+                     arch_name.to_string(),
+                     "-Wl,-syslibroot".to_string(),
+                     sdk_root]);
+
+    Ok(args)
 }
 
 fn target_cpu(arch: Arch) -> String {
@@ -90,7 +97,7 @@ pub fn opts(arch: Arch) -> Result<TargetOptions, String> {
         cpu: target_cpu(arch),
         dynamic_linking: false,
         executables: true,
-        pre_link_args: pre_link_args,
+        pre_link_args,
         has_elf_tls: false,
         .. super::apple_base::opts()
     })

@@ -51,6 +51,7 @@
 .hg/
 .hgignore
 .idea
+*.iml
 __pycache__/
 *.py[cod]
 *$py.class
@@ -100,3 +101,8 @@ version.md
 version.ml
 version.texi
 .cargo
+!src/vendor/**
+/src/target/
+
+no_llvm_build
+

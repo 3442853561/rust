@@ -22,14 +22,15 @@
 
 use llvm::{self, ValueRef};
 use llvm::AttributePlace::Function;
-use rustc::ty;
+use rustc::ty::Ty;
+use rustc::session::config::Sanitizer;
+use rustc_back::PanicStrategy;
 use abi::{Abi, FnType};
 use attributes;
 use context::CrateContext;
 use common;
 use type_::Type;
 use value::Value;
-use syntax::attr;
 
 use std::ffi::CString;
 
@@ -72,13 +73,18 @@ fn declare_raw_fn(ccx: &CrateContext, name: &str, callconv: llvm::CallConv, ty: 
         llvm::Attribute::NoRedZone.apply_llfn(Function, llfn);
     }
 
-    // If we're compiling the compiler-builtins crate, e.g. the equivalent of
-    // compiler-rt, then we want to implicitly compile everything with hidden
-    // visibility as we're going to link this object all over the place but
-    // don't want the symbols to get exported.
-    if attr::contains_name(ccx.tcx().map.krate_attrs(), "compiler_builtins") {
-        unsafe {
-            llvm::LLVMRustSetVisibility(llfn, llvm::Visibility::Hidden);
+    if let Some(ref sanitizer) = ccx.tcx().sess.opts.debugging_opts.sanitizer {
+        match *sanitizer {
+            Sanitizer::Address => {
+                llvm::Attribute::SanitizeAddress.apply_llfn(Function, llfn);
+            },
+            Sanitizer::Memory => {
+                llvm::Attribute::SanitizeMemory.apply_llfn(Function, llfn);
+            },
+            Sanitizer::Thread => {
+                llvm::Attribute::SanitizeThread.apply_llfn(Function, llfn);
+            },
+            _ => {}
         }
     }
 
@@ -91,6 +97,10 @@ fn declare_raw_fn(ccx: &CrateContext, name: &str, callconv: llvm::CallConv, ty: 
             llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
         },
         _ => {},
+    }
+
+    if ccx.tcx().sess.panic_strategy() != PanicStrategy::Unwind {
+        attributes::unwind(llfn, false);
     }
 
     llfn
@@ -114,13 +124,13 @@ pub fn declare_cfn(ccx: &CrateContext, name: &str, fn_type: Type) -> ValueRef {
 /// If there’s a value with the same name already declared, the function will
 /// update the declaration and return existing ValueRef instead.
 pub fn declare_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, name: &str,
-                            fn_type: ty::Ty<'tcx>) -> ValueRef {
+                            fn_type: Ty<'tcx>) -> ValueRef {
     debug!("declare_rust_fn(name={:?}, fn_type={:?})", name, fn_type);
-    let ty::BareFnTy { abi, ref sig, .. } = *common::ty_fn_ty(ccx, fn_type);
-    let sig = ccx.tcx().erase_late_bound_regions_and_normalize(sig);
+    let sig = common::ty_fn_sig(ccx, fn_type);
+    let sig = ccx.tcx().erase_late_bound_regions_and_normalize(&sig);
     debug!("declare_rust_fn (after region erasure) sig={:?}", sig);
 
-    let fty = FnType::new(ccx, abi, &sig, &[]);
+    let fty = FnType::new(ccx, sig, &[]);
     let llfn = declare_raw_fn(ccx, name, fty.cconv, fty.llvm_type(ccx));
 
     // FIXME(canndrew): This is_never should really be an is_uninhabited
@@ -128,7 +138,7 @@ pub fn declare_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, name: &str,
         llvm::Attribute::NoReturn.apply_llfn(Function, llfn);
     }
 
-    if abi != Abi::Rust && abi != Abi::RustCall {
+    if sig.abi != Abi::Rust && sig.abi != Abi::RustCall {
         attributes::unwind(llfn, false);
     }
 
@@ -159,7 +169,7 @@ pub fn define_global(ccx: &CrateContext, name: &str, ty: Type) -> Option<ValueRe
 /// can happen with #[no_mangle] or #[export_name], for example.
 pub fn define_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                            name: &str,
-                           fn_type: ty::Ty<'tcx>) -> ValueRef {
+                           fn_type: Ty<'tcx>) -> ValueRef {
     if get_defined_value(ccx, name).is_some() {
         ccx.sess().fatal(&format!("symbol `{}` already defined", name))
     } else {
@@ -174,7 +184,7 @@ pub fn define_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
 /// can happen with #[no_mangle] or #[export_name], for example.
 pub fn define_internal_fn<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                                     name: &str,
-                                    fn_type: ty::Ty<'tcx>) -> ValueRef {
+                                    fn_type: Ty<'tcx>) -> ValueRef {
     let llfn = define_fn(ccx, name, fn_type);
     unsafe { llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::InternalLinkage) };
     llfn

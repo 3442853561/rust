@@ -198,7 +198,12 @@ impl Trait for u8 {
 
 Now, if we have the following code:
 
-```ignore
+```compile_fail,E0038
+# trait Trait { fn foo<T>(&self, on: T); }
+# impl Trait for String { fn foo<T>(&self, on: T) {} }
+# impl Trait for u8 { fn foo<T>(&self, on: T) {} }
+# impl Trait for bool { fn foo<T>(&self, on: T) {} }
+# // etc.
 fn call_foo(thing: Box<Trait>) {
     thing.foo(true); // this could be any one of the 8 types above
     thing.foo(1);
@@ -327,76 +332,151 @@ struct ListNode {
 This works because `Box` is a pointer, so its size is well-known.
 "##,
 
-E0109: r##"
-You tried to give a type parameter to a type which doesn't need it. Erroneous
-code example:
+E0080: r##"
+This error indicates that the compiler was unable to sensibly evaluate an
+constant expression that had to be evaluated. Attempting to divide by 0
+or causing integer overflow are two ways to induce this error. For example:
 
-```compile_fail,E0109
-type X = u32<i32>; // error: type parameters are not allowed on this type
-```
-
-Please check that you used the correct type and recheck its definition. Perhaps
-it doesn't need the type parameter.
-
-Example:
-
-```
-type X = u32; // this compiles
-```
-
-Note that type parameters for enum-variant constructors go after the variant,
-not after the enum (Option::None::<u32>, not Option::<u32>::None).
-"##,
-
-E0110: r##"
-You tried to give a lifetime parameter to a type which doesn't need it.
-Erroneous code example:
-
-```compile_fail,E0110
-type X = u32<'static>; // error: lifetime parameters are not allowed on
-                       //        this type
-```
-
-Please check that the correct type was used and recheck its definition; perhaps
-it doesn't need the lifetime parameter. Example:
-
-```
-type X = u32; // ok!
-```
-"##,
-
-E0133: r##"
-Unsafe code was used outside of an unsafe function or block.
-
-Erroneous code example:
-
-```compile_fail,E0133
-unsafe fn f() { return; } // This is the unsafe code
-
-fn main() {
-    f(); // error: call to unsafe function requires unsafe function or block
+```compile_fail,E0080
+enum Enum {
+    X = (1 << 500),
+    Y = (1 / 0)
 }
 ```
 
-Using unsafe functionality is potentially dangerous and disallowed by safety
-checks. Examples:
+Ensure that the expressions given can be evaluated as the desired integer type.
+See the FFI section of the Reference for more information about using a custom
+integer type:
 
-* Dereferencing raw pointers
-* Calling functions via FFI
-* Calling functions marked unsafe
+https://doc.rust-lang.org/reference.html#ffi-attributes
+"##,
 
-These safety checks can be relaxed for a section of the code by wrapping the
-unsafe instructions with an `unsafe` block. For instance:
+E0106: r##"
+This error indicates that a lifetime is missing from a type. If it is an error
+inside a function signature, the problem may be with failing to adhere to the
+lifetime elision rules (see below).
 
+Here are some simple examples of where you'll run into this error:
+
+```compile_fail,E0106
+struct Foo { x: &bool }        // error
+struct Foo<'a> { x: &'a bool } // correct
+
+struct Bar { x: Foo }
+               ^^^ expected lifetime parameter
+struct Bar<'a> { x: Foo<'a> } // correct
+
+enum Bar { A(u8), B(&bool), }        // error
+enum Bar<'a> { A(u8), B(&'a bool), } // correct
+
+type MyStr = &str;        // error
+type MyStr<'a> = &'a str; // correct
 ```
-unsafe fn f() { return; }
 
-fn main() {
-    unsafe { f(); } // ok!
+Lifetime elision is a special, limited kind of inference for lifetimes in
+function signatures which allows you to leave out lifetimes in certain cases.
+For more background on lifetime elision see [the book][book-le].
+
+The lifetime elision rules require that any function signature with an elided
+output lifetime must either have
+
+ - exactly one input lifetime
+ - or, multiple input lifetimes, but the function must also be a method with a
+   `&self` or `&mut self` receiver
+
+In the first case, the output lifetime is inferred to be the same as the unique
+input lifetime. In the second case, the lifetime is instead inferred to be the
+same as the lifetime on `&self` or `&mut self`.
+
+Here are some examples of elision errors:
+
+```compile_fail,E0106
+// error, no input lifetimes
+fn foo() -> &str { }
+
+// error, `x` and `y` have distinct lifetimes inferred
+fn bar(x: &str, y: &str) -> &str { }
+
+// error, `y`'s lifetime is inferred to be distinct from `x`'s
+fn baz<'a>(x: &'a str, y: &str) -> &str { }
+```
+
+Here's an example that is currently an error, but may work in a future version
+of Rust:
+
+```compile_fail,E0106
+struct Foo<'a>(&'a str);
+
+trait Quux { }
+impl Quux for Foo { }
+```
+
+Lifetime elision in implementation headers was part of the lifetime elision
+RFC. It is, however, [currently unimplemented][iss15872].
+
+[book-le]: https://doc.rust-lang.org/nightly/book/first-edition/lifetimes.html#lifetime-elision
+[iss15872]: https://github.com/rust-lang/rust/issues/15872
+"##,
+
+E0119: r##"
+There are conflicting trait implementations for the same type.
+Example of erroneous code:
+
+```compile_fail,E0119
+trait MyTrait {
+    fn get(&self) -> usize;
+}
+
+impl<T> MyTrait for T {
+    fn get(&self) -> usize { 0 }
+}
+
+struct Foo {
+    value: usize
+}
+
+impl MyTrait for Foo { // error: conflicting implementations of trait
+                       //        `MyTrait` for type `Foo`
+    fn get(&self) -> usize { self.value }
 }
 ```
 
-See also https://doc.rust-lang.org/book/unsafe.html
+When looking for the implementation for the trait, the compiler finds
+both the `impl<T> MyTrait for T` where T is all types and the `impl
+MyTrait for Foo`. Since a trait cannot be implemented multiple times,
+this is an error. So, when you write:
+
+```
+trait MyTrait {
+    fn get(&self) -> usize;
+}
+
+impl<T> MyTrait for T {
+    fn get(&self) -> usize { 0 }
+}
+```
+
+This makes the trait implemented on all types in the scope. So if you
+try to implement it on another one after that, the implementations will
+conflict. Example:
+
+```
+trait MyTrait {
+    fn get(&self) -> usize;
+}
+
+impl<T> MyTrait for T {
+    fn get(&self) -> usize { 0 }
+}
+
+struct Foo;
+
+fn main() {
+    let f = Foo;
+
+    f.get(); // the trait is implemented so we can use it
+}
+```
 "##,
 
 // This shouldn't really ever trigger since the repeated value error comes first
@@ -460,8 +540,9 @@ fn foo(argc: isize, argv: *const *const u8) -> isize { 0 } // ok!
 ```
 "##,
 
-// isn't thrown anymore
 E0139: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 There are various restrictions on transmuting between types in Rust; for example
 types being transmuted must have the same size. To apply all these restrictions,
 the compiler must know the exact types that may be transmuted. When type
@@ -497,22 +578,24 @@ If it's possible, hand-monomorphize the code by writing the function for each
 possible type substitution. It's possible to use traits to do this cleanly,
 for example:
 
-```ignore
+```
+use std::mem::transmute;
+
 struct Foo<T>(Vec<T>);
 
-trait MyTransmutableType {
-    fn transmute(Vec<Self>) -> Foo<Self>;
+trait MyTransmutableType: Sized {
+    fn transmute(_: Vec<Self>) -> Foo<Self>;
 }
 
 impl MyTransmutableType for u8 {
-    fn transmute(x: Foo<u8>) -> Vec<u8> {
-        transmute(x)
+    fn transmute(x: Vec<u8>) -> Foo<u8> {
+        unsafe { transmute(x) }
     }
 }
 
 impl MyTransmutableType for String {
-    fn transmute(x: Foo<String>) -> Vec<String> {
-        transmute(x)
+    fn transmute(x: Vec<String>) -> Foo<String> {
+        unsafe { transmute(x) }
     }
 }
 
@@ -530,8 +613,14 @@ is a size mismatch in one of the impls.
 
 It is also possible to manually transmute:
 
-```ignore
-ptr::read(&v as *const _ as *const SomeType) // `v` transmuted to `SomeType`
+```
+# use std::ptr;
+# let v = Some("value");
+# type SomeType = &'static [u8];
+unsafe {
+    ptr::read(&v as *const _ as *const SomeType) // `v` transmuted to `SomeType`
+}
+# ;
 ```
 
 Note that this does not move `v` (unlike `transmute`), and may need a
@@ -557,46 +646,113 @@ them yourself.
 You can build a free-standing crate by adding `#![no_std]` to the crate
 attributes:
 
-```
+```ignore (only-for-syntax-highlight)
 #![no_std]
 ```
 
-See also https://doc.rust-lang.org/book/no-stdlib.html
+See also https://doc.rust-lang.org/book/first-edition/no-stdlib.html
 "##,
 
-E0229: r##"
-An associated type binding was done outside of the type parameter declaration
-and `where` clause. Erroneous code example:
+E0214: r##"
+A generic type was described using parentheses rather than angle brackets.
+For example:
 
-```compile_fail,E0229
-pub trait Foo {
-    type A;
-    fn boo(&self) -> <Self as Foo>::A;
+```compile_fail,E0214
+fn main() {
+    let v: Vec(&str) = vec!["foo"];
 }
-
-struct Bar;
-
-impl Foo for isize {
-    type A = usize;
-    fn boo(&self) -> usize { 42 }
-}
-
-fn baz<I>(x: &<I as Foo<A=Bar>>::A) {}
-// error: associated type bindings are not allowed here
 ```
 
-To solve this error, please move the type bindings in the type parameter
-declaration:
+This is not currently supported: `v` should be defined as `Vec<&str>`.
+Parentheses are currently only used with generic types when defining parameters
+for `Fn`-family traits.
+"##,
 
-```ignore
-fn baz<I: Foo<A=Bar>>(x: &<I as Foo>::A) {} // ok!
+E0230: r##"
+The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
+message for when a particular trait isn't implemented on a type placed in a
+position that needs that trait. For example, when the following code is
+compiled:
+
+```compile_fail
+#![feature(on_unimplemented)]
+
+fn foo<T: Index<u8>>(x: T){}
+
+#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
+trait Index<Idx> { /* ... */ }
+
+foo(true); // `bool` does not implement `Index<u8>`
 ```
 
-Or in the `where` clause:
+There will be an error about `bool` not implementing `Index<u8>`, followed by a
+note saying "the type `bool` cannot be indexed by `u8`".
 
-```ignore
-fn baz<I>(x: &<I as Foo>::A) where I: Foo<A=Bar> {}
+As you can see, you can specify type parameters in curly braces for
+substitution with the actual types (using the regular format string syntax) in
+a given situation. Furthermore, `{Self}` will substitute to the type (in this
+case, `bool`) that we tried to use.
+
+This error appears when the curly braces contain an identifier which doesn't
+match with any of the type parameters or the string `Self`. This might happen
+if you misspelled a type parameter, or if you intended to use literal curly
+braces. If it is the latter, escape the curly braces with a second curly brace
+of the same type; e.g. a literal `{` is `{{`.
+"##,
+
+E0231: r##"
+The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
+message for when a particular trait isn't implemented on a type placed in a
+position that needs that trait. For example, when the following code is
+compiled:
+
+```compile_fail
+#![feature(on_unimplemented)]
+
+fn foo<T: Index<u8>>(x: T){}
+
+#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
+trait Index<Idx> { /* ... */ }
+
+foo(true); // `bool` does not implement `Index<u8>`
 ```
+
+there will be an error about `bool` not implementing `Index<u8>`, followed by a
+note saying "the type `bool` cannot be indexed by `u8`".
+
+As you can see, you can specify type parameters in curly braces for
+substitution with the actual types (using the regular format string syntax) in
+a given situation. Furthermore, `{Self}` will substitute to the type (in this
+case, `bool`) that we tried to use.
+
+This error appears when the curly braces do not contain an identifier. Please
+add one of the same name as a type parameter. If you intended to use literal
+braces, use `{{` and `}}` to escape them.
+"##,
+
+E0232: r##"
+The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
+message for when a particular trait isn't implemented on a type placed in a
+position that needs that trait. For example, when the following code is
+compiled:
+
+```compile_fail
+#![feature(on_unimplemented)]
+
+fn foo<T: Index<u8>>(x: T){}
+
+#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
+trait Index<Idx> { /* ... */ }
+
+foo(true); // `bool` does not implement `Index<u8>`
+```
+
+there will be an error about `bool` not implementing `Index<u8>`, followed by a
+note saying "the type `bool` cannot be indexed by `u8`".
+
+For this to work, some note must be specified. An empty attribute will not do
+anything, please remove the attribute or add some helpful note for users of the
+trait.
 "##,
 
 E0261: r##"
@@ -694,7 +850,7 @@ foo(3_i8);
 
 Here is that same example again, with some explanatory comments:
 
-```ignore
+```compile_fail,E0271
 trait Trait { type AssociatedType; }
 
 fn foo<T>(t: T) where T: Trait<AssociatedType=u32> {
@@ -714,7 +870,7 @@ fn foo<T>(t: T) where T: Trait<AssociatedType=u32> {
 }
 
 impl Trait for i8 { type AssociatedType = &'static str; }
-~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //      |                             |
 // `i8` does have                     |
 // implementation                     |
@@ -746,7 +902,7 @@ The above fails because of an analogous type mismatch,
 though may be harder to see. Again, here are some
 explanatory comments for the same example:
 
-```ignore
+```compile_fail
 {
     let vs = vec![1, 2, 3, 4];
 
@@ -814,92 +970,6 @@ for v in &vs {
 ```
 "##,
 
-E0272: r##"
-The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
-message for when a particular trait isn't implemented on a type placed in a
-position that needs that trait. For example, when the following code is
-compiled:
-
-```compile_fail
-#![feature(on_unimplemented)]
-
-fn foo<T: Index<u8>>(x: T){}
-
-#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
-trait Index<Idx> { /* ... */ }
-
-foo(true); // `bool` does not implement `Index<u8>`
-```
-
-There will be an error about `bool` not implementing `Index<u8>`, followed by a
-note saying "the type `bool` cannot be indexed by `u8`".
-
-As you can see, you can specify type parameters in curly braces for
-substitution with the actual types (using the regular format string syntax) in
-a given situation. Furthermore, `{Self}` will substitute to the type (in this
-case, `bool`) that we tried to use.
-
-This error appears when the curly braces contain an identifier which doesn't
-match with any of the type parameters or the string `Self`. This might happen
-if you misspelled a type parameter, or if you intended to use literal curly
-braces. If it is the latter, escape the curly braces with a second curly brace
-of the same type; e.g. a literal `{` is `{{`.
-"##,
-
-E0273: r##"
-The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
-message for when a particular trait isn't implemented on a type placed in a
-position that needs that trait. For example, when the following code is
-compiled:
-
-```compile_fail
-#![feature(on_unimplemented)]
-
-fn foo<T: Index<u8>>(x: T){}
-
-#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
-trait Index<Idx> { /* ... */ }
-
-foo(true); // `bool` does not implement `Index<u8>`
-```
-
-there will be an error about `bool` not implementing `Index<u8>`, followed by a
-note saying "the type `bool` cannot be indexed by `u8`".
-
-As you can see, you can specify type parameters in curly braces for
-substitution with the actual types (using the regular format string syntax) in
-a given situation. Furthermore, `{Self}` will substitute to the type (in this
-case, `bool`) that we tried to use.
-
-This error appears when the curly braces do not contain an identifier. Please
-add one of the same name as a type parameter. If you intended to use literal
-braces, use `{{` and `}}` to escape them.
-"##,
-
-E0274: r##"
-The `#[rustc_on_unimplemented]` attribute lets you specify a custom error
-message for when a particular trait isn't implemented on a type placed in a
-position that needs that trait. For example, when the following code is
-compiled:
-
-```compile_fail
-#![feature(on_unimplemented)]
-
-fn foo<T: Index<u8>>(x: T){}
-
-#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
-trait Index<Idx> { /* ... */ }
-
-foo(true); // `bool` does not implement `Index<u8>`
-```
-
-there will be an error about `bool` not implementing `Index<u8>`, followed by a
-note saying "the type `bool` cannot be indexed by `u8`".
-
-For this to work, some note must be specified. An empty attribute will not do
-anything, please remove the attribute or add some helpful note for users of the
-trait.
-"##,
 
 E0275: r##"
 This error occurs when there was a recursive trait requirement that overflowed
@@ -1035,23 +1105,26 @@ already specify all requirements that will be used for every type parameter.
 "##,
 
 E0281: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 You tried to supply a type which doesn't implement some trait in a location
 which expected that trait. This error typically occurs when working with
 `Fn`-based types. Erroneous code example:
 
-```compile_fail,E0281
-fn foo<F: Fn()>(x: F) { }
+```compile-fail
+fn foo<F: Fn(usize)>(x: F) { }
 
 fn main() {
-    // type mismatch: the type ... implements the trait `core::ops::Fn<(_,)>`,
-    // but the trait `core::ops::Fn<()>` is required (expected (), found tuple
+    // type mismatch: ... implements the trait `core::ops::Fn<(String,)>`,
+    // but the trait `core::ops::Fn<(usize,)>` is required
     // [E0281]
-    foo(|y| { });
+    foo(|y: String| { });
 }
 ```
 
-The issue in this case is that `foo` is defined as accepting a `Fn` with no
-arguments, but the closure we attempted to pass to it requires one argument.
+The issue in this case is that `foo` is defined as accepting a `Fn` with one
+argument of type `String`, but the closure we attempted to pass to it requires
+one arguments of type `usize`.
 "##,
 
 E0282: r##"
@@ -1278,38 +1351,6 @@ struct Foo<T: 'static> {
 ```
 "##,
 
-E0312: r##"
-A lifetime of reference outlives lifetime of borrowed content.
-
-Erroneous code example:
-
-```compile_fail,E0312
-fn make_child<'human, 'elve>(x: &mut &'human isize, y: &mut &'elve isize) {
-    *x = *y;
-    // error: lifetime of reference outlives lifetime of borrowed content
-}
-```
-
-The compiler cannot determine if the `human` lifetime will live long enough
-to keep up on the elve one. To solve this error, you have to give an
-explicit lifetime hierarchy:
-
-```
-fn make_child<'human, 'elve: 'human>(x: &mut &'human isize,
-                                     y: &mut &'elve isize) {
-    *x = *y; // ok!
-}
-```
-
-Or use the same lifetime for every variable:
-
-```
-fn make_child<'elve>(x: &mut &'elve isize, y: &mut &'elve isize) {
-    *x = *y; // ok!
-}
-```
-"##,
-
 E0317: r##"
 This error occurs when an `if` expression without an `else` block is used in a
 context where a type other than `()` is expected, for example a `let`
@@ -1327,9 +1368,28 @@ error. To resolve it, add an `else` block having the same type as the `if`
 block.
 "##,
 
+E0391: r##"
+This error indicates that some types or traits depend on each other
+and therefore cannot be constructed.
+
+The following example contains a circular dependency between two traits:
+
+```compile_fail,E0391
+trait FirstTrait : SecondTrait {
+
+}
+
+trait SecondTrait : FirstTrait {
+
+}
+```
+"##,
+
 E0398: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 In Rust 1.3, the default object lifetime bounds are expected to change, as
-described in RFC #1156 [1]. You are getting a warning because the compiler
+described in [RFC 1156]. You are getting a warning because the compiler
 thinks it is possible that this change will cause a compilation error in your
 code. It is possible, though unlikely, that this is a false alarm.
 
@@ -1345,20 +1405,22 @@ time, this means that you will want to change the signature of a function that
 you are calling. For example, if the error is reported on a call like `foo(x)`,
 and `foo` is defined as follows:
 
-```ignore
-fn foo(arg: &Box<SomeTrait>) { ... }
+```
+# trait SomeTrait {}
+fn foo(arg: &Box<SomeTrait>) { /* ... */ }
 ```
 
 You might change it to:
 
-```ignore
-fn foo<'a>(arg: &Box<SomeTrait+'a>) { ... }
+```
+# trait SomeTrait {}
+fn foo<'a>(arg: &'a Box<SomeTrait+'a>) { /* ... */ }
 ```
 
 This explicitly states that you expect the trait object `SomeTrait` to contain
 references (with a maximum lifetime of `'a`).
 
-[1]: https://github.com/rust-lang/rfcs/pull/1156
+[RFC 1156]: https://github.com/rust-lang/rfcs/blob/master/text/1156-adjust-default-object-bounds.md
 "##,
 
 E0452: r##"
@@ -1454,6 +1516,40 @@ struct Prince<'kiss, 'SnowWhite: 'kiss> { // You say here that 'kiss must live
 ```
 "##,
 
+E0491: r##"
+A reference has a longer lifetime than the data it references.
+
+Erroneous code example:
+
+```compile_fail,E0491
+// struct containing a reference requires a lifetime parameter,
+// because the data the reference points to must outlive the struct (see E0106)
+struct Struct<'a> {
+    ref_i32: &'a i32,
+}
+
+// However, a nested struct like this, the signature itself does not tell
+// whether 'a outlives 'b or the other way around.
+// So it could be possible that 'b of reference outlives 'a of the data.
+struct Nested<'a, 'b> {
+    ref_struct: &'b Struct<'a>, // compile error E0491
+}
+```
+
+To fix this issue, you can specify a bound to the lifetime like below:
+
+```
+struct Struct<'a> {
+    ref_i32: &'a i32,
+}
+
+// 'a: 'b means 'a outlives 'b
+struct Nested<'a: 'b, 'b> {
+    ref_struct: &'b Struct<'a>,
+}
+```
+"##,
+
 E0496: r##"
 A lifetime name is shadowing another lifetime name. Erroneous code example:
 
@@ -1509,7 +1605,7 @@ fn takes_u8(_: u8) {}
 
 fn main() {
     unsafe { takes_u8(::std::mem::transmute(0u16)); }
-    // error: transmute called with differently sized types
+    // error: transmute called with types of different sizes
 }
 ```
 
@@ -1568,7 +1664,7 @@ not apply to structs.
 representation of enums isn't strictly defined in Rust, and this attribute
 won't work on enums.
 
-`#[repr(simd)]` will give a struct consisting of a homogenous series of machine
+`#[repr(simd)]` will give a struct consisting of a homogeneous series of machine
 types (i.e. `u8`, `i32`, etc) a representation that permits vectorization via
 SIMD. This doesn't make much sense for enums since they don't consist of a
 single list of data.
@@ -1657,7 +1753,190 @@ fn main() {
 ```
 
 To understand better how closures work in Rust, read:
-https://doc.rust-lang.org/book/closures.html
+https://doc.rust-lang.org/book/first-edition/closures.html
+"##,
+
+E0580: r##"
+The `main` function was incorrectly declared.
+
+Erroneous code example:
+
+```compile_fail,E0580
+fn main() -> i32 { // error: main function has wrong type
+    0
+}
+```
+
+The `main` function prototype should never take arguments or return type.
+Example:
+
+```
+fn main() {
+    // your code
+}
+```
+
+If you want to get command-line arguments, use `std::env::args`. To exit with a
+specified exit code, use `std::process::exit`.
+"##,
+
+E0591: r##"
+Per [RFC 401][rfc401], if you have a function declaration `foo`:
+
+```
+// For the purposes of this explanation, all of these
+// different kinds of `fn` declarations are equivalent:
+struct S;
+fn foo(x: S) { /* ... */ }
+# #[cfg(for_demonstration_only)]
+extern "C" { fn foo(x: S); }
+# #[cfg(for_demonstration_only)]
+impl S { fn foo(self) { /* ... */ } }
+```
+
+the type of `foo` is **not** `fn(S)`, as one might expect.
+Rather, it is a unique, zero-sized marker type written here as `typeof(foo)`.
+However, `typeof(foo)` can be _coerced_ to a function pointer `fn(S)`,
+so you rarely notice this:
+
+```
+# struct S;
+# fn foo(_: S) {}
+let x: fn(S) = foo; // OK, coerces
+```
+
+The reason that this matter is that the type `fn(S)` is not specific to
+any particular function: it's a function _pointer_. So calling `x()` results
+in a virtual call, whereas `foo()` is statically dispatched, because the type
+of `foo` tells us precisely what function is being called.
+
+As noted above, coercions mean that most code doesn't have to be
+concerned with this distinction. However, you can tell the difference
+when using **transmute** to convert a fn item into a fn pointer.
+
+This is sometimes done as part of an FFI:
+
+```compile_fail,E0591
+extern "C" fn foo(userdata: Box<i32>) {
+    /* ... */
+}
+
+# fn callback(_: extern "C" fn(*mut i32)) {}
+# use std::mem::transmute;
+# unsafe {
+let f: extern "C" fn(*mut i32) = transmute(foo);
+callback(f);
+# }
+```
+
+Here, transmute is being used to convert the types of the fn arguments.
+This pattern is incorrect because, because the type of `foo` is a function
+**item** (`typeof(foo)`), which is zero-sized, and the target type (`fn()`)
+is a function pointer, which is not zero-sized.
+This pattern should be rewritten. There are a few possible ways to do this:
+
+- change the original fn declaration to match the expected signature,
+  and do the cast in the fn body (the prefered option)
+- cast the fn item fo a fn pointer before calling transmute, as shown here:
+
+    ```
+    # extern "C" fn foo(_: Box<i32>) {}
+    # use std::mem::transmute;
+    # unsafe {
+    let f: extern "C" fn(*mut i32) = transmute(foo as extern "C" fn(_));
+    let f: extern "C" fn(*mut i32) = transmute(foo as usize); // works too
+    # }
+    ```
+
+The same applies to transmutes to `*mut fn()`, which were observedin practice.
+Note though that use of this type is generally incorrect.
+The intention is typically to describe a function pointer, but just `fn()`
+alone suffices for that. `*mut fn()` is a pointer to a fn pointer.
+(Since these values are typically just passed to C code, however, this rarely
+makes a difference in practice.)
+
+[rfc401]: https://github.com/rust-lang/rfcs/blob/master/text/0401-coercions.md
+"##,
+
+E0593: r##"
+You tried to supply an `Fn`-based type with an incorrect number of arguments
+than what was expected.
+
+Erroneous code example:
+
+```compile_fail,E0593
+fn foo<F: Fn()>(x: F) { }
+
+fn main() {
+    // [E0593] closure takes 1 argument but 0 arguments are required
+    foo(|y| { });
+}
+```
+"##,
+
+E0601: r##"
+No `main` function was found in a binary crate. To fix this error, just add a
+`main` function. For example:
+
+```
+fn main() {
+    // Your program will start here.
+    println!("Hello world!");
+}
+```
+
+If you don't know the basics of Rust, you can go look to the Rust Book to get
+started: https://doc.rust-lang.org/book/
+"##,
+
+E0602: r##"
+An unknown lint was used on the command line.
+
+Erroneous example:
+
+```sh
+rustc -D bogus omse_file.rs
+```
+
+Maybe you just misspelled the lint name or the lint doesn't exist anymore.
+Either way, try to update/remove it in order to fix the error.
+"##,
+
+E0621: r##"
+This error code indicates a mismatch between the lifetimes appearing in the
+function signature (i.e., the parameter types and the return type) and the
+data-flow found in the function body.
+
+Erroneous code example:
+
+```compile_fail,E0621
+fn foo<'a>(x: &'a i32, y: &i32) -> &'a i32 { // error: explicit lifetime
+                                             //        required in the type of
+                                             //        `y`
+    if x > y { x } else { y }
+}
+```
+
+In the code above, the function is returning data borrowed from either `x` or
+`y`, but the `'a` annotation indicates that it is returning data only from `x`.
+To fix the error, the signature and the body must be made to match. Typically,
+this is done by updating the function signature. So, in this case, we change
+the type of `y` to `&'a i32`, like so:
+
+```
+fn foo<'a>(x: &'a i32, y: &'a i32) -> &'a i32 {
+    if x > y { x } else { y }
+}
+```
+
+Now the signature indicates that the function data borrowed from either `x` or
+`y`. Alternatively, you could change the body to not return data from `y`:
+
+```
+fn foo<'a>(x: &'a i32, y: &i32) -> &'a i32 {
+    x
+}
+```
 "##,
 
 }
@@ -1665,8 +1944,13 @@ https://doc.rust-lang.org/book/closures.html
 
 register_diagnostics! {
 //  E0006 // merged with E0005
+//  E0101, // replaced with E0282
+//  E0102, // replaced with E0282
 //  E0134,
 //  E0135,
+//  E0272, // on_unimplemented #0
+//  E0273, // on_unimplemented #1
+//  E0274, // on_unimplemented #2
     E0278, // requirement is not satisfied
     E0279, // requirement is not satisfied
     E0280, // requirement is not satisfied
@@ -1676,10 +1960,12 @@ register_diagnostics! {
 //  E0304, // expected signed integer constant
 //  E0305, // expected constant
     E0311, // thing may not live long enough
+    E0312, // lifetime of reference outlives lifetime of borrowed content
     E0313, // lifetime of borrowed pointer outlives lifetime of captured variable
     E0314, // closure outlives stack frame
     E0315, // cannot invoke closure outside of its lifetime
     E0316, // nested quantification of lifetimes
+    E0320, // recursive overflow during dropck
     E0473, // dereference of reference outside its lifetime
     E0474, // captured variable `..` does not outlive the enclosing closure
     E0475, // index of slice outside its lifetime
@@ -1697,7 +1983,10 @@ register_diagnostics! {
     E0488, // lifetime of variable does not enclose its declaration
     E0489, // type/lifetime parameter not in scope here
     E0490, // a value of type `..` is borrowed for too long
-    E0491, // in type `..`, reference has a longer lifetime than the data it...
     E0495, // cannot infer an appropriate lifetime due to conflicting requirements
-    E0566  // conflicting representation hints
+    E0566, // conflicting representation hints
+    E0623, // lifetime mismatch where both parameters are anonymous regions
+    E0628, // generators cannot have explicit arguments
+    E0631, // type mismatch in closure arguments
+    E0637, // "'_" is not a valid lifetime bound
 }

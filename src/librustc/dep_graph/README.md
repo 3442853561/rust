@@ -16,9 +16,9 @@ The nodes of the graph are defined by the enum `DepNode`. They represent
 one of three things:
 
 1. HIR nodes (like `Hir(DefId)`) represent the HIR input itself.
-2. Data nodes (like `ItemSignature(DefId)`) represent some computed
+2. Data nodes (like `TypeOfItem(DefId)`) represent some computed
    information about a particular item.
-3. Procedure notes (like `CoherenceCheckImpl(DefId)`) represent some
+3. Procedure nodes (like `CoherenceCheckTrait(DefId)`) represent some
    procedure that is executing. Usually this procedure is
    performing some kind of check for errors. You can think of them as
    computed values where the value being computed is `()` (and the
@@ -57,139 +57,10 @@ recompile that item for sure. But we need the dep tracking map to tell
 us what *else* we have to recompile. Shared state is anything that is
 used to communicate results from one item to another.
 
-### Identifying the current task
+### Identifying the current task, tracking reads/writes, etc
 
-The dep graph always tracks a current task: this is basically the
-`DepNode` that the compiler is computing right now. Typically it would
-be a procedure node, but it can also be a data node (as noted above,
-the two are kind of equivalent).
-
-You set the current task by calling `dep_graph.in_task(node)`. For example:
-
-```rust
-let _task = tcx.dep_graph.in_task(DepNode::Privacy);
-```
-
-Now all the code until `_task` goes out of scope will be considered
-part of the "privacy task".
-
-The tasks are maintained in a stack, so it is perfectly fine to nest
-one task within another. Because pushing a task is considered to be
-computing a value, when you nest a task `N2` inside of a task `N1`, we
-automatically add an edge `N2 -> N1` (since `N1` presumably needed the
-result of `N2` to complete):
-
-```rust
-let _n1 = tcx.dep_graph.in_task(DepNode::N1);
-let _n2 = tcx.dep_graph.in_task(DepNode::N2);
-// this will result in an edge N1 -> n2
-```
-
-### Ignore tasks
-
-Although it is rarely needed, you can also push a special "ignore"
-task:
-
-```rust
-let _ignore = tc.dep_graph.in_ignore();
-```
-
-This will cause all read/write edges to be ignored until it goes out
-of scope or until something else is pushed. For example, we could
-suppress the edge between nested tasks like so:
-
-```rust
-let _n1 = tcx.dep_graph.in_task(DepNode::N1);
-let _ignore = tcx.dep_graph.in_ignore();
-let _n2 = tcx.dep_graph.in_task(DepNode::N2);
-// now no edge is added
-```
-
-### Tracking reads and writes
-
-We need to identify what shared state is read/written by the current
-task as it executes. The most fundamental way of doing that is to invoke
-the `read` and `write` methods on `DepGraph`:
-
-```rust
-// Adds an edge from DepNode::Hir(some_def_id) to the current task
-tcx.dep_graph.read(DepNode::Hir(some_def_id))
-
-// Adds an edge from the current task to DepNode::ItemSignature(some_def_id)
-tcx.dep_graph.write(DepNode::ItemSignature(some_def_id))
-```
-
-However, you should rarely need to invoke those methods directly.
-Instead, the idea is to *encapsulate* shared state into some API that
-will invoke `read` and `write` automatically. The most common way to
-do this is to use a `DepTrackingMap`, described in the next section,
-but any sort of abstraction barrier will do. In general, the strategy
-is that getting access to information implicitly adds an appropriate
-`read`. So, for example, when you use the
-`dep_graph::visit_all_items_in_krate` helper method, it will visit
-each item `X`, start a task `Foo(X)` for that item, and automatically
-add an edge `Hir(X) -> Foo(X)`. This edge is added because the code is
-being given access to the HIR node for `X`, and hence it is expected
-to read from it. Similarly, reading from the `tcache` map for item `X`
-(which is a `DepTrackingMap`, described below) automatically invokes
-`dep_graph.read(ItemSignature(X))`.
-
-**Note:** adding `Hir` nodes requires a bit of caution due to the
-"inlining" that old trans and constant evaluation still use. See the
-section on inlining below.
-
-To make this strategy work, a certain amount of indirection is
-required. For example, modules in the HIR do not have direct pointers
-to the items that they contain. Rather, they contain node-ids -- one
-can then ask the HIR map for the item with a given node-id. This gives
-us an opportunity to add an appropriate read edge.
-
-#### Explicit calls to read and write when starting a new subtask
-
-One time when you *may* need to call `read` and `write` directly is
-when you push a new task onto the stack, either by calling `in_task`
-as shown above or indirectly, such as with the `memoize` pattern
-described below. In that case, any data that the task has access to
-from the surrounding environment must be explicitly "read". For
-example, in `librustc_typeck`, the collection code visits all items
-and, among other things, starts a subtask producing its signature
-(what follows is simplified pseudocode, of course):
-
-```rust
-fn visit_item(item: &hir::Item) {
-    // Here, current subtask is "Collect(X)", and an edge Hir(X) -> Collect(X)
-    // has automatically been added by `visit_all_items_in_krate`.
-    let sig = signature_of_item(item);
-}
-
-fn signature_of_item(item: &hir::Item) {
-    let def_id = tcx.map.local_def_id(item.id);
-    let task = tcx.dep_graph.in_task(DepNode::ItemSignature(def_id));
-    tcx.dep_graph.read(DepNode::Hir(def_id)); // <-- the interesting line
-    ...
-}
-```
-
-Here you can see that, in `signature_of_item`, we started a subtask
-corresponding to producing the `ItemSignature`. This subtask will read from
-`item` -- but it gained access to `item` implicitly. This means that if it just
-reads from `item`, there would be missing edges in the graph:
-
-    Hir(X) --+ // added by the explicit call to `read`
-      |      |
-      |      +---> ItemSignature(X) -> Collect(X)
-      |                                 ^
-      |                                 |
-      +---------------------------------+ // added by `visit_all_items_in_krate`
-
-In particular, the edge from `Hir(X)` to `ItemSignature(X)` is only
-present because we called `read` ourselves when entering the `ItemSignature(X)`
-task.
-
-So, the rule of thumb: when entering a new task yourself, register
-reads on any shared state that you inherit. (This actually comes up
-fairly infrequently though: the main place you need caution is around
-memoization.)
+FIXME(#42293). This text needs to be rewritten for the new red-green
+system, which doesn't fully exist yet.
 
 #### Dependency tracking map
 
@@ -254,7 +125,7 @@ and `...` are whatever edges the `/* compute value */` closure creates.
 In particular, using the memoize helper is much better than writing
 the obvious code yourself:
 
-```
+```rust
 if let Some(result) = map.get(key) {
     return result;
 }
@@ -326,15 +197,15 @@ The idea is that you can annotate a test like:
 #[rustc_if_this_changed]
 fn foo() { }
 
-#[rustc_then_this_would_need(TypeckItemBody)] //~ ERROR OK
+#[rustc_then_this_would_need(TypeckTables)] //~ ERROR OK
 fn bar() { foo(); }
 
-#[rustc_then_this_would_need(TypeckItemBody)] //~ ERROR no path
+#[rustc_then_this_would_need(TypeckTables)] //~ ERROR no path
 fn baz() { }
 ```
 
 This will check whether there is a path in the dependency graph from
-`Hir(foo)` to `TypeckItemBody(bar)`. An error is reported for each
+`Hir(foo)` to `TypeckTables(bar)`. An error is reported for each
 `#[rustc_then_this_would_need]` annotation that indicates whether a
 path exists. `//~ ERROR` annotations can then be used to test if a
 path is found (as demonstrated above).
@@ -371,27 +242,27 @@ A node is considered to match a filter if all of those strings appear in its
 label. So, for example:
 
 ```
-RUST_DEP_GRAPH_FILTER='-> TypeckItemBody'
+RUST_DEP_GRAPH_FILTER='-> TypeckTables'
 ```
 
-would select the predecessors of all `TypeckItemBody` nodes. Usually though you
-want the `TypeckItemBody` node for some particular fn, so you might write:
+would select the predecessors of all `TypeckTables` nodes. Usually though you
+want the `TypeckTables` node for some particular fn, so you might write:
 
 ```
-RUST_DEP_GRAPH_FILTER='-> TypeckItemBody & bar'
+RUST_DEP_GRAPH_FILTER='-> TypeckTables & bar'
 ```
 
-This will select only the `TypeckItemBody` nodes for fns with `bar` in their name.
+This will select only the `TypeckTables` nodes for fns with `bar` in their name.
 
 Perhaps you are finding that when you change `foo` you need to re-type-check `bar`,
 but you don't think you should have to. In that case, you might do:
 
 ```
-RUST_DEP_GRAPH_FILTER='Hir&foo -> TypeckItemBody & bar'
+RUST_DEP_GRAPH_FILTER='Hir&foo -> TypeckTables & bar'
 ```
 
 This will dump out all the nodes that lead from `Hir(foo)` to
-`TypeckItemBody(bar)`, from which you can (hopefully) see the source
+`TypeckTables(bar)`, from which you can (hopefully) see the source
 of the erroneous edge.
 
 #### Tracking down incorrect edges
@@ -417,27 +288,8 @@ dep-graph as described in the previous section and open `dep-graph.txt`
 to see something like:
 
     Hir(foo) -> Collect(bar)
-    Collect(bar) -> TypeckItemBody(bar)
+    Collect(bar) -> TypeckTables(bar)
 
 That first edge looks suspicious to you. So you set
 `RUST_FORBID_DEP_GRAPH_EDGE` to `Hir&foo -> Collect&bar`, re-run, and
 then observe the backtrace. Voila, bug fixed!
-
-### Inlining of HIR nodes
-
-For the time being, at least, we still sometimes "inline" HIR nodes
-from other crates into the current HIR map. This creates a weird
-scenario where the same logical item (let's call it `X`) has two
-def-ids: the original def-id `X` and a new, inlined one `X'`. `X'` is
-in the current crate, but it's not like other HIR nodes: in
-particular, when we restart compilation, it will not be available to
-hash. Therefore, we do not want `Hir(X')` nodes appearing in our
-graph.  Instead, we want a "read" of `Hir(X')` to be represented as a
-read of `MetaData(X)`, since the metadata for `X` is where the inlined
-representation originated in the first place.
-
-To achieve this, the HIR map will detect if the def-id originates in
-an inlined node and add a dependency to a suitable `MetaData` node
-instead. If you are reading a HIR node and are not sure if it may be
-inlined or not, you can use `tcx.map.read(node_id)` and it will detect
-whether the node is inlined or not and do the right thing.

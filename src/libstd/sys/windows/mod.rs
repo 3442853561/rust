@@ -10,6 +10,7 @@
 
 #![allow(missing_docs, bad_style)]
 
+use ptr;
 use ffi::{OsStr, OsString};
 use io::{self, ErrorKind};
 use os::windows::ffi::{OsStrExt, OsStringExt};
@@ -19,12 +20,15 @@ use time::Duration;
 #[macro_use] pub mod compat;
 
 pub mod args;
+#[cfg(feature = "backtrace")]
 pub mod backtrace;
 pub mod c;
 pub mod condvar;
+#[cfg(feature = "backtrace")]
 pub mod dynamic_lib;
 pub mod env;
 pub mod ext;
+pub mod fast_thread_local;
 pub mod fs;
 pub mod handle;
 pub mod memchr;
@@ -45,24 +49,6 @@ pub mod stdio;
 
 #[cfg(not(test))]
 pub fn init() {
-    ::alloc::oom::set_oom_handler(oom_handler);
-
-    // See comment in sys/unix/mod.rs
-    fn oom_handler() -> ! {
-        use intrinsics;
-        use ptr;
-        let msg = "fatal runtime error: out of memory\n";
-        unsafe {
-            // WriteFile silently fails if it is passed an invalid handle, so
-            // there is no need to check the result of GetStdHandle.
-            c::WriteFile(c::GetStdHandle(c::STD_ERROR_HANDLE),
-                         msg.as_ptr() as c::LPVOID,
-                         msg.len() as c::DWORD,
-                         ptr::null_mut(),
-                         ptr::null_mut());
-            intrinsics::abort();
-        }
-    }
 }
 
 pub fn decode_error_kind(errno: i32) -> ErrorKind {
@@ -169,6 +155,52 @@ fn fill_utf16_buf<F1, F2, T>(mut f1: F1, f2: F2) -> io::Result<T>
 
 fn os2path(s: &[u16]) -> PathBuf {
     PathBuf::from(OsString::from_wide(s))
+}
+
+#[allow(dead_code)] // Only used in backtrace::gnu::get_executable_filename()
+fn wide_char_to_multi_byte(code_page: u32,
+                           flags: u32,
+                           s: &[u16],
+                           no_default_char: bool)
+                           -> io::Result<Vec<i8>> {
+    unsafe {
+        let mut size = c::WideCharToMultiByte(code_page,
+                                              flags,
+                                              s.as_ptr(),
+                                              s.len() as i32,
+                                              ptr::null_mut(),
+                                              0,
+                                              ptr::null(),
+                                              ptr::null_mut());
+        if size == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut buf = Vec::with_capacity(size as usize);
+        buf.set_len(size as usize);
+
+        let mut used_default_char = c::FALSE;
+        size = c::WideCharToMultiByte(code_page,
+                                      flags,
+                                      s.as_ptr(),
+                                      s.len() as i32,
+                                      buf.as_mut_ptr(),
+                                      buf.len() as i32,
+                                      ptr::null(),
+                                      if no_default_char { &mut used_default_char }
+                                      else { ptr::null_mut() });
+        if size == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if no_default_char && used_default_char == c::TRUE {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                                      "string cannot be converted to requested code page"));
+        }
+
+        buf.set_len(size as usize);
+
+        Ok(buf)
+    }
 }
 
 pub fn truncate_utf16_at_nul<'a>(v: &'a [u16]) -> &'a [u16] {

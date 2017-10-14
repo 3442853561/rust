@@ -19,6 +19,11 @@ use std::iter::repeat;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use std::sync::mpsc::{Sender};
+use syntax_pos::{SpanData};
+use ty::maps::{QueryMsg};
+use dep_graph::{DepNode};
+
 // The name of the associated type for `Fn` return types
 pub const FN_OUTPUT_NAME: &'static str = "Output";
 
@@ -28,6 +33,73 @@ pub const FN_OUTPUT_NAME: &'static str = "Output";
 pub struct ErrorReported;
 
 thread_local!(static TIME_DEPTH: Cell<usize> = Cell::new(0));
+
+/// Initialized for -Z profile-queries
+thread_local!(static PROFQ_CHAN: RefCell<Option<Sender<ProfileQueriesMsg>>> = RefCell::new(None));
+
+/// Parameters to the `Dump` variant of type `ProfileQueriesMsg`.
+#[derive(Clone,Debug)]
+pub struct ProfQDumpParams {
+    /// A base path for the files we will dump
+    pub path:String,
+    /// To ensure that the compiler waits for us to finish our dumps
+    pub ack:Sender<()>,
+    /// toggle dumping a log file with every `ProfileQueriesMsg`
+    pub dump_profq_msg_log:bool,
+}
+
+/// A sequence of these messages induce a trace of query-based incremental compilation.
+/// FIXME(matthewhammer): Determine whether we should include cycle detection here or not.
+#[derive(Clone,Debug)]
+pub enum ProfileQueriesMsg {
+    /// begin a timed pass
+    TimeBegin(String),
+    /// end a timed pass
+    TimeEnd,
+    /// begin a task (see dep_graph::graph::with_task)
+    TaskBegin(DepNode),
+    /// end a task
+    TaskEnd,
+    /// begin a new query
+    /// can't use `Span` because queries are sent to other thread
+    QueryBegin(SpanData, QueryMsg),
+    /// query is satisfied by using an already-known value for the given key
+    CacheHit,
+    /// query requires running a provider; providers may nest, permitting queries to nest.
+    ProviderBegin,
+    /// query is satisfied by a provider terminating with a value
+    ProviderEnd,
+    /// dump a record of the queries to the given path
+    Dump(ProfQDumpParams),
+    /// halt the profiling/monitoring background thread
+    Halt
+}
+
+/// If enabled, send a message to the profile-queries thread
+pub fn profq_msg(msg: ProfileQueriesMsg) {
+    PROFQ_CHAN.with(|sender|{
+        if let Some(s) = sender.borrow().as_ref() {
+            s.send(msg).unwrap()
+        } else {
+            // Do nothing.
+            //
+            // FIXME(matthewhammer): Multi-threaded translation phase triggers the panic below.
+            // From backtrace: rustc_trans::back::write::spawn_work::{{closure}}.
+            //
+            // panic!("no channel on which to send profq_msg: {:?}", msg)
+        }
+    })
+}
+
+/// Set channel for profile queries channel
+pub fn profq_set_chan(s: Sender<ProfileQueriesMsg>) -> bool {
+    PROFQ_CHAN.with(|chan|{
+        if chan.borrow().is_none() {
+            *chan.borrow_mut() = Some(s);
+            true
+        } else { false }
+    })
+}
 
 /// Read the current depth of `time()` calls. This is used to
 /// encourage indentation across threads.
@@ -53,9 +125,41 @@ pub fn time<T, F>(do_it: bool, what: &str, f: F) -> T where
         r
     });
 
+    if cfg!(debug_assertions) {
+        profq_msg(ProfileQueriesMsg::TimeBegin(what.to_string()))
+    };
     let start = Instant::now();
     let rv = f();
     let dur = start.elapsed();
+    if cfg!(debug_assertions) {
+        profq_msg(ProfileQueriesMsg::TimeEnd)
+    };
+
+    print_time_passes_entry_internal(what, dur);
+
+    TIME_DEPTH.with(|slot| slot.set(old));
+
+    rv
+}
+
+pub fn print_time_passes_entry(do_it: bool, what: &str, dur: Duration) {
+    if !do_it {
+        return
+    }
+
+    let old = TIME_DEPTH.with(|slot| {
+        let r = slot.get();
+        slot.set(r + 1);
+        r
+    });
+
+    print_time_passes_entry_internal(what, dur);
+
+    TIME_DEPTH.with(|slot| slot.set(old));
+}
+
+fn print_time_passes_entry_internal(what: &str, dur: Duration) {
+    let indentation = TIME_DEPTH.with(|slot| slot.get());
 
     let mem_string = match get_resident() {
         Some(n) => {
@@ -65,14 +169,10 @@ pub fn time<T, F>(do_it: bool, what: &str, f: F) -> T where
         None => "".to_owned(),
     };
     println!("{}time: {}{}\t{}",
-             repeat("  ").take(old).collect::<String>(),
+             repeat("  ").take(indentation).collect::<String>(),
              duration_to_secs_str(dur),
              mem_string,
              what);
-
-    TIME_DEPTH.with(|slot| slot.set(old));
-
-    rv
 }
 
 // Hack up our own formatting for the duration to make it easier for scripts
@@ -94,7 +194,7 @@ pub fn to_readable_str(mut val: usize) -> String {
 
         if val == 0 {
             groups.push(format!("{}", group));
-            break
+            break;
         } else {
             groups.push(format!("{:03}", group));
         }
@@ -116,6 +216,7 @@ pub fn record_time<T, F>(accu: &Cell<Duration>, f: F) -> T where
 }
 
 // Like std::macros::try!, but for Option<>.
+#[cfg(unix)]
 macro_rules! option_try(
     ($e:expr) => (match $e { Some(e) => e, None => return None })
 );
@@ -142,7 +243,8 @@ fn get_resident() -> Option<usize> {
     type HANDLE = *mut u8;
     use libc::size_t;
     use std::mem;
-    #[repr(C)] #[allow(non_snake_case)]
+    #[repr(C)]
+    #[allow(non_snake_case)]
     struct PROCESS_MEMORY_COUNTERS {
         cb: DWORD,
         PageFaultCount: DWORD,
@@ -184,7 +286,7 @@ pub fn indent<R, F>(op: F) -> R where
 }
 
 pub struct Indenter {
-    _cannot_construct_outside_of_this_module: ()
+    _cannot_construct_outside_of_this_module: (),
 }
 
 impl Drop for Indenter {
@@ -200,7 +302,7 @@ pub trait MemoizationMap {
     type Key: Clone;
     type Value: Clone;
 
-    /// If `key` is present in the map, return the valuee,
+    /// If `key` is present in the map, return the value,
     /// otherwise invoke `op` and store the value in the map.
     ///
     /// NB: if the receiver is a `DepTrackingMap`, special care is

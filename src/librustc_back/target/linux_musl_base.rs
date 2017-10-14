@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use LinkerFlavor;
 use target::TargetOptions;
 
 pub fn opts() -> TargetOptions {
@@ -15,13 +16,13 @@ pub fn opts() -> TargetOptions {
 
     // Make sure that the linker/gcc really don't pull in anything, including
     // default objects, libs, etc.
-    base.pre_link_args.push("-nostdlib".to_string());
+    base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-nostdlib".to_string());
 
     // At least when this was tested, the linker would not add the
     // `GNU_EH_FRAME` program header to executables generated, which is required
     // when unwinding to locate the unwinding information. I'm not sure why this
     // argument is *not* necessary for normal builds, but it can't hurt!
-    base.pre_link_args.push("-Wl,--eh-frame-hdr".to_string());
+    base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-Wl,--eh-frame-hdr".to_string());
 
     // There's a whole bunch of circular dependencies when dealing with MUSL
     // unfortunately. To put this in perspective libc is statically linked to
@@ -45,8 +46,8 @@ pub fn opts() -> TargetOptions {
     // link everything as a group, not stripping anything out until everything
     // is processed. The linker will still perform a pass to strip out object
     // files but it won't do so until all objects/archives have been processed.
-    base.pre_link_args.push("-Wl,-(".to_string());
-    base.post_link_args.push("-Wl,-)".to_string());
+    base.pre_link_args.get_mut(&LinkerFlavor::Gcc).unwrap().push("-Wl,-(".to_string());
+    base.post_link_args.insert(LinkerFlavor::Gcc, vec!["-Wl,-)".to_string()]);
 
     // When generating a statically linked executable there's generally some
     // small setup needed which is listed in these files. These are provided by
@@ -59,15 +60,10 @@ pub fn opts() -> TargetOptions {
     base.pre_link_objects_exe.push("crti.o".to_string());
     base.post_link_objects.push("crtn.o".to_string());
 
-    // MUSL support doesn't currently include dynamic linking, so there's no
-    // need for dylibs or rpath business. Additionally `-pie` is incompatible
-    // with `-static`, so we can't pass `-pie`.
-    base.dynamic_linking = false;
-    base.has_rpath = false;
-    base.position_independent_executables = false;
-
     // These targets statically link libc by default
     base.crt_static_default = true;
+    // These targets allow the user to choose between static and dynamic linking.
+    base.crt_static_respected = true;
 
     base
 }

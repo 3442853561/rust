@@ -13,6 +13,13 @@
 //! This module contains functions to inspect various aspects such as
 //! environment variables, process arguments, the current directory, and various
 //! other important directories.
+//!
+//! There are several functions and structs in this module that have a
+//! counterpart ending in `os`. Those ending in `os` will return an [`OsString`]
+//! and those without will be returning a [`String`].
+//!
+//! [`OsString`]: ../../std/ffi/struct.OsString.html
+//! [`String`]: ../string/struct.String.html
 
 #![stable(feature = "env", since = "1.0.0")]
 
@@ -24,15 +31,18 @@ use path::{Path, PathBuf};
 use sys;
 use sys::os as os_imp;
 
-/// Returns the current working directory as a `PathBuf`.
+/// Returns the current working directory as a [`PathBuf`].
 ///
 /// # Errors
 ///
-/// Returns an `Err` if the current working directory value is invalid.
+/// Returns an [`Err`] if the current working directory value is invalid.
 /// Possible cases:
 ///
 /// * Current directory does not exist.
 /// * There are insufficient permissions to access the current directory.
+///
+/// [`PathBuf`]: ../../std/path/struct.PathBuf.html
+/// [`Err`]: ../../std/result/enum.Result.html#method.err
 ///
 /// # Examples
 ///
@@ -40,16 +50,19 @@ use sys::os as os_imp;
 /// use std::env;
 ///
 /// // We assume that we are in a valid directory.
-/// let p = env::current_dir().unwrap();
-/// println!("The current directory is {}", p.display());
+/// let path = env::current_dir().unwrap();
+/// println!("The current directory is {}", path.display());
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
 pub fn current_dir() -> io::Result<PathBuf> {
     os_imp::getcwd()
 }
 
-/// Changes the current working directory to the specified path, returning
-/// whether the change was completed successfully or not.
+/// Changes the current working directory to the specified path.
+///
+/// Returns an [`Err`] if the operation fails.
+///
+/// [`Err`]: ../../std/result/enum.Result.html#method.err
 ///
 /// # Examples
 ///
@@ -62,13 +75,14 @@ pub fn current_dir() -> io::Result<PathBuf> {
 /// println!("Successfully changed working directory to {}!", root.display());
 /// ```
 #[stable(feature = "env", since = "1.0.0")]
-pub fn set_current_dir<P: AsRef<Path>>(p: P) -> io::Result<()> {
-    os_imp::chdir(p.as_ref())
+pub fn set_current_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
+    os_imp::chdir(path.as_ref())
 }
 
 /// An iterator over a snapshot of the environment variables of this process.
 ///
-/// This structure is created through the [`std::env::vars`] function.
+/// This structure is created by the [`std::env::vars`] function. See its
+/// documentation for more.
 ///
 /// [`std::env::vars`]: fn.vars.html
 #[stable(feature = "env", since = "1.0.0")]
@@ -76,7 +90,8 @@ pub struct Vars { inner: VarsOs }
 
 /// An iterator over a snapshot of the environment variables of this process.
 ///
-/// This structure is created through the [`std::env::vars_os`] function.
+/// This structure is created by the [`std::env::vars_os`] function. See
+/// its documentation for more.
 ///
 /// [`std::env::vars_os`]: fn.vars_os.html
 #[stable(feature = "env", since = "1.0.0")]
@@ -93,7 +108,9 @@ pub struct VarsOs { inner: os_imp::Env }
 ///
 /// While iterating, the returned iterator will panic if any key or value in the
 /// environment is not valid unicode. If this is not desired, consider using the
-/// `env::vars_os` function.
+/// [`env::vars_os`] function.
+///
+/// [`env::vars_os`]: fn.vars_os.html
 ///
 /// # Examples
 ///
@@ -145,7 +162,7 @@ impl Iterator for Vars {
     fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Vars {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Vars { .. }")
@@ -159,7 +176,7 @@ impl Iterator for VarsOs {
     fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for VarsOs {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("VarsOs { .. }")
@@ -168,9 +185,10 @@ impl fmt::Debug for VarsOs {
 
 /// Fetches the environment variable `key` from the current process.
 ///
-/// The returned result is `Ok(s)` if the environment variable is present and is
-/// valid unicode. If the environment variable is not present, or it is not
-/// valid unicode, then `Err` will be returned.
+/// # Errors
+///
+/// * Environment variable is not present
+/// * Environment variable is not valid unicode
 ///
 /// # Examples
 ///
@@ -191,12 +209,14 @@ pub fn var<K: AsRef<OsStr>>(key: K) -> Result<String, VarError> {
 fn _var(key: &OsStr) -> Result<String, VarError> {
     match var_os(key) {
         Some(s) => s.into_string().map_err(VarError::NotUnicode),
-        None => Err(VarError::NotPresent)
+        None => Err(VarError::NotPresent),
     }
 }
 
 /// Fetches the environment variable `key` from the current process, returning
-/// `None` if the variable isn't set.
+/// [`None`] if the variable isn't set.
+///
+/// [`None`]: ../option/enum.Option.html#variant.None
 ///
 /// # Examples
 ///
@@ -220,9 +240,10 @@ fn _var_os(key: &OsStr) -> Option<OsString> {
     })
 }
 
-/// Possible errors from the [`env::var`] function.
+/// The error type for operations interacting with environment variables.
+/// Possibly returned from the [`env::var`] function.
 ///
-/// [env::var]: fn.var.html
+/// [`env::var`]: fn.var.html
 #[derive(Debug, PartialEq, Eq, Clone)]
 #[stable(feature = "env", since = "1.0.0")]
 pub enum VarError {
@@ -343,10 +364,13 @@ fn _remove_var(k: &OsStr) {
     })
 }
 
-/// An iterator over `PathBuf` instances for parsing an environment variable
-/// according to platform-specific conventions.
+/// An iterator that splits an environment variable into paths according to
+/// platform-specific conventions.
 ///
-/// This structure is returned from `std::env::split_paths`.
+/// This structure is created by the [`std::env::split_paths`] function. See its
+/// documentation for more.
+///
+/// [`std::env::split_paths`]: fn.split_paths.html
 #[stable(feature = "env", since = "1.0.0")]
 pub struct SplitPaths<'a> { inner: os_imp::SplitPaths<'a> }
 
@@ -382,31 +406,66 @@ impl<'a> Iterator for SplitPaths<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<'a> fmt::Debug for SplitPaths<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("SplitPaths { .. }")
     }
 }
 
-/// Error type returned from `std::env::join_paths` when paths fail to be
-/// joined.
+/// The error type for operations on the `PATH` variable. Possibly returned from
+/// the [`env::join_paths`] function.
+///
+/// [`env::join_paths`]: fn.join_paths.html
 #[derive(Debug)]
 #[stable(feature = "env", since = "1.0.0")]
 pub struct JoinPathsError {
     inner: os_imp::JoinPathsError
 }
 
-/// Joins a collection of `Path`s appropriately for the `PATH`
+/// Joins a collection of [`Path`]s appropriately for the `PATH`
 /// environment variable.
 ///
-/// Returns an `OsString` on success.
+/// # Errors
 ///
-/// Returns an `Err` (containing an error message) if one of the input
-/// `Path`s contains an invalid character for constructing the `PATH`
+/// Returns an [`Err`][err] (containing an error message) if one of the input
+/// [`Path`]s contains an invalid character for constructing the `PATH`
 /// variable (a double quote on Windows or a colon on Unix).
 ///
+/// [`Path`]: ../../std/path/struct.Path.html
+/// [`OsString`]: ../../std/ffi/struct.OsString.html
+/// [err]: ../../std/result/enum.Result.html#variant.Err
+///
 /// # Examples
+///
+/// Joining paths on a Unix-like platform:
+///
+/// ```
+/// # if cfg!(unix) {
+/// use std::env;
+/// use std::ffi::OsString;
+/// use std::path::Path;
+///
+/// let paths = [Path::new("/bin"), Path::new("/usr/bin")];
+/// let path_os_string = env::join_paths(paths.iter()).unwrap();
+/// assert_eq!(path_os_string, OsString::from("/bin:/usr/bin"));
+/// # }
+/// ```
+///
+/// Joining a path containing a colon on a Unix-like platform results in an error:
+///
+/// ```
+/// # if cfg!(unix) {
+/// use std::env;
+/// use std::path::Path;
+///
+/// let paths = [Path::new("/bin"), Path::new("/usr/bi:n")];
+/// assert!(env::join_paths(paths.iter()).is_err());
+/// # }
+/// ```
+///
+/// Using `env::join_paths` with `env::spit_paths` to append an item to the `PATH` environment
+/// variable:
 ///
 /// ```
 /// use std::env;
@@ -476,12 +535,16 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// Returns the path of a temporary directory.
 ///
-/// On Unix, returns the value of the `TMPDIR` environment variable if it is
+/// # Unix
+///
+/// Returns the value of the `TMPDIR` environment variable if it is
 /// set, otherwise for non-Android it returns `/tmp`. If Android, since there
 /// is no global temporary folder (it is usually allocated per-app), it returns
 /// `/data/local/tmp`.
 ///
-/// On Windows, returns the value of, in order, the `TMP`, `TEMP`,
+/// # Windows
+///
+/// Returns the value of, in order, the `TMP`, `TEMP`,
 /// `USERPROFILE` environment variable if any are set and not the empty
 /// string. Otherwise, `temp_dir` returns the path of the Windows directory.
 /// This behavior is identical to that of [`GetTempPath`][msdn], which this
@@ -497,7 +560,7 @@ pub fn home_dir() -> Option<PathBuf> {
 /// let mut dir = env::temp_dir();
 /// dir.push("foo.txt");
 ///
-/// let f = try!(File::create(dir));
+/// let f = File::create(dir)?;
 /// # Ok(())
 /// # }
 /// ```
@@ -571,10 +634,15 @@ pub fn current_exe() -> io::Result<PathBuf> {
     os_imp::current_exe()
 }
 
-/// An iterator over the arguments of a process, yielding a [`String`] value
-/// for each argument.
+/// An iterator over the arguments of a process, yielding a [`String`] value for
+/// each argument.
 ///
-/// This structure is created through the [`std::env::args`] function.
+/// This struct is created by the [`std::env::args`] function. See its
+/// documentation for more.
+///
+/// The first element is traditionally the path of the executable, but it can be
+/// set to arbitrary text, and may not even exist. This means this property
+/// should not be relied upon for security purposes.
 ///
 /// [`String`]: ../string/struct.String.html
 /// [`std::env::args`]: ./fn.args.html
@@ -584,7 +652,12 @@ pub struct Args { inner: ArgsOs }
 /// An iterator over the arguments of a process, yielding an [`OsString`] value
 /// for each argument.
 ///
-/// This structure is created through the [`std::env::args_os`] function.
+/// This struct is created by the [`std::env::args_os`] function. See its
+/// documentation for more.
+///
+/// The first element is traditionally the path of the executable, but it can be
+/// set to arbitrary text, and may not even exist. This means this property
+/// should not be relied upon for security purposes.
 ///
 /// [`OsString`]: ../ffi/struct.OsString.html
 /// [`std::env::args_os`]: ./fn.args_os.html
@@ -658,17 +731,19 @@ impl ExactSizeIterator for Args {
     fn is_empty(&self) -> bool { self.inner.is_empty() }
 }
 
-#[stable(feature = "env_iterators", since = "1.11.0")]
+#[stable(feature = "env_iterators", since = "1.12.0")]
 impl DoubleEndedIterator for Args {
     fn next_back(&mut self) -> Option<String> {
         self.inner.next_back().map(|s| s.into_string().unwrap())
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for Args {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.pad("Args { .. }")
+        f.debug_struct("Args")
+            .field("inner", &self.inner.inner.inner_debug())
+            .finish()
     }
 }
 
@@ -685,15 +760,17 @@ impl ExactSizeIterator for ArgsOs {
     fn is_empty(&self) -> bool { self.inner.is_empty() }
 }
 
-#[stable(feature = "env_iterators", since = "1.11.0")]
+#[stable(feature = "env_iterators", since = "1.12.0")]
 impl DoubleEndedIterator for ArgsOs {
     fn next_back(&mut self) -> Option<OsString> { self.inner.next_back() }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl fmt::Debug for ArgsOs {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.pad("ArgsOs { .. }")
+        f.debug_struct("ArgsOs")
+            .field("inner", &self.inner.inner_debug())
+            .finish()
     }
 }
 
@@ -872,62 +949,8 @@ mod arch {
 mod tests {
     use super::*;
 
-    use iter::repeat;
-    use rand::{self, Rng};
-    use ffi::{OsString, OsStr};
+    use ffi::OsStr;
     use path::{Path, PathBuf};
-
-    fn make_rand_name() -> OsString {
-        let mut rng = rand::thread_rng();
-        let n = format!("TEST{}", rng.gen_ascii_chars().take(10)
-                                     .collect::<String>());
-        let n = OsString::from(n);
-        assert!(var_os(&n).is_none());
-        n
-    }
-
-    fn eq(a: Option<OsString>, b: Option<&str>) {
-        assert_eq!(a.as_ref().map(|s| &**s), b.map(OsStr::new).map(|s| &*s));
-    }
-
-    #[test]
-    fn test_set_var() {
-        let n = make_rand_name();
-        set_var(&n, "VALUE");
-        eq(var_os(&n), Some("VALUE"));
-    }
-
-    #[test]
-    fn test_remove_var() {
-        let n = make_rand_name();
-        set_var(&n, "VALUE");
-        remove_var(&n);
-        eq(var_os(&n), None);
-    }
-
-    #[test]
-    fn test_set_var_overwrite() {
-        let n = make_rand_name();
-        set_var(&n, "1");
-        set_var(&n, "2");
-        eq(var_os(&n), Some("2"));
-        set_var(&n, "");
-        eq(var_os(&n), Some(""));
-    }
-
-    #[test]
-    #[cfg_attr(target_os = "emscripten", ignore)]
-    fn test_var_big() {
-        let mut s = "".to_string();
-        let mut i = 0;
-        while i < 100 {
-            s.push_str("aaaaaaaaaa");
-            i += 1;
-        }
-        let n = make_rand_name();
-        set_var(&n, &s);
-        eq(var_os(&n), Some(&s));
-    }
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]
@@ -938,32 +961,6 @@ mod tests {
 
         // Hard to test this function
         assert!(path.is_absolute());
-    }
-
-    #[test]
-    #[cfg_attr(target_os = "emscripten", ignore)]
-    fn test_env_set_get_huge() {
-        let n = make_rand_name();
-        let s = repeat("x").take(10000).collect::<String>();
-        set_var(&n, &s);
-        eq(var_os(&n), Some(&s));
-        remove_var(&n);
-        eq(var_os(&n), None);
-    }
-
-    #[test]
-    fn test_env_set_var() {
-        let n = make_rand_name();
-
-        let mut e = vars_os();
-        set_var(&n, "VALUE");
-        assert!(!e.any(|(k, v)| {
-            &*k == &*n && &*v == "VALUE"
-        }));
-
-        assert!(vars_os().any(|(k, v)| {
-            &*k == &*n && &*v == "VALUE"
-        }));
     }
 
     #[test]
@@ -1041,4 +1038,14 @@ mod tests {
                         r#""c:\te;st";c:\"#));
         assert!(join_paths([r#"c:\te"st"#].iter().cloned()).is_err());
     }
+
+    #[test]
+    fn args_debug() {
+        assert_eq!(
+            format!("Args {{ inner: {:?} }}", args().collect::<Vec<_>>()),
+            format!("{:?}", args()));
+        assert_eq!(
+            format!("ArgsOs {{ inner: {:?} }}", args_os().collect::<Vec<_>>()),
+            format!("{:?}", args_os()));
     }
+}

@@ -10,8 +10,6 @@
 
 // Regression test for #18937.
 
-#![deny(extra_requirement_in_impl)]
-
 use std::fmt;
 
 #[derive(Debug)]
@@ -28,7 +26,7 @@ trait A<'a> {
 }
 
 impl<'a> A<'a> for B {
-    fn foo<F>(&mut self, f: F) //~ ERROR E0276
+    fn foo<F>(&mut self, f: F) //~ ERROR impl has stricter
         //~^ WARNING future release
         where F: fmt::Debug + 'static,
     {

@@ -28,7 +28,7 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt,
     let doc = cx.meta_list(span, Symbol::intern("doc"), vec![hidden]);
     let attrs = vec![cx.attribute(span, inline), cx.attribute(span, doc)];
     let trait_def = TraitDef {
-        span: span,
+        span,
         attributes: Vec::new(),
         path: path_std!(cx, core::cmp::Eq),
         additional_bounds: Vec::new(),
@@ -58,7 +58,7 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure)
                         ty: P<ast::Ty>, span: Span, helper_name: &str) {
         // Generate statement `let _: helper_name<ty>;`,
         // set the expn ID so we can use the unstable struct.
-        let span = super::allow_unstable(cx, span, "derive(Eq)");
+        let span = span.with_ctxt(cx.backtrace());
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&["cmp", helper_name]),
                                         vec![], vec![ty], vec![]);

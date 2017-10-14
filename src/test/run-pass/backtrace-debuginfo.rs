@@ -10,7 +10,7 @@
 
 // We disable tail merging here because it can't preserve debuginfo and thus
 // potentially breaks the backtraces. Also, subtle changes can decide whether
-// tail merging suceeds, so the test might work today but fail tomorrow due to a
+// tail merging succeeds, so the test might work today but fail tomorrow due to a
 // seemingly completely unrelated change.
 // Unfortunately, LLVM has no "disable" option for this, so we have to set
 // "enable" to 0 instead.
@@ -19,8 +19,6 @@
 // ignore-pretty issue #37195
 // ignore-emscripten spawning processes is not supported
 
-use std::io;
-use std::io::prelude::*;
 use std::env;
 
 #[path = "backtrace-debuginfo-aux.rs"] mod aux;
@@ -33,11 +31,8 @@ macro_rules! dump_and_die {
     ($($pos:expr),*) => ({
         // FIXME(#18285): we cannot include the current position because
         // the macro span takes over the last frame's file/line.
-        if cfg!(any(target_os = "macos",
-                    target_os = "ios",
-                    target_os = "android",
+        if cfg!(any(target_os = "android",
                     all(target_os = "linux", target_arch = "arm"),
-                    target_os = "windows",
                     target_os = "freebsd",
                     target_os = "dragonfly",
                     target_os = "bitrig",
@@ -89,7 +84,7 @@ fn inner(counter: &mut i32, main_pos: Pos, outer_pos: Pos) {
 }
 
 // LLVM does not yet output the required debug info to support showing inlined
-// function calls in backtraces when targetting MSVC, so disable inlining in
+// function calls in backtraces when targeting MSVC, so disable inlining in
 // this case.
 #[cfg_attr(not(target_env = "msvc"), inline(always))]
 #[cfg_attr(target_env = "msvc", inline(never))]
@@ -142,12 +137,12 @@ fn run_test(me: &str) {
     use std::process::Command;
 
     let mut template = Command::new(me);
-    template.env("RUST_BACKTRACE", "1");
+    template.env("RUST_BACKTRACE", "full");
 
     let mut i = 0;
     loop {
         let out = Command::new(me)
-                          .env("RUST_BACKTRACE", "1")
+                          .env("RUST_BACKTRACE", "full")
                           .arg(i.to_string()).output().unwrap();
         let output = str::from_utf8(&out.stdout).unwrap();
         let error = str::from_utf8(&out.stderr).unwrap();
@@ -166,11 +161,10 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() >= 2 {
         let case = args[1].parse().unwrap();
-        writeln!(&mut io::stderr(), "test case {}", case).unwrap();
+        eprintln!("test case {}", case);
         outer(case, pos!());
         println!("done.");
     } else {
         run_test(&args[0]);
     }
 }
-

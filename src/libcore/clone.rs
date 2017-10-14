@@ -61,7 +61,7 @@
 /// ## Derivable
 ///
 /// This trait can be used with `#[derive]` if all fields are `Clone`. The `derive`d
-/// implementation of [`clone()`] calls [`clone()`] on each field.
+/// implementation of [`clone`] calls [`clone`] on each field.
 ///
 /// ## How can I implement `Clone`?
 ///
@@ -75,7 +75,7 @@
 /// `Clone` cannot be `derive`d, but can be implemented as:
 ///
 /// [`Copy`]: ../../std/marker/trait.Copy.html
-/// [`clone()`]: trait.Clone.html#tymethod.clone
+/// [`clone`]: trait.Clone.html#tymethod.clone
 ///
 /// ```
 /// #[derive(Copy)]
@@ -88,6 +88,7 @@
 /// }
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
+#[lang = "clone"]
 pub trait Clone : Sized {
     /// Returns a copy of the value.
     ///
@@ -106,7 +107,7 @@ pub trait Clone : Sized {
     /// `a.clone_from(&b)` is equivalent to `a = b.clone()` in functionality,
     /// but can be overridden to reuse the resources of `a` to avoid unnecessary
     /// allocations.
-    #[inline(always)]
+    #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn clone_from(&mut self, source: &Self) {
         *self = source.clone()
@@ -129,44 +130,3 @@ pub struct AssertParamIsClone<T: Clone + ?Sized> { _field: ::marker::PhantomData
            reason = "deriving hack, should not be public",
            issue = "0")]
 pub struct AssertParamIsCopy<T: Copy + ?Sized> { _field: ::marker::PhantomData<T> }
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: ?Sized> Clone for &'a T {
-    /// Returns a shallow copy of the reference.
-    #[inline]
-    fn clone(&self) -> &'a T { *self }
-}
-
-macro_rules! clone_impl {
-    ($t:ty) => {
-        #[stable(feature = "rust1", since = "1.0.0")]
-        impl Clone for $t {
-            /// Returns a deep copy of the value.
-            #[inline]
-            fn clone(&self) -> $t { *self }
-        }
-    }
-}
-
-clone_impl! { isize }
-clone_impl! { i8 }
-clone_impl! { i16 }
-clone_impl! { i32 }
-clone_impl! { i64 }
-#[cfg(not(stage0))]
-clone_impl! { i128 }
-
-clone_impl! { usize }
-clone_impl! { u8 }
-clone_impl! { u16 }
-clone_impl! { u32 }
-clone_impl! { u64 }
-#[cfg(not(stage0))]
-clone_impl! { u128 }
-
-clone_impl! { f32 }
-clone_impl! { f64 }
-
-clone_impl! { () }
-clone_impl! { bool }
-clone_impl! { char }

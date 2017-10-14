@@ -10,11 +10,11 @@
 
 // ignore-tidy-linelength
 // compile-flags:-Zprint-trans-items=eager
+// compile-flags:-Zinline-in-all-cgus
 
 #![deny(dead_code)]
 
-//~ TRANS_ITEM drop-glue non_generic_drop_glue::StructWithDrop[0]
-//~ TRANS_ITEM drop-glue-contents non_generic_drop_glue::StructWithDrop[0]
+//~ TRANS_ITEM fn core::ptr[0]::drop_in_place[0]<non_generic_drop_glue::StructWithDrop[0]> @@ non_generic_drop_glue0[Internal]
 struct StructWithDrop {
     x: i32
 }
@@ -28,8 +28,7 @@ struct StructNoDrop {
     x: i32
 }
 
-//~ TRANS_ITEM drop-glue non_generic_drop_glue::EnumWithDrop[0]
-//~ TRANS_ITEM drop-glue-contents non_generic_drop_glue::EnumWithDrop[0]
+//~ TRANS_ITEM fn core::ptr[0]::drop_in_place[0]<non_generic_drop_glue::EnumWithDrop[0]> @@ non_generic_drop_glue0[Internal]
 enum EnumWithDrop {
     A(i32)
 }
@@ -54,5 +53,3 @@ fn main() {
         EnumNoDrop::A(x) => x
     };
 }
-
-//~ TRANS_ITEM drop-glue i8

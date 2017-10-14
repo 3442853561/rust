@@ -48,15 +48,15 @@
 //! }
 //! ```
 //!
-//! An iterator has a method, [`next()`], which when called, returns an
-//! [`Option`]`<Item>`. [`next()`] will return `Some(Item)` as long as there
+//! An iterator has a method, [`next`], which when called, returns an
+//! [`Option`]`<Item>`. [`next`] will return `Some(Item)` as long as there
 //! are elements, and once they've all been exhausted, will return `None` to
 //! indicate that iteration is finished. Individual iterators may choose to
-//! resume iteration, and so calling [`next()`] again may or may not eventually
+//! resume iteration, and so calling [`next`] again may or may not eventually
 //! start returning `Some(Item)` again at some point.
 //!
 //! [`Iterator`]'s full definition includes a number of other methods as well,
-//! but they are default methods, built on top of [`next()`], and so you get
+//! but they are default methods, built on top of [`next`], and so you get
 //! them for free.
 //!
 //! Iterators are also composable, and it's common to chain them together to do
@@ -64,7 +64,7 @@
 //! below for more details.
 //!
 //! [`Iterator`]: trait.Iterator.html
-//! [`next()`]: trait.Iterator.html#tymethod.next
+//! [`next`]: trait.Iterator.html#tymethod.next
 //! [`Option`]: ../../std/option/enum.Option.html
 //!
 //! # The three forms of iteration
@@ -168,13 +168,13 @@
 //! produce an iterator. What gives?
 //!
 //! There's a trait in the standard library for converting something into an
-//! iterator: [`IntoIterator`]. This trait has one method, [`into_iter()`],
+//! iterator: [`IntoIterator`]. This trait has one method, [`into_iter`],
 //! which converts the thing implementing [`IntoIterator`] into an iterator.
 //! Let's take a look at that `for` loop again, and what the compiler converts
 //! it into:
 //!
 //! [`IntoIterator`]: trait.IntoIterator.html
-//! [`into_iter()`]: trait.IntoIterator.html#tymethod.into_iter
+//! [`into_iter`]: trait.IntoIterator.html#tymethod.into_iter
 //!
 //! ```
 //! let values = vec![1, 2, 3, 4, 5];
@@ -191,10 +191,13 @@
 //! {
 //!     let result = match IntoIterator::into_iter(values) {
 //!         mut iter => loop {
+//!             let next;
 //!             match iter.next() {
-//!                 Some(x) => { println!("{}", x); },
+//!                 Some(val) => next = val,
 //!                 None => break,
-//!             }
+//!             };
+//!             let x = next;
+//!             let () = { println!("{}", x); };
 //!         },
 //!     };
 //!     result
@@ -202,13 +205,13 @@
 //! ```
 //!
 //! First, we call `into_iter()` on the value. Then, we match on the iterator
-//! that returns, calling [`next()`] over and over until we see a `None`. At
+//! that returns, calling [`next`] over and over until we see a `None`. At
 //! that point, we `break` out of the loop, and we're done iterating.
 //!
 //! There's one more subtle bit here: the standard library contains an
 //! interesting implementation of [`IntoIterator`]:
 //!
-//! ```ignore
+//! ```ignore (only-for-syntax-highlight)
 //! impl<I: Iterator> IntoIterator for I
 //! ```
 //!
@@ -225,19 +228,19 @@
 //! often called 'iterator adapters', as they're a form of the 'adapter
 //! pattern'.
 //!
-//! Common iterator adapters include [`map()`], [`take()`], and [`filter()`].
+//! Common iterator adapters include [`map`], [`take`], and [`filter`].
 //! For more, see their documentation.
 //!
-//! [`map()`]: trait.Iterator.html#method.map
-//! [`take()`]: trait.Iterator.html#method.take
-//! [`filter()`]: trait.Iterator.html#method.filter
+//! [`map`]: trait.Iterator.html#method.map
+//! [`take`]: trait.Iterator.html#method.take
+//! [`filter`]: trait.Iterator.html#method.filter
 //!
 //! # Laziness
 //!
 //! Iterators (and iterator [adapters](#adapters)) are *lazy*. This means that
 //! just creating an iterator doesn't _do_ a whole lot. Nothing really happens
-//! until you call [`next()`]. This is sometimes a source of confusion when
-//! creating an iterator solely for its side effects. For example, the [`map()`]
+//! until you call [`next`]. This is sometimes a source of confusion when
+//! creating an iterator solely for its side effects. For example, the [`map`]
 //! method calls a closure on each element it iterates over:
 //!
 //! ```
@@ -254,7 +257,7 @@
 //! do nothing unless consumed
 //! ```
 //!
-//! The idiomatic way to write a [`map()`] for its side effects is to use a
+//! The idiomatic way to write a [`map`] for its side effects is to use a
 //! `for` loop instead:
 //!
 //! ```
@@ -265,12 +268,12 @@
 //! }
 //! ```
 //!
-//! [`map()`]: trait.Iterator.html#method.map
+//! [`map`]: trait.Iterator.html#method.map
 //!
 //! The two most common ways to evaluate an iterator are to use a `for` loop
-//! like this, or using the [`collect()`] method to produce a new collection.
+//! like this, or using the [`collect`] method to produce a new collection.
 //!
-//! [`collect()`]: trait.Iterator.html#method.collect
+//! [`collect`]: trait.Iterator.html#method.collect
 //!
 //! # Infinity
 //!
@@ -281,7 +284,7 @@
 //! let numbers = 0..;
 //! ```
 //!
-//! It is common to use the [`take()`] iterator adapter to turn an infinite
+//! It is common to use the [`take`] iterator adapter to turn an infinite
 //! iterator into a finite one:
 //!
 //! ```
@@ -295,7 +298,7 @@
 //!
 //! This will print the numbers `0` through `4`, each on their own line.
 //!
-//! [`take()`]: trait.Iterator.html#method.take
+//! [`take`]: trait.Iterator.html#method.take
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -309,11 +312,8 @@ pub use self::iterator::Iterator;
 
 #[unstable(feature = "step_trait",
            reason = "likely to be replaced by finer-grained traits",
-           issue = "27741")]
+           issue = "42168")]
 pub use self::range::Step;
-#[unstable(feature = "step_by", reason = "recent addition",
-           issue = "27741")]
-pub use self::range::StepBy;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::sources::{Repeat, repeat};
@@ -336,12 +336,12 @@ mod range;
 mod sources;
 mod traits;
 
-/// An double-ended iterator with the direction inverted.
+/// A double-ended iterator with the direction inverted.
 ///
-/// This `struct` is created by the [`rev()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`rev`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`rev()`]: trait.Iterator.html#method.rev
+/// [`rev`]: trait.Iterator.html#method.rev
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -358,12 +358,44 @@ impl<I> Iterator for Rev<I> where I: DoubleEndedIterator {
     fn next(&mut self) -> Option<<I as Iterator>::Item> { self.iter.next_back() }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) { self.iter.size_hint() }
+
+    fn fold<Acc, F>(self, init: Acc, f: F) -> Acc
+        where F: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.iter.rfold(init, f)
+    }
+
+    #[inline]
+    fn find<P>(&mut self, predicate: P) -> Option<Self::Item>
+        where P: FnMut(&Self::Item) -> bool
+    {
+        self.iter.rfind(predicate)
+    }
+
+    #[inline]
+    fn rposition<P>(&mut self, predicate: P) -> Option<usize> where
+        P: FnMut(Self::Item) -> bool
+    {
+        self.iter.position(predicate)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<I> DoubleEndedIterator for Rev<I> where I: DoubleEndedIterator {
     #[inline]
     fn next_back(&mut self) -> Option<<I as Iterator>::Item> { self.iter.next() }
+
+    fn rfold<Acc, F>(self, init: Acc, f: F) -> Acc
+        where F: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.iter.fold(init, f)
+    }
+
+    fn rfind<P>(&mut self, predicate: P) -> Option<Self::Item>
+        where P: FnMut(&Self::Item) -> bool
+    {
+        self.iter.find(predicate)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -389,10 +421,10 @@ unsafe impl<I> TrustedLen for Rev<I>
 
 /// An iterator that clones the elements of an underlying iterator.
 ///
-/// This `struct` is created by the [`cloned()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`cloned`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`cloned()`]: trait.Iterator.html#method.cloned
+/// [`cloned`]: trait.Iterator.html#method.cloned
 /// [`Iterator`]: trait.Iterator.html
 #[stable(feature = "iter_cloned", since = "1.1.0")]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -429,6 +461,12 @@ impl<'a, I, T: 'a> DoubleEndedIterator for Cloned<I>
     fn next_back(&mut self) -> Option<T> {
         self.it.next_back().cloned()
     }
+
+    fn rfold<Acc, F>(self, init: Acc, mut f: F) -> Acc
+        where F: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.it.rfold(init, move |acc, elt| f(acc, elt.clone()))
+    }
 }
 
 #[stable(feature = "iter_cloned", since = "1.1.0")]
@@ -450,7 +488,7 @@ impl<'a, I, T: 'a> FusedIterator for Cloned<I>
 {}
 
 #[doc(hidden)]
-unsafe impl<'a, I, T: 'a> TrustedRandomAccess for Cloned<I>
+default unsafe impl<'a, I, T: 'a> TrustedRandomAccess for Cloned<I>
     where I: TrustedRandomAccess<Item=&'a T>, T: Clone
 {
     unsafe fn get_unchecked(&mut self, i: usize) -> Self::Item {
@@ -461,6 +499,18 @@ unsafe impl<'a, I, T: 'a> TrustedRandomAccess for Cloned<I>
     fn may_have_side_effect() -> bool { true }
 }
 
+#[doc(hidden)]
+unsafe impl<'a, I, T: 'a> TrustedRandomAccess for Cloned<I>
+    where I: TrustedRandomAccess<Item=&'a T>, T: Copy
+{
+    unsafe fn get_unchecked(&mut self, i: usize) -> Self::Item {
+        *self.it.get_unchecked(i)
+    }
+
+    #[inline]
+    fn may_have_side_effect() -> bool { false }
+}
+
 #[unstable(feature = "trusted_len", issue = "37572")]
 unsafe impl<'a, I, T: 'a> TrustedLen for Cloned<I>
     where I: TrustedLen<Item=&'a T>,
@@ -469,10 +519,10 @@ unsafe impl<'a, I, T: 'a> TrustedLen for Cloned<I>
 
 /// An iterator that repeats endlessly.
 ///
-/// This `struct` is created by the [`cycle()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`cycle`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`cycle()`]: trait.Iterator.html#method.cycle
+/// [`cycle`]: trait.Iterator.html#method.cycle
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -508,12 +558,66 @@ impl<I> Iterator for Cycle<I> where I: Clone + Iterator {
 #[unstable(feature = "fused", issue = "35602")]
 impl<I> FusedIterator for Cycle<I> where I: Clone + Iterator {}
 
+/// An iterator for stepping iterators by a custom amount.
+///
+/// This `struct` is created by the [`step_by`] method on [`Iterator`]. See
+/// its documentation for more.
+///
+/// [`step_by`]: trait.Iterator.html#method.step_by
+/// [`Iterator`]: trait.Iterator.html
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
+#[unstable(feature = "iterator_step_by",
+           reason = "unstable replacement of Range::step_by",
+           issue = "27741")]
+#[derive(Clone, Debug)]
+pub struct StepBy<I> {
+    iter: I,
+    step: usize,
+    first_take: bool,
+}
+
+#[unstable(feature = "iterator_step_by",
+           reason = "unstable replacement of Range::step_by",
+           issue = "27741")]
+impl<I> Iterator for StepBy<I> where I: Iterator {
+    type Item = I::Item;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.first_take {
+            self.first_take = false;
+            self.iter.next()
+        } else {
+            self.iter.nth(self.step)
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let inner_hint = self.iter.size_hint();
+
+        if self.first_take {
+            let f = |n| if n == 0 { 0 } else { 1 + (n-1)/(self.step+1) };
+            (f(inner_hint.0), inner_hint.1.map(f))
+        } else {
+            let f = |n| n / (self.step+1);
+            (f(inner_hint.0), inner_hint.1.map(f))
+        }
+    }
+}
+
+// StepBy can only make the iterator shorter, so the len will still fit.
+#[unstable(feature = "iterator_step_by",
+           reason = "unstable replacement of Range::step_by",
+           issue = "27741")]
+impl<I> ExactSizeIterator for StepBy<I> where I: ExactSizeIterator {}
+
 /// An iterator that strings two iterators together.
 ///
-/// This `struct` is created by the [`chain()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`chain`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`chain()`]: trait.Iterator.html#method.chain
+/// [`chain`]: trait.Iterator.html#method.chain
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -687,6 +791,26 @@ impl<A, B> DoubleEndedIterator for Chain<A, B> where
             ChainState::Back => self.b.next_back(),
         }
     }
+
+    fn rfold<Acc, F>(self, init: Acc, mut f: F) -> Acc
+        where F: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut accum = init;
+        match self.state {
+            ChainState::Both | ChainState::Back => {
+                accum = self.b.rfold(accum, &mut f);
+            }
+            _ => { }
+        }
+        match self.state {
+            ChainState::Both | ChainState::Front => {
+                accum = self.a.rfold(accum, &mut f);
+            }
+            _ => { }
+        }
+        accum
+    }
+
 }
 
 // Note: *both* must be fused to handle double-ended iterators.
@@ -703,10 +827,10 @@ unsafe impl<A, B> TrustedLen for Chain<A, B>
 
 /// An iterator that iterates two other iterators simultaneously.
 ///
-/// This `struct` is created by the [`zip()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`zip`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`zip()`]: trait.Iterator.html#method.zip
+/// [`zip`]: trait.Iterator.html#method.zip
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -766,8 +890,8 @@ impl<A, B> ZipImpl<A, B> for Zip<A, B>
     type Item = (A::Item, B::Item);
     default fn new(a: A, b: B) -> Self {
         Zip {
-            a: a,
-            b: b,
+            a,
+            b,
             index: 0, // unused
             len: 0, // unused
         }
@@ -829,10 +953,10 @@ impl<A, B> ZipImpl<A, B> for Zip<A, B>
     fn new(a: A, b: B) -> Self {
         let len = cmp::min(a.len(), b.len());
         Zip {
-            a: a,
-            b: b,
+            a,
+            b,
             index: 0,
-            len: len,
+            len,
         }
     }
 
@@ -925,16 +1049,16 @@ unsafe impl<A, B> TrustedLen for Zip<A, B>
 
 /// An iterator that maps the values of `iter` with `f`.
 ///
-/// This `struct` is created by the [`map()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`map`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`map()`]: trait.Iterator.html#method.map
+/// [`map`]: trait.Iterator.html#method.map
 /// [`Iterator`]: trait.Iterator.html
 ///
 /// # Notes about side effects
 ///
-/// The [`map()`] iterator implements [`DoubleEndedIterator`], meaning that
-/// you can also [`map()`] backwards:
+/// The [`map`] iterator implements [`DoubleEndedIterator`], meaning that
+/// you can also [`map`] backwards:
 ///
 /// ```rust
 /// let v: Vec<i32> = vec![1, 2, 3].into_iter().map(|x| x + 1).rev().collect();
@@ -961,7 +1085,7 @@ unsafe impl<A, B> TrustedLen for Zip<A, B>
 /// Now consider this twist where we add a call to `rev`. This version will
 /// print `('c', 1), ('b', 2), ('a', 3)`. Note that the letters are reversed,
 /// but the values of the counter still go in order. This is because `map()` is
-/// still being called lazilly on each item, but we are popping items off the
+/// still being called lazily on each item, but we are popping items off the
 /// back of the vector now, instead of shifting them from the front.
 ///
 /// ```rust
@@ -1020,6 +1144,13 @@ impl<B, I: DoubleEndedIterator, F> DoubleEndedIterator for Map<I, F> where
     fn next_back(&mut self) -> Option<B> {
         self.iter.next_back().map(&mut self.f)
     }
+
+    fn rfold<Acc, G>(self, init: Acc, mut g: G) -> Acc
+        where G: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, elt| g(acc, f(elt)))
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1058,10 +1189,10 @@ unsafe impl<B, I, F> TrustedRandomAccess for Map<I, F>
 
 /// An iterator that filters the elements of `iter` with `predicate`.
 ///
-/// This `struct` is created by the [`filter()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`filter`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`filter()`]: trait.Iterator.html#method.filter
+/// [`filter`]: trait.Iterator.html#method.filter
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1086,7 +1217,7 @@ impl<I: Iterator, P> Iterator for Filter<I, P> where P: FnMut(&I::Item) -> bool 
 
     #[inline]
     fn next(&mut self) -> Option<I::Item> {
-        for x in self.iter.by_ref() {
+        for x in &mut self.iter {
             if (self.predicate)(&x) {
                 return Some(x);
             }
@@ -1098,6 +1229,38 @@ impl<I: Iterator, P> Iterator for Filter<I, P> where P: FnMut(&I::Item) -> bool 
     fn size_hint(&self) -> (usize, Option<usize>) {
         let (_, upper) = self.iter.size_hint();
         (0, upper) // can't know a lower bound, due to the predicate
+    }
+
+    // this special case allows the compiler to make `.filter(_).count()`
+    // branchless. Barring perfect branch prediction (which is unattainable in
+    // the general case), this will be much faster in >90% of cases (containing
+    // virtually all real workloads) and only a tiny bit slower in the rest.
+    //
+    // Having this specialization thus allows us to write `.filter(p).count()`
+    // where we would otherwise write `.map(|x| p(x) as usize).sum()`, which is
+    // less readable and also less backwards-compatible to Rust before 1.10.
+    //
+    // Using the branchless version will also simplify the LLVM byte code, thus
+    // leaving more budget for LLVM optimizations.
+    #[inline]
+    fn count(mut self) -> usize {
+        let mut count = 0;
+        for x in &mut self.iter {
+            count += (self.predicate)(&x) as usize;
+        }
+        count
+    }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut predicate = self.predicate;
+        self.iter.fold(init, move |acc, item| if predicate(&item) {
+            fold(acc, item)
+        } else {
+            acc
+        })
     }
 }
 
@@ -1114,6 +1277,18 @@ impl<I: DoubleEndedIterator, P> DoubleEndedIterator for Filter<I, P>
         }
         None
     }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut predicate = self.predicate;
+        self.iter.rfold(init, move |acc, item| if predicate(&item) {
+            fold(acc, item)
+        } else {
+            acc
+        })
+    }
 }
 
 #[unstable(feature = "fused", issue = "35602")]
@@ -1122,10 +1297,10 @@ impl<I: FusedIterator, P> FusedIterator for Filter<I, P>
 
 /// An iterator that uses `f` to both filter and map elements from `iter`.
 ///
-/// This `struct` is created by the [`filter_map()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`filter_map`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`filter_map()`]: trait.Iterator.html#method.filter_map
+/// [`filter_map`]: trait.Iterator.html#method.filter_map
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1165,6 +1340,17 @@ impl<B, I: Iterator, F> Iterator for FilterMap<I, F>
         let (_, upper) = self.iter.size_hint();
         (0, upper) // can't know a lower bound, due to the predicate
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut f = self.f;
+        self.iter.fold(init, move |acc, item| match f(item) {
+            Some(x) => fold(acc, x),
+            None => acc,
+        })
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1180,6 +1366,17 @@ impl<B, I: DoubleEndedIterator, F> DoubleEndedIterator for FilterMap<I, F>
         }
         None
     }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, item| match f(item) {
+            Some(x) => fold(acc, x),
+            None => acc,
+        })
+    }
 }
 
 #[unstable(feature = "fused", issue = "35602")]
@@ -1188,10 +1385,10 @@ impl<B, I: FusedIterator, F> FusedIterator for FilterMap<I, F>
 
 /// An iterator that yields the current count and the element during iteration.
 ///
-/// This `struct` is created by the [`enumerate()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`enumerate`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`enumerate()`]: trait.Iterator.html#method.enumerate
+/// [`enumerate`]: trait.Iterator.html#method.enumerate
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -1244,6 +1441,19 @@ impl<I> Iterator for Enumerate<I> where I: Iterator {
     fn count(self) -> usize {
         self.iter.count()
     }
+
+    #[inline]
+    #[rustc_inherit_overflow_checks]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut count = self.count;
+        self.iter.fold(init, move |acc, item| {
+            let acc = fold(acc, (count, item));
+            count += 1;
+            acc
+        })
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1257,6 +1467,19 @@ impl<I> DoubleEndedIterator for Enumerate<I> where
             // Can safely add, `ExactSizeIterator` promises that the number of
             // elements fits into a `usize`.
             (self.count + len, a)
+        })
+    }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        // Can safely add and subtract the count, as `ExactSizeIterator` promises
+        // that the number of elements fits into a `usize`.
+        let mut count = self.count + self.iter.len();
+        self.iter.rfold(init, move |acc, item| {
+            count -= 1;
+            fold(acc, (count, item))
         })
     }
 }
@@ -1297,10 +1520,10 @@ unsafe impl<I> TrustedLen for Enumerate<I>
 /// An iterator with a `peek()` that returns an optional reference to the next
 /// element.
 ///
-/// This `struct` is created by the [`peekable()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`peekable`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`peekable()`]: trait.Iterator.html#method.peekable
+/// [`peekable`]: trait.Iterator.html#method.peekable
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -1370,6 +1593,18 @@ impl<I: Iterator> Iterator for Peekable<I> {
         let hi = hi.and_then(|x| x.checked_add(peek_len));
         (lo, hi)
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let acc = match self.peeked {
+            Some(None) => return init,
+            Some(Some(v)) => fold(init, v),
+            None => init,
+        };
+        self.iter.fold(acc, fold)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1381,10 +1616,10 @@ impl<I: FusedIterator> FusedIterator for Peekable<I> {}
 impl<I: Iterator> Peekable<I> {
     /// Returns a reference to the next() value without advancing the iterator.
     ///
-    /// Like [`next()`], if there is a value, it is wrapped in a `Some(T)`.
+    /// Like [`next`], if there is a value, it is wrapped in a `Some(T)`.
     /// But if the iteration is over, `None` is returned.
     ///
-    /// [`next()`]: trait.Iterator.html#tymethod.next
+    /// [`next`]: trait.Iterator.html#tymethod.next
     ///
     /// Because `peek()` returns a reference, and many iterators iterate over
     /// references, there can be a possibly confusing situation where the
@@ -1432,10 +1667,10 @@ impl<I: Iterator> Peekable<I> {
 
 /// An iterator that rejects elements while `predicate` is true.
 ///
-/// This `struct` is created by the [`skip_while()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`skip_while`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`skip_while()`]: trait.Iterator.html#method.skip_while
+/// [`skip_while`]: trait.Iterator.html#method.skip_while
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1478,6 +1713,19 @@ impl<I: Iterator, P> Iterator for SkipWhile<I, P>
         let (_, upper) = self.iter.size_hint();
         (0, upper) // can't know a lower bound, due to the predicate
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(mut self, mut init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        if !self.flag {
+            match self.next() {
+                Some(v) => init = fold(init, v),
+                None => return init,
+            }
+        }
+        self.iter.fold(init, fold)
+    }
 }
 
 #[unstable(feature = "fused", issue = "35602")]
@@ -1486,10 +1734,10 @@ impl<I, P> FusedIterator for SkipWhile<I, P>
 
 /// An iterator that only accepts elements while `predicate` is true.
 ///
-/// This `struct` is created by the [`take_while()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`take_while`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`take_while()`]: trait.Iterator.html#method.take_while
+/// [`take_while`]: trait.Iterator.html#method.take_while
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1545,10 +1793,10 @@ impl<I, P> FusedIterator for TakeWhile<I, P>
 
 /// An iterator that skips over `n` elements of `iter`.
 ///
-/// This `struct` is created by the [`skip()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`skip`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`skip()`]: trait.Iterator.html#method.skip
+/// [`skip`]: trait.Iterator.html#method.skip
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -1618,12 +1866,25 @@ impl<I> Iterator for Skip<I> where I: Iterator {
 
         (lower, upper)
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(mut self, init: Acc, fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        if self.n > 0 {
+            // nth(n) skips n+1
+            if self.iter.nth(self.n - 1).is_none() {
+                return init;
+            }
+        }
+        self.iter.fold(init, fold)
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<I> ExactSizeIterator for Skip<I> where I: ExactSizeIterator {}
 
-#[stable(feature = "double_ended_skip_iterator", since = "1.8.0")]
+#[stable(feature = "double_ended_skip_iterator", since = "1.9.0")]
 impl<I> DoubleEndedIterator for Skip<I> where I: DoubleEndedIterator + ExactSizeIterator {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.len() > 0 {
@@ -1639,10 +1900,10 @@ impl<I> FusedIterator for Skip<I> where I: FusedIterator {}
 
 /// An iterator that only iterates over the first `n` iterations of `iter`.
 ///
-/// This `struct` is created by the [`take()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`take`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`take()`]: trait.Iterator.html#method.take
+/// [`take`]: trait.Iterator.html#method.take
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -1703,10 +1964,10 @@ impl<I> FusedIterator for Take<I> where I: FusedIterator {}
 
 /// An iterator to maintain state while iterating another iterator.
 ///
-/// This `struct` is created by the [`scan()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`scan`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`scan()`]: trait.Iterator.html#method.scan
+/// [`scan`]: trait.Iterator.html#method.scan
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1746,17 +2007,13 @@ impl<B, I, St, F> Iterator for Scan<I, St, F> where
     }
 }
 
-#[unstable(feature = "fused", issue = "35602")]
-impl<B, I, St, F> FusedIterator for Scan<I, St, F>
-    where I: FusedIterator, F: FnMut(&mut St, I::Item) -> Option<B> {}
-
 /// An iterator that maps each element to an iterator, and yields the elements
 /// of the produced iterators.
 ///
-/// This `struct` is created by the [`flat_map()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`flat_map`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`flat_map()`]: trait.Iterator.html#method.flat_map
+/// [`flat_map`]: trait.Iterator.html#method.flat_map
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1812,6 +2069,16 @@ impl<I: Iterator, U: IntoIterator, F> Iterator for FlatMap<I, U, F>
             _ => (lo, None)
         }
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.frontiter.into_iter()
+            .chain(self.iter.map(self.f).map(U::into_iter))
+            .chain(self.backiter)
+            .fold(init, |acc, iter| iter.fold(acc, &mut fold))
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1834,6 +2101,16 @@ impl<I: DoubleEndedIterator, U, F> DoubleEndedIterator for FlatMap<I, U, F> wher
             }
         }
     }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.frontiter.into_iter()
+            .chain(self.iter.map(self.f).map(U::into_iter))
+            .chain(self.backiter)
+            .rfold(init, |acc, iter| iter.rfold(acc, &mut fold))
+    }
 }
 
 #[unstable(feature = "fused", issue = "35602")]
@@ -1843,10 +2120,10 @@ impl<I, U, F> FusedIterator for FlatMap<I, U, F>
 /// An iterator that yields `None` forever after the underlying iterator
 /// yields `None` once.
 ///
-/// This `struct` is created by the [`fuse()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`fuse`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`fuse()`]: trait.Iterator.html#method.fuse
+/// [`fuse`]: trait.Iterator.html#method.fuse
 /// [`Iterator`]: trait.Iterator.html
 #[derive(Clone, Debug)]
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
@@ -1911,6 +2188,17 @@ impl<I> Iterator for Fuse<I> where I: Iterator {
             self.iter.size_hint()
         }
     }
+
+    #[inline]
+    default fn fold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        if self.done {
+            init
+        } else {
+            self.iter.fold(init, fold)
+        }
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1923,6 +2211,17 @@ impl<I> DoubleEndedIterator for Fuse<I> where I: DoubleEndedIterator {
             let next = self.iter.next_back();
             self.done = next.is_none();
             next
+        }
+    }
+
+    #[inline]
+    default fn rfold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        if self.done {
+            init
+        } else {
+            self.iter.rfold(init, fold)
         }
     }
 }
@@ -1965,6 +2264,13 @@ impl<I> Iterator for Fuse<I> where I: FusedIterator {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.iter.fold(init, fold)
+    }
 }
 
 #[unstable(feature = "fused", reason = "recently added", issue = "35602")]
@@ -1974,6 +2280,13 @@ impl<I> DoubleEndedIterator for Fuse<I>
     #[inline]
     fn next_back(&mut self) -> Option<<I as Iterator>::Item> {
         self.iter.next_back()
+    }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        self.iter.rfold(init, fold)
     }
 }
 
@@ -1992,10 +2305,10 @@ impl<I> ExactSizeIterator for Fuse<I> where I: ExactSizeIterator {
 /// An iterator that calls a function with a reference to each element before
 /// yielding it.
 ///
-/// This `struct` is created by the [`inspect()`] method on [`Iterator`]. See its
+/// This `struct` is created by the [`inspect`] method on [`Iterator`]. See its
 /// documentation for more.
 ///
-/// [`inspect()`]: trait.Iterator.html#method.inspect
+/// [`inspect`]: trait.Iterator.html#method.inspect
 /// [`Iterator`]: trait.Iterator.html
 #[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -2039,6 +2352,14 @@ impl<I: Iterator, F> Iterator for Inspect<I, F> where F: FnMut(&I::Item) {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    #[inline]
+    fn fold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut f = self.f;
+        self.iter.fold(init, move |acc, item| { f(&item); fold(acc, item) })
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -2049,6 +2370,14 @@ impl<I: DoubleEndedIterator, F> DoubleEndedIterator for Inspect<I, F>
     fn next_back(&mut self) -> Option<I::Item> {
         let next = self.iter.next_back();
         self.do_inspect(next)
+    }
+
+    #[inline]
+    fn rfold<Acc, Fold>(self, init: Acc, mut fold: Fold) -> Acc
+        where Fold: FnMut(Acc, Self::Item) -> Acc,
+    {
+        let mut f = self.f;
+        self.iter.rfold(init, move |acc, item| { f(&item); fold(acc, item) })
     }
 }
 

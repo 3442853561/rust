@@ -40,12 +40,6 @@
 //! [win]: http://msdn.microsoft.com/en-us/library/windows/desktop/ms682010%28v=vs.85%29.aspx
 //! [ti]: https://en.wikipedia.org/wiki/Terminfo
 
-#![crate_name = "term"]
-#![unstable(feature = "rustc_private",
-            reason = "use the crates.io `term` library instead",
-            issue = "27812")]
-#![crate_type = "rlib"]
-#![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -54,8 +48,6 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 
-#![feature(box_syntax)]
-#![feature(staged_api)]
 #![cfg_attr(windows, feature(libc))]
 // Handle rustfmt skips
 #![feature(custom_attribute)]

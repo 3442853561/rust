@@ -38,6 +38,8 @@ use tables::{conversions, derived_property, general_category, property};
 pub use core::char::{MAX, from_digit, from_u32, from_u32_unchecked};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::char::{EscapeDebug, EscapeDefault, EscapeUnicode};
+#[stable(feature = "char_from_str", since = "1.20.0")]
+pub use core::char::ParseCharError;
 
 // unstable reexports
 #[unstable(feature = "try_from", issue = "33417")]
@@ -45,14 +47,14 @@ pub use core::char::CharTryFromError;
 #[unstable(feature = "decode_utf8", issue = "33906")]
 pub use core::char::{DecodeUtf8, decode_utf8};
 #[unstable(feature = "unicode", issue = "27783")]
-pub use tables::UNICODE_VERSION;
+pub use tables::{UnicodeVersion, UNICODE_VERSION};
 
 /// Returns an iterator that yields the lowercase equivalent of a `char`.
 ///
-/// This `struct` is created by the [`to_lowercase()`] method on [`char`]. See
+/// This `struct` is created by the [`to_lowercase`] method on [`char`]. See
 /// its documentation for more.
 ///
-/// [`to_lowercase()`]: ../../std/primitive.char.html#method.to_lowercase
+/// [`to_lowercase`]: ../../std/primitive.char.html#method.to_lowercase
 /// [`char`]: ../../std/primitive.char.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct ToLowercase(CaseMappingIter);
@@ -70,10 +72,10 @@ impl FusedIterator for ToLowercase {}
 
 /// Returns an iterator that yields the uppercase equivalent of a `char`.
 ///
-/// This `struct` is created by the [`to_uppercase()`] method on [`char`]. See
+/// This `struct` is created by the [`to_uppercase`] method on [`char`]. See
 /// its documentation for more.
 ///
-/// [`to_uppercase()`]: ../../std/primitive.char.html#method.to_uppercase
+/// [`to_uppercase`]: ../../std/primitive.char.html#method.to_uppercase
 /// [`char`]: ../../std/primitive.char.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct ToUppercase(CaseMappingIter);
@@ -131,7 +133,6 @@ impl Iterator for CaseMappingIter {
     }
 }
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
 impl fmt::Display for CaseMappingIter {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
@@ -152,14 +153,14 @@ impl fmt::Display for CaseMappingIter {
     }
 }
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
+#[stable(feature = "char_struct_display", since = "1.16.0")]
 impl fmt::Display for ToLowercase {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
     }
 }
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
+#[stable(feature = "char_struct_display", since = "1.16.0")]
 impl fmt::Display for ToUppercase {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
@@ -184,7 +185,7 @@ impl char {
     /// * `a-z`
     /// * `A-Z`
     ///
-    /// For a more comprehensive understanding of 'digit', see [`is_numeric()`][is_numeric].
+    /// For a more comprehensive understanding of 'digit', see [`is_numeric`][is_numeric].
     ///
     /// [is_numeric]: #method.is_numeric
     ///
@@ -325,7 +326,6 @@ impl char {
     /// As an iterator:
     ///
     /// ```
-    /// # #![feature(char_escape_debug)]
     /// for c in '\n'.escape_debug() {
     ///     print!("{}", c);
     /// }
@@ -335,7 +335,6 @@ impl char {
     /// Using `println!` directly:
     ///
     /// ```
-    /// # #![feature(char_escape_debug)]
     /// println!("{}", '\n'.escape_debug());
     /// ```
     ///
@@ -348,10 +347,9 @@ impl char {
     /// Using `to_string`:
     ///
     /// ```
-    /// # #![feature(char_escape_debug)]
     /// assert_eq!('\n'.escape_debug().to_string(), "\\n");
     /// ```
-    #[unstable(feature = "char_escape_debug", issue = "35068")]
+    #[stable(feature = "char_escape_debug", since = "1.20.0")]
     #[inline]
     pub fn escape_debug(self) -> EscapeDebug {
         C::escape_debug(self)
@@ -466,10 +464,10 @@ impl char {
     /// Returns the number of 16-bit code units this `char` would need if
     /// encoded in UTF-16.
     ///
-    /// See the documentation for [`len_utf8()`] for more explanation of this
+    /// See the documentation for [`len_utf8`] for more explanation of this
     /// concept. This function is a mirror, but for UTF-16 instead of UTF-8.
     ///
-    /// [`len_utf8()`]: #method.len_utf8
+    /// [`len_utf8`]: #method.len_utf8
     ///
     /// # Examples
     ///
@@ -600,9 +598,9 @@ impl char {
     /// 'XID_Start' is a Unicode Derived Property specified in
     /// [UAX #31](http://unicode.org/reports/tr31/#NFKC_Modifications),
     /// mostly similar to `ID_Start` but modified for closure under `NFKx`.
-    #[unstable(feature = "unicode",
+    #[unstable(feature = "rustc_private",
                reason = "mainly needed for compiler internals",
-               issue = "0")]
+               issue = "27812")]
     #[inline]
     pub fn is_xid_start(self) -> bool {
         derived_property::XID_Start(self)
@@ -614,9 +612,9 @@ impl char {
     /// 'XID_Continue' is a Unicode Derived Property specified in
     /// [UAX #31](http://unicode.org/reports/tr31/#NFKC_Modifications),
     /// mostly similar to 'ID_Continue' but modified for closure under NFKx.
-    #[unstable(feature = "unicode",
+    #[unstable(feature = "rustc_private",
                reason = "mainly needed for compiler internals",
-               issue = "0")]
+               issue = "27812")]
     #[inline]
     pub fn is_xid_continue(self) -> bool {
         derived_property::XID_Continue(self)
@@ -830,7 +828,8 @@ impl char {
     /// // Sometimes the result is more than one character:
     /// assert_eq!('İ'.to_lowercase().to_string(), "i\u{307}");
     ///
-    /// // Japanese scripts do not have case, and so:
+    /// // Characters that do not have both uppercase and lowercase
+    /// // convert into themselves.
     /// assert_eq!('山'.to_lowercase().to_string(), "山");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -842,11 +841,11 @@ impl char {
     /// Returns an iterator that yields the uppercase equivalent of a `char`
     /// as one or more `char`s.
     ///
-    /// If a character does not have a uppercase equivalent, the same character
+    /// If a character does not have an uppercase equivalent, the same character
     /// will be returned back by the iterator.
     ///
     /// This performs complex unconditional mappings with no tailoring: it maps
-    /// one Unicode character to its lowercase equivalent according to the
+    /// one Unicode character to its uppercase equivalent according to the
     /// [Unicode database] and the additional complex mappings
     /// [`SpecialCasing.txt`]. Conditional mappings (based on context or
     /// language) are not considered here.
@@ -890,7 +889,8 @@ impl char {
     /// // Sometimes the result is more than one character:
     /// assert_eq!('ß'.to_uppercase().to_string(), "SS");
     ///
-    /// // Japanese does not have case, and so:
+    /// // Characters that do not have both uppercase and lowercase
+    /// // convert into themselves.
     /// assert_eq!('山'.to_uppercase().to_string(), "山");
     /// ```
     ///

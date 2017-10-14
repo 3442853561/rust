@@ -29,22 +29,19 @@
 //! (non-mutating) use of `SRC`. These restrictions are conservative and may be relaxed in the
 //! future.
 
-use def_use::DefUseAnalysis;
 use rustc::mir::{Constant, Local, LocalKind, Location, Lvalue, Mir, Operand, Rvalue, StatementKind};
-use rustc::mir::transform::{MirPass, MirSource, Pass};
+use rustc::mir::transform::{MirPass, MirSource};
 use rustc::mir::visit::MutVisitor;
 use rustc::ty::TyCtxt;
-use transform::qualify_consts;
+use util::def_use::DefUseAnalysis;
 
 pub struct CopyPropagation;
 
-impl Pass for CopyPropagation {}
-
-impl<'tcx> MirPass<'tcx> for CopyPropagation {
-    fn run_pass<'a>(&mut self,
-                    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                    source: MirSource,
-                    mir: &mut Mir<'tcx>) {
+impl MirPass for CopyPropagation {
+    fn run_pass<'a, 'tcx>(&self,
+                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                          source: MirSource,
+                          mir: &mut Mir<'tcx>) {
         match source {
             MirSource::Const(_) => {
                 // Don't run on constants, because constant qualification might reject the
@@ -57,12 +54,13 @@ impl<'tcx> MirPass<'tcx> for CopyPropagation {
                 return
             }
             MirSource::Fn(function_node_id) => {
-                if qualify_consts::is_const_fn(tcx, tcx.map.local_def_id(function_node_id)) {
+                if tcx.is_const_fn(tcx.hir.local_def_id(function_node_id)) {
                     // Don't run on const functions, as, again, trans might not be able to evaluate
                     // the optimized IR.
                     return
                 }
             }
+            MirSource::GeneratorDrop(_) => (),
         }
 
         // We only run when the MIR optimization level is > 1.
@@ -238,8 +236,7 @@ impl<'tcx> Action<'tcx> {
                 }
 
                 // Replace all uses of the destination local with the source local.
-                let src_lvalue = Lvalue::Local(src_local);
-                def_use_analysis.replace_all_defs_and_uses_with(dest_local, mir, src_lvalue);
+                def_use_analysis.replace_all_defs_and_uses_with(dest_local, mir, src_local);
 
                 // Finally, zap the now-useless assignment instruction.
                 debug!("  Deleting assignment");
@@ -302,8 +299,8 @@ impl<'tcx> ConstantPropagationVisitor<'tcx> {
     fn new(dest_local: Local, constant: Constant<'tcx>)
            -> ConstantPropagationVisitor<'tcx> {
         ConstantPropagationVisitor {
-            dest_local: dest_local,
-            constant: constant,
+            dest_local,
+            constant,
             uses_replaced: 0,
         }
     }
@@ -318,7 +315,7 @@ impl<'tcx> MutVisitor<'tcx> for ConstantPropagationVisitor<'tcx> {
             _ => return,
         }
 
-        *operand = Operand::Constant(self.constant.clone());
+        *operand = Operand::Constant(box self.constant.clone());
         self.uses_replaced += 1
     }
 }

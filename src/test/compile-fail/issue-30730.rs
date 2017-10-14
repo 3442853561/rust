@@ -8,6 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![warn(unused)]
 #![deny(warnings)] //~ NOTE: lint level defined here
-use std::thread; //~ ERROR: unused import
+use std::thread;
+//~^ ERROR: unused import
+//~| NOTE: #[deny(unused_imports)] implied by #[deny(warnings)]
 fn main() {}

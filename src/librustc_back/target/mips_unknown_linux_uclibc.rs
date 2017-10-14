@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use LinkerFlavor;
 use target::{Target, TargetOptions, TargetResult};
 
 pub fn target() -> TargetResult {
@@ -15,18 +16,20 @@ pub fn target() -> TargetResult {
         llvm_target: "mips-unknown-linux-uclibc".to_string(),
         target_endian: "big".to_string(),
         target_pointer_width: "32".to_string(),
+        target_c_int_width: "32".to_string(),
         data_layout: "E-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64".to_string(),
         arch: "mips".to_string(),
         target_os: "linux".to_string(),
         target_env: "uclibc".to_string(),
         target_vendor: "unknown".to_string(),
+        linker_flavor: LinkerFlavor::Gcc,
         options: TargetOptions {
             cpu: "mips32r2".to_string(),
             features: "+mips32r2,+soft-float".to_string(),
             max_atomic_width: Some(32),
 
             // see #36994
-            exe_allocation_crate: "alloc_system".to_string(),
+            exe_allocation_crate: None,
 
             ..super::linux_base::opts()
         },

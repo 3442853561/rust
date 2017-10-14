@@ -17,8 +17,7 @@ use llvm::{ValueRef, ContextRef, TypeKind};
 use llvm::{True, False, Bool, OperandBundleDef};
 use rustc::hir::def_id::DefId;
 use rustc::hir::map::DefPathData;
-use rustc::util::common::MemoizationMap;
-use middle::lang_items::LangItem;
+use rustc::middle::lang_items::LangItem;
 use base;
 use builder::Builder;
 use consts;
@@ -27,20 +26,19 @@ use machine;
 use monomorphize;
 use type_::Type;
 use value::Value;
+use rustc::traits;
 use rustc::ty::{self, Ty, TyCtxt};
-use rustc::ty::layout::Layout;
-use rustc::traits::{self, SelectionContext, Reveal};
+use rustc::ty::layout::{Layout, LayoutTyper};
+use rustc::ty::subst::{Kind, Subst, Substs};
 use rustc::hir;
 
 use libc::{c_uint, c_char};
-use std::borrow::Cow;
 use std::iter;
 
-use syntax::ast;
+use syntax::abi::Abi;
+use syntax::attr;
 use syntax::symbol::InternedString;
-use syntax_pos::Span;
-
-use rustc_i128::u128;
+use syntax_pos::{Span, DUMMY_SP};
 
 pub use context::{CrateContext, SharedCrateContext};
 
@@ -67,7 +65,7 @@ pub fn type_is_immediate<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -
         Layout::UntaggedUnion { .. } |
         Layout::RawNullablePointer { .. } |
         Layout::StructWrappedNullablePointer { .. } => {
-            !layout.is_unsized() && layout.size(&ccx.tcx().data_layout).bytes() == 0
+            !layout.is_unsized() && layout.size(ccx).bytes() == 0
         }
     }
 }
@@ -95,7 +93,17 @@ pub fn type_pair_fields<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>)
                 }
             }))
         }
-        ty::TyTuple(tys) => {
+        ty::TyGenerator(def_id, substs, _) => {
+            let mut tys = substs.field_tys(def_id, ccx.tcx());
+            tys.next().and_then(|first_ty| tys.next().and_then(|second_ty| {
+                if tys.next().is_some() {
+                    None
+                } else {
+                    Some([first_ty, second_ty])
+                }
+            }))
+        }
+        ty::TyTuple(tys, _) => {
             if tys.len() != 2 {
                 return None;
             }
@@ -129,10 +137,20 @@ pub fn type_is_imm_pair<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>)
 
 /// Identify types which have size zero at runtime.
 pub fn type_is_zero_size<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
-    use machine::llsize_of_alloc;
-    use type_of::sizing_type_of;
-    let llty = sizing_type_of(ccx, ty);
-    llsize_of_alloc(ccx, llty) == 0
+    let layout = ccx.layout_of(ty);
+    !layout.is_unsized() && layout.size(ccx).bytes() == 0
+}
+
+pub fn type_needs_drop<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
+    ty.needs_drop(tcx, ty::ParamEnv::empty(traits::Reveal::All))
+}
+
+pub fn type_is_sized<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
+    ty.is_sized(tcx, ty::ParamEnv::empty(traits::Reveal::All), DUMMY_SP)
+}
+
+pub fn type_is_freeze<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
+    ty.is_freeze(tcx, ty::ParamEnv::empty(traits::Reveal::All), DUMMY_SP)
 }
 
 /*
@@ -183,7 +201,7 @@ pub struct Funclet {
 impl Funclet {
     pub fn new(cleanuppad: ValueRef) -> Funclet {
         Funclet {
-            cleanuppad: cleanuppad,
+            cleanuppad,
             operand: OperandBundleDef::new("funclet", &[cleanuppad]),
         }
     }
@@ -194,15 +212,6 @@ impl Funclet {
 
     pub fn bundle(&self) -> &OperandBundleDef {
         &self.operand
-    }
-}
-
-impl Clone for Funclet {
-    fn clone(&self) -> Funclet {
-        Funclet {
-            cleanuppad: self.cleanuppad,
-            operand: OperandBundleDef::new("funclet", &[self.cleanuppad]),
-        }
     }
 }
 
@@ -225,26 +234,22 @@ pub fn C_undef(t: Type) -> ValueRef {
     }
 }
 
-pub fn C_integral(t: Type, u: u64, sign_extend: bool) -> ValueRef {
+pub fn C_int(t: Type, i: i64) -> ValueRef {
     unsafe {
-        llvm::LLVMConstInt(t.to_ref(), u, sign_extend as Bool)
+        llvm::LLVMConstInt(t.to_ref(), i as u64, True)
     }
 }
 
-pub fn C_big_integral(t: Type, u: u128, sign_extend: bool) -> ValueRef {
-    if ::std::mem::size_of::<u128>() == 16 {
-        unsafe {
-            llvm::LLVMConstIntOfArbitraryPrecision(t.to_ref(), 2, &u as *const u128 as *const u64)
-        }
-    } else {
-        // SNAP: remove after snapshot
-        C_integral(t, u as u64, sign_extend)
+pub fn C_uint(t: Type, i: u64) -> ValueRef {
+    unsafe {
+        llvm::LLVMConstInt(t.to_ref(), i, False)
     }
 }
 
-pub fn C_floating_f64(f: f64, t: Type) -> ValueRef {
+pub fn C_big_integral(t: Type, u: u128) -> ValueRef {
     unsafe {
-        llvm::LLVMConstReal(t.to_ref(), f)
+        let words = [u as u64, u.wrapping_shr(64) as u64];
+        llvm::LLVMConstIntOfArbitraryPrecision(t.to_ref(), 2, words.as_ptr())
     }
 }
 
@@ -253,49 +258,34 @@ pub fn C_nil(ccx: &CrateContext) -> ValueRef {
 }
 
 pub fn C_bool(ccx: &CrateContext, val: bool) -> ValueRef {
-    C_integral(Type::i1(ccx), val as u64, false)
+    C_uint(Type::i1(ccx), val as u64)
 }
 
 pub fn C_i32(ccx: &CrateContext, i: i32) -> ValueRef {
-    C_integral(Type::i32(ccx), i as u64, true)
+    C_int(Type::i32(ccx), i as i64)
 }
 
 pub fn C_u32(ccx: &CrateContext, i: u32) -> ValueRef {
-    C_integral(Type::i32(ccx), i as u64, false)
+    C_uint(Type::i32(ccx), i as u64)
 }
 
 pub fn C_u64(ccx: &CrateContext, i: u64) -> ValueRef {
-    C_integral(Type::i64(ccx), i, false)
+    C_uint(Type::i64(ccx), i)
 }
 
-pub fn C_uint<I: AsU64>(ccx: &CrateContext, i: I) -> ValueRef {
-    let v = i.as_u64();
-
-    let bit_size = machine::llbitsize_of_real(ccx, ccx.int_type());
+pub fn C_usize(ccx: &CrateContext, i: u64) -> ValueRef {
+    let bit_size = machine::llbitsize_of_real(ccx, ccx.isize_ty());
 
     if bit_size < 64 {
         // make sure it doesn't overflow
-        assert!(v < (1<<bit_size));
+        assert!(i < (1<<bit_size));
     }
 
-    C_integral(ccx.int_type(), v, false)
+    C_uint(ccx.isize_ty(), i)
 }
 
-pub trait AsI64 { fn as_i64(self) -> i64; }
-pub trait AsU64 { fn as_u64(self) -> u64; }
-
-// FIXME: remove the intptr conversions, because they
-// are host-architecture-dependent
-impl AsI64 for i64 { fn as_i64(self) -> i64 { self as i64 }}
-impl AsI64 for i32 { fn as_i64(self) -> i64 { self as i64 }}
-impl AsI64 for isize { fn as_i64(self) -> i64 { self as i64 }}
-
-impl AsU64 for u64  { fn as_u64(self) -> u64 { self as u64 }}
-impl AsU64 for u32  { fn as_u64(self) -> u64 { self as u64 }}
-impl AsU64 for usize { fn as_u64(self) -> u64 { self as u64 }}
-
 pub fn C_u8(ccx: &CrateContext, i: u8) -> ValueRef {
-    C_integral(Type::i8(ccx), i as u64, false)
+    C_uint(Type::i8(ccx), i as u64)
 }
 
 
@@ -329,7 +319,7 @@ pub fn C_cstr(cx: &CrateContext, s: InternedString, null_terminated: bool) -> Va
 pub fn C_str_slice(cx: &CrateContext, s: InternedString) -> ValueRef {
     let len = s.len();
     let cs = consts::ptrcast(C_cstr(cx, s, false), Type::i8p(cx));
-    C_named_struct(cx.str_slice_type(), &[cs, C_uint(cx, len)])
+    C_named_struct(cx.str_slice_type(), &[cs, C_usize(cx, len as u64)])
 }
 
 pub fn C_struct(cx: &CrateContext, elts: &[ValueRef], packed: bool) -> ValueRef {
@@ -391,20 +381,13 @@ pub fn const_to_uint(v: ValueRef) -> u64 {
     }
 }
 
-fn is_const_integral(v: ValueRef) -> bool {
+pub fn is_const_integral(v: ValueRef) -> bool {
     unsafe {
         !llvm::LLVMIsAConstantInt(v).is_null()
     }
 }
 
 #[inline]
-#[cfg(stage0)]
-fn hi_lo_to_u128(lo: u64, _: u64) -> u128 {
-    lo as u128
-}
-
-#[inline]
-#[cfg(not(stage0))]
 fn hi_lo_to_u128(lo: u64, hi: u64) -> u128 {
     ((hi as u128) << 64) | (lo as u128)
 }
@@ -439,79 +422,12 @@ pub fn is_null(val: ValueRef) -> bool {
     }
 }
 
-/// Attempts to resolve an obligation. The result is a shallow vtable resolution -- meaning that we
-/// do not (necessarily) resolve all nested obligations on the impl. Note that type check should
-/// guarantee to us that all nested obligations *could be* resolved if we wanted to.
-pub fn fulfill_obligation<'a, 'tcx>(scx: &SharedCrateContext<'a, 'tcx>,
-                                    span: Span,
-                                    trait_ref: ty::PolyTraitRef<'tcx>)
-                                    -> traits::Vtable<'tcx, ()>
-{
-    let tcx = scx.tcx();
-
-    // Remove any references to regions; this helps improve caching.
-    let trait_ref = tcx.erase_regions(&trait_ref);
-
-    scx.trait_cache().memoize(trait_ref, || {
-        debug!("trans::fulfill_obligation(trait_ref={:?}, def_id={:?})",
-               trait_ref, trait_ref.def_id());
-
-        // Do the initial selection for the obligation. This yields the
-        // shallow result we are looking for -- that is, what specific impl.
-        tcx.infer_ctxt((), Reveal::All).enter(|infcx| {
-            let mut selcx = SelectionContext::new(&infcx);
-
-            let obligation_cause = traits::ObligationCause::misc(span,
-                                                             ast::DUMMY_NODE_ID);
-            let obligation = traits::Obligation::new(obligation_cause,
-                                                     trait_ref.to_poly_trait_predicate());
-
-            let selection = match selcx.select(&obligation) {
-                Ok(Some(selection)) => selection,
-                Ok(None) => {
-                    // Ambiguity can happen when monomorphizing during trans
-                    // expands to some humongo type that never occurred
-                    // statically -- this humongo type can then overflow,
-                    // leading to an ambiguous result. So report this as an
-                    // overflow bug, since I believe this is the only case
-                    // where ambiguity can result.
-                    debug!("Encountered ambiguity selecting `{:?}` during trans, \
-                            presuming due to overflow",
-                           trait_ref);
-                    tcx.sess.span_fatal(span,
-                        "reached the recursion limit during monomorphization \
-                         (selection ambiguity)");
-                }
-                Err(e) => {
-                    span_bug!(span, "Encountered error `{:?}` selecting `{:?}` during trans",
-                              e, trait_ref)
-                }
-            };
-
-            debug!("fulfill_obligation: selection={:?}", selection);
-
-            // Currently, we use a fulfillment context to completely resolve
-            // all nested obligations. This is because they can inform the
-            // inference of the impl's type parameters.
-            let mut fulfill_cx = traits::FulfillmentContext::new();
-            let vtable = selection.map(|predicate| {
-                debug!("fulfill_obligation: register_predicate_obligation {:?}", predicate);
-                fulfill_cx.register_predicate_obligation(&infcx, predicate);
-            });
-            let vtable = infcx.drain_fulfillment_cx_or_panic(span, &mut fulfill_cx, &vtable);
-
-            info!("Cache miss: {:?} => {:?}", trait_ref, vtable);
-            vtable
-        })
-    })
-}
-
 pub fn langcall(tcx: TyCtxt,
                 span: Option<Span>,
                 msg: &str,
                 li: LangItem)
                 -> DefId {
-    match tcx.lang_items.require(li) {
+    match tcx.lang_items().require(li) {
         Ok(id) => id,
         Err(s) => {
             let msg = format!("{} {}", msg, s);
@@ -570,9 +486,9 @@ pub fn shift_mask_val<'a, 'tcx>(
             // i8/u8 can shift by at most 7, i16/u16 by at most 15, etc.
             let val = llty.int_width() - 1;
             if invert {
-                C_integral(mask_llty, !val, true)
+                C_int(mask_llty, !val as i64)
             } else {
-                C_integral(mask_llty, val, false)
+                C_uint(mask_llty, val)
             }
         },
         TypeKind::Vector => {
@@ -583,17 +499,17 @@ pub fn shift_mask_val<'a, 'tcx>(
     }
 }
 
-pub fn ty_fn_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
-                          ty: Ty<'tcx>)
-                          -> Cow<'tcx, ty::BareFnTy<'tcx>>
+pub fn ty_fn_sig<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                           ty: Ty<'tcx>)
+                           -> ty::PolyFnSig<'tcx>
 {
     match ty.sty {
-        ty::TyFnDef(_, _, fty) => Cow::Borrowed(fty),
+        ty::TyFnDef(..) |
         // Shims currently have type TyFnPtr. Not sure this should remain.
-        ty::TyFnPtr(fty) => Cow::Borrowed(fty),
+        ty::TyFnPtr(_) => ty.fn_sig(ccx.tcx()),
         ty::TyClosure(def_id, substs) => {
             let tcx = ccx.tcx();
-            let ty::ClosureTy { unsafety, abi, sig } = tcx.closure_type(def_id, substs);
+            let sig = tcx.fn_sig(def_id).subst(tcx, substs.substs);
 
             let env_region = ty::ReLateBound(ty::DebruijnIndex::new(1), ty::BrEnv);
             let env_ty = match tcx.closure_kind(def_id) {
@@ -602,17 +518,88 @@ pub fn ty_fn_ty<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
                 ty::ClosureKind::FnOnce => ty,
             };
 
-            let sig = sig.map_bound(|sig| tcx.mk_fn_sig(
+            sig.map_bound(|sig| tcx.mk_fn_sig(
                 iter::once(env_ty).chain(sig.inputs().iter().cloned()),
                 sig.output(),
-                sig.variadic
-            ));
-            Cow::Owned(ty::BareFnTy { unsafety: unsafety, abi: abi, sig: sig })
+                sig.variadic,
+                sig.unsafety,
+                sig.abi
+            ))
+        }
+        ty::TyGenerator(def_id, substs, _) => {
+            let tcx = ccx.tcx();
+            let sig = tcx.generator_sig(def_id).unwrap().subst(tcx, substs.substs);
+
+            let env_region = ty::ReLateBound(ty::DebruijnIndex::new(1), ty::BrEnv);
+            let env_ty = tcx.mk_mut_ref(tcx.mk_region(env_region), ty);
+
+            sig.map_bound(|sig| {
+                let state_did = tcx.lang_items().gen_state().unwrap();
+                let state_adt_ref = tcx.adt_def(state_did);
+                let state_substs = tcx.mk_substs([Kind::from(sig.yield_ty),
+                    Kind::from(sig.return_ty)].iter());
+                let ret_ty = tcx.mk_adt(state_adt_ref, state_substs);
+
+                tcx.mk_fn_sig(iter::once(env_ty),
+                    ret_ty,
+                    false,
+                    hir::Unsafety::Normal,
+                    Abi::Rust
+                )
+            })
         }
         _ => bug!("unexpected type {:?} to ty_fn_sig", ty)
     }
 }
 
-pub fn is_closure(tcx: TyCtxt, def_id: DefId) -> bool {
-    tcx.def_key(def_id).disambiguated_data.data == DefPathData::ClosureExpr
+pub fn requests_inline<'a, 'tcx>(
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    instance: &ty::Instance<'tcx>
+) -> bool {
+    if is_inline_instance(tcx, instance) {
+        return true
+    }
+    if let ty::InstanceDef::DropGlue(..) = instance.def {
+        // Drop glue wants to be instantiated at every translation
+        // unit, but without an #[inline] hint. We should make this
+        // available to normal end-users.
+        return true
+    }
+    attr::requests_inline(&instance.def.attrs(tcx)[..])
+}
+
+pub fn is_inline_instance<'a, 'tcx>(
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    instance: &ty::Instance<'tcx>
+) -> bool {
+    let def_id = match instance.def {
+        ty::InstanceDef::Item(def_id) => def_id,
+        ty::InstanceDef::DropGlue(_, Some(_)) => return false,
+        _ => return true
+    };
+    match tcx.def_key(def_id).disambiguated_data.data {
+        DefPathData::StructCtor |
+        DefPathData::EnumVariant(..) |
+        DefPathData::ClosureExpr => true,
+        _ => false
+    }
+}
+
+/// Given a DefId and some Substs, produces the monomorphic item type.
+pub fn def_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                        def_id: DefId,
+                        substs: &'tcx Substs<'tcx>)
+                        -> Ty<'tcx>
+{
+    let ty = tcx.type_of(def_id);
+    tcx.trans_apply_param_substs(substs, &ty)
+}
+
+/// Return the substituted type of an instance.
+pub fn instance_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                             instance: &ty::Instance<'tcx>)
+                             -> Ty<'tcx>
+{
+    let ty = instance.def.def_ty(tcx);
+    tcx.trans_apply_param_substs(instance.substs, &ty)
 }

@@ -11,6 +11,7 @@
 //! An iterator over the type substructure.
 //! WARNING: this does not keep track of the region depth.
 
+use middle::const_val::{ConstVal, ConstAggregate};
 use ty::{self, Ty};
 use rustc_data_structures::small_vec::SmallVec;
 use rustc_data_structures::accumulate_vec::IntoIter as AccIntoIter;
@@ -83,21 +84,25 @@ fn push_subtypes<'tcx>(stack: &mut TypeWalkerStack<'tcx>, parent_ty: Ty<'tcx>) {
         ty::TyBool | ty::TyChar | ty::TyInt(_) | ty::TyUint(_) | ty::TyFloat(_) |
         ty::TyStr | ty::TyInfer(_) | ty::TyParam(_) | ty::TyNever | ty::TyError => {
         }
-        ty::TyBox(ty) | ty::TyArray(ty, _) | ty::TySlice(ty) => {
+        ty::TyArray(ty, len) => {
+            push_const(stack, len);
+            stack.push(ty);
+        }
+        ty::TySlice(ty) => {
             stack.push(ty);
         }
         ty::TyRawPtr(ref mt) | ty::TyRef(_, ref mt) => {
             stack.push(mt.ty);
         }
         ty::TyProjection(ref data) => {
-            stack.extend(data.trait_ref.substs.types().rev());
+            stack.extend(data.substs.types().rev());
         }
         ty::TyDynamic(ref obj, ..) => {
             stack.extend(obj.iter().rev().flat_map(|predicate| {
                 let (substs, opt_ty) = match *predicate.skip_binder() {
                     ty::ExistentialPredicate::Trait(tr) => (tr.substs, None),
                     ty::ExistentialPredicate::Projection(p) =>
-                        (p.trait_ref.substs, Some(p.ty)),
+                        (p.substs, Some(p.ty)),
                     ty::ExistentialPredicate::AutoTrait(_) =>
                         // Empty iterator
                         (ty::Substs::empty(), None),
@@ -112,20 +117,52 @@ fn push_subtypes<'tcx>(stack: &mut TypeWalkerStack<'tcx>, parent_ty: Ty<'tcx>) {
         ty::TyClosure(_, ref substs) => {
             stack.extend(substs.substs.types().rev());
         }
-        ty::TyTuple(ts) => {
+        ty::TyGenerator(_, ref substs, ref interior) => {
+            stack.extend(substs.substs.types().rev());
+            stack.push(interior.witness);
+        }
+        ty::TyTuple(ts, _) => {
             stack.extend(ts.iter().cloned().rev());
         }
-        ty::TyFnDef(_, substs, ref ft) => {
+        ty::TyFnDef(_, substs) => {
             stack.extend(substs.types().rev());
-            push_sig_subtypes(stack, &ft.sig);
         }
-        ty::TyFnPtr(ref ft) => {
-            push_sig_subtypes(stack, &ft.sig);
+        ty::TyFnPtr(sig) => {
+            stack.push(sig.skip_binder().output());
+            stack.extend(sig.skip_binder().inputs().iter().cloned().rev());
         }
     }
 }
 
-fn push_sig_subtypes<'tcx>(stack: &mut TypeWalkerStack<'tcx>, sig: &ty::PolyFnSig<'tcx>) {
-    stack.push(sig.skip_binder().output());
-    stack.extend(sig.skip_binder().inputs().iter().cloned().rev());
+fn push_const<'tcx>(stack: &mut TypeWalkerStack<'tcx>, constant: &'tcx ty::Const<'tcx>) {
+    match constant.val {
+        ConstVal::Integral(_) |
+        ConstVal::Float(_) |
+        ConstVal::Str(_) |
+        ConstVal::ByteStr(_) |
+        ConstVal::Bool(_) |
+        ConstVal::Char(_) |
+        ConstVal::Variant(_) => {}
+        ConstVal::Function(_, substs) => {
+            stack.extend(substs.types().rev());
+        }
+        ConstVal::Aggregate(ConstAggregate::Struct(fields)) => {
+            for &(_, v) in fields.iter().rev() {
+                push_const(stack, v);
+            }
+        }
+        ConstVal::Aggregate(ConstAggregate::Tuple(fields)) |
+        ConstVal::Aggregate(ConstAggregate::Array(fields)) => {
+            for v in fields.iter().rev() {
+                push_const(stack, v);
+            }
+        }
+        ConstVal::Aggregate(ConstAggregate::Repeat(v, _)) => {
+            push_const(stack, v);
+        }
+        ConstVal::Unevaluated(_, substs) => {
+            stack.extend(substs.types().rev());
+        }
+    }
+    stack.push(constant.ty);
 }

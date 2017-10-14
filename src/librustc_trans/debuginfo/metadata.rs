@@ -14,38 +14,38 @@ use self::MemberDescriptionFactory::*;
 use self::EnumDiscriminantInfo::*;
 
 use super::utils::{debug_context, DIB, span_start, bytes_to_bits, size_and_align_of,
-                   get_namespace_and_span_for_item, create_DIArray, is_node_local_to_unit};
+                   get_namespace_for_item, create_DIArray, is_node_local_to_unit};
 use super::namespace::mangled_name_of_item;
 use super::type_names::compute_debuginfo_type_name;
 use super::{CrateDebugContext};
 use context::SharedCrateContext;
-use session::Session;
 
 use llvm::{self, ValueRef};
 use llvm::debuginfo::{DIType, DIFile, DIScope, DIDescriptor,
                       DICompositeType, DILexicalBlock, DIFlags};
 
 use rustc::hir::def::CtorKind;
-use rustc::hir::def_id::DefId;
+use rustc::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
 use rustc::ty::fold::TypeVisitor;
 use rustc::ty::subst::Substs;
 use rustc::ty::util::TypeIdHasher;
 use rustc::hir;
 use rustc_data_structures::ToHex;
 use {type_of, machine, monomorphize};
-use common::CrateContext;
+use common::{self, CrateContext};
 use type_::Type;
-use rustc::ty::{self, AdtKind, Ty, layout};
-use session::config;
-use util::nodemap::FxHashMap;
-use util::common::path2cstr;
+use rustc::ty::{self, AdtKind, Ty};
+use rustc::ty::layout::{self, LayoutTyper};
+use rustc::session::{Session, config};
+use rustc::util::nodemap::FxHashMap;
+use rustc::util::common::path2cstr;
 
 use libc::{c_uint, c_longlong};
 use std::ffi::CString;
-use std::path::Path;
 use std::ptr;
+use std::path::Path;
 use syntax::ast;
-use syntax::symbol::{Interner, InternedString};
+use syntax::symbol::{Interner, InternedString, Symbol};
 use syntax_pos::{self, Span};
 
 
@@ -205,11 +205,11 @@ fn create_and_register_recursive_type_forward_declaration<'a, 'tcx>(
     type_map.register_type_with_metadata(unfinished_type, metadata_stub);
 
     UnfinishedMetadata {
-        unfinished_type: unfinished_type,
-        unique_type_id: unique_type_id,
-        metadata_stub: metadata_stub,
-        llvm_type: llvm_type,
-        member_description_factory: member_description_factory,
+        unfinished_type,
+        unique_type_id,
+        metadata_stub,
+        llvm_type,
+        member_description_factory,
     }
 }
 
@@ -348,8 +348,7 @@ fn vec_slice_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     assert!(member_descriptions.len() == member_llvm_types.len());
 
-    let loc = span_start(cx, span);
-    let file_metadata = file_metadata(cx, &loc.file.name, &loc.file.abs_path);
+    let file_metadata = unknown_file_metadata(cx);
 
     let metadata = composite_type_metadata(cx,
                                            slice_llvm_type,
@@ -367,23 +366,23 @@ fn vec_slice_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                          -> bool {
         member_llvm_types.len() == 2 &&
         member_llvm_types[0] == type_of::type_of(cx, element_type).ptr_to() &&
-        member_llvm_types[1] == cx.int_type()
+        member_llvm_types[1] == cx.isize_ty()
     }
 }
 
 fn subroutine_type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                       unique_type_id: UniqueTypeId,
-                                      signature: &ty::PolyFnSig<'tcx>,
+                                      signature: ty::PolyFnSig<'tcx>,
                                       span: Span)
                                       -> MetadataCreationResult
 {
-    let signature = cx.tcx().erase_late_bound_regions(signature);
+    let signature = cx.tcx().erase_late_bound_regions_and_normalize(&signature);
 
     let mut signature_metadata: Vec<DIType> = Vec::with_capacity(signature.inputs().len() + 1);
 
     // return type
     signature_metadata.push(match signature.output().sty {
-        ty::TyTuple(ref tys) if tys.is_empty() => ptr::null_mut(),
+        ty::TyTuple(ref tys, _) if tys.is_empty() => ptr::null_mut(),
         _ => type_metadata(cx, signature.output(), span)
     });
 
@@ -422,7 +421,7 @@ fn trait_pointer_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     let containing_scope = match trait_type.sty {
         ty::TyDynamic(ref data, ..) => if let Some(principal) = data.principal() {
             let def_id = principal.def_id();
-            get_namespace_and_span_for_item(cx, def_id).0
+            get_namespace_for_item(cx, def_id)
         } else {
             NO_SCOPE_METADATA
         },
@@ -489,8 +488,36 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     debug!("type_metadata: {:?}", t);
 
-    let sty = &t.sty;
-    let MetadataCreationResult { metadata, already_stored_in_typemap } = match *sty {
+    let ptr_metadata = |ty: Ty<'tcx>| {
+        match ty.sty {
+            ty::TySlice(typ) => {
+                Ok(vec_slice_metadata(cx, t, typ, unique_type_id, usage_site_span))
+            }
+            ty::TyStr => {
+                Ok(vec_slice_metadata(cx, t, cx.tcx().types.u8, unique_type_id, usage_site_span))
+            }
+            ty::TyDynamic(..) => {
+                Ok(MetadataCreationResult::new(
+                    trait_pointer_metadata(cx, ty, Some(t), unique_type_id),
+                    false))
+            }
+            _ => {
+                let pointee_metadata = type_metadata(cx, ty, usage_site_span);
+
+                match debug_context(cx).type_map
+                                        .borrow()
+                                        .find_metadata_for_unique_id(unique_type_id) {
+                    Some(metadata) => return Err(metadata),
+                    None => { /* proceed normally */ }
+                };
+
+                Ok(MetadataCreationResult::new(pointer_type_metadata(cx, t, pointee_metadata),
+                   false))
+            }
+        }
+    };
+
+    let MetadataCreationResult { metadata, already_stored_in_typemap } = match t.sty {
         ty::TyNever    |
         ty::TyBool     |
         ty::TyChar     |
@@ -499,11 +526,12 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         ty::TyFloat(_) => {
             MetadataCreationResult::new(basic_type_metadata(cx, t), false)
         }
-        ty::TyTuple(ref elements) if elements.is_empty() => {
+        ty::TyTuple(ref elements, _) if elements.is_empty() => {
             MetadataCreationResult::new(basic_type_metadata(cx, t), false)
         }
         ty::TyArray(typ, len) => {
-            fixed_vec_metadata(cx, unique_type_id, typ, Some(len as u64), usage_site_span)
+            let len = len.val.to_const_int().unwrap().to_u64().unwrap();
+            fixed_vec_metadata(cx, unique_type_id, typ, Some(len), usage_site_span)
         }
         ty::TySlice(typ) => {
             fixed_vec_metadata(cx, unique_type_id, typ, None, usage_site_span)
@@ -516,40 +544,23 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                         trait_pointer_metadata(cx, t, None, unique_type_id),
             false)
         }
-        ty::TyBox(ty) |
         ty::TyRawPtr(ty::TypeAndMut{ty, ..}) |
         ty::TyRef(_, ty::TypeAndMut{ty, ..}) => {
-            match ty.sty {
-                ty::TySlice(typ) => {
-                    vec_slice_metadata(cx, t, typ, unique_type_id, usage_site_span)
-                }
-                ty::TyStr => {
-                    vec_slice_metadata(cx, t, cx.tcx().types.u8, unique_type_id, usage_site_span)
-                }
-                ty::TyDynamic(..) => {
-                    MetadataCreationResult::new(
-                        trait_pointer_metadata(cx, ty, Some(t), unique_type_id),
-                        false)
-                }
-                _ => {
-                    let pointee_metadata = type_metadata(cx, ty, usage_site_span);
-
-                    match debug_context(cx).type_map
-                                           .borrow()
-                                           .find_metadata_for_unique_id(unique_type_id) {
-                        Some(metadata) => return metadata,
-                        None => { /* proceed normally */ }
-                    };
-
-                    MetadataCreationResult::new(pointer_type_metadata(cx, t, pointee_metadata),
-                                                false)
-                }
+            match ptr_metadata(ty) {
+                Ok(res) => res,
+                Err(metadata) => return metadata,
             }
         }
-        ty::TyFnDef(.., ref barefnty) | ty::TyFnPtr(ref barefnty) => {
+        ty::TyAdt(def, _) if def.is_box() => {
+            match ptr_metadata(t.boxed_ty()) {
+                Ok(res) => res,
+                Err(metadata) => return metadata,
+            }
+        }
+        ty::TyFnDef(..) | ty::TyFnPtr(_) => {
             let fn_metadata = subroutine_type_metadata(cx,
                                                        unique_type_id,
-                                                       &barefnty.sig,
+                                                       t.fn_sig(cx.tcx()),
                                                        usage_site_span).metadata;
             match debug_context(cx).type_map
                                    .borrow()
@@ -564,6 +575,16 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         }
         ty::TyClosure(def_id, substs) => {
             let upvar_tys : Vec<_> = substs.upvar_tys(def_id, cx.tcx()).collect();
+            prepare_tuple_metadata(cx,
+                                   t,
+                                   &upvar_tys,
+                                   unique_type_id,
+                                   usage_site_span).finalize(cx)
+        }
+        ty::TyGenerator(def_id, substs, _) => {
+            let upvar_tys : Vec<_> = substs.field_tys(def_id, cx.tcx()).map(|t| {
+                cx.tcx().normalize_associated_type(&t)
+            }).collect();
             prepare_tuple_metadata(cx,
                                    t,
                                    &upvar_tys,
@@ -591,7 +612,7 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                     usage_site_span).finalize(cx)
             }
         },
-        ty::TyTuple(ref elements) => {
+        ty::TyTuple(ref elements, _) => {
             prepare_tuple_metadata(cx,
                                    t,
                                    &elements[..],
@@ -599,7 +620,7 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                    usage_site_span).finalize(cx)
         }
         _ => {
-            bug!("debuginfo: unexpected type in type_metadata: {:?}", sty)
+            bug!("debuginfo: unexpected type in type_metadata: {:?}", t)
         }
     };
 
@@ -646,44 +667,51 @@ pub fn type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     metadata
 }
 
-pub fn file_metadata(cx: &CrateContext, path: &str, full_path: &Option<String>) -> DIFile {
-    // FIXME (#9639): This needs to handle non-utf8 paths
-    let work_dir = cx.sess().working_dir.to_str().unwrap();
-    let file_name =
-        full_path.as_ref().map(|p| p.as_str()).unwrap_or_else(|| {
-            if path.starts_with(work_dir) {
-                &path[work_dir.len() + 1..path.len()]
-            } else {
-                path
-            }
-        });
+pub fn file_metadata(cx: &CrateContext,
+                     file_name: &str,
+                     defining_crate: CrateNum) -> DIFile {
+    debug!("file_metadata: file_name: {}, defining_crate: {}",
+           file_name,
+           defining_crate);
 
-    file_metadata_(cx, path, file_name, &work_dir)
+    let directory = if defining_crate == LOCAL_CRATE {
+        &cx.sess().working_dir.0[..]
+    } else {
+        // If the path comes from an upstream crate we assume it has been made
+        // independent of the compiler's working directory one way or another.
+        ""
+    };
+
+    file_metadata_raw(cx, file_name, directory)
 }
 
 pub fn unknown_file_metadata(cx: &CrateContext) -> DIFile {
-    // Regular filenames should not be empty, so we abuse an empty name as the
-    // key for the special unknown file metadata
-    file_metadata_(cx, "", "<unknown>", "")
-
+    file_metadata_raw(cx, "<unknown>", "")
 }
 
-fn file_metadata_(cx: &CrateContext, key: &str, file_name: &str, work_dir: &str) -> DIFile {
-    if let Some(file_metadata) = debug_context(cx).created_files.borrow().get(key) {
+fn file_metadata_raw(cx: &CrateContext,
+                     file_name: &str,
+                     directory: &str)
+                     -> DIFile {
+    let key = (Symbol::intern(file_name), Symbol::intern(directory));
+
+    if let Some(file_metadata) = debug_context(cx).created_files.borrow().get(&key) {
         return *file_metadata;
     }
 
-    debug!("file_metadata: file_name: {}, work_dir: {}", file_name, work_dir);
+    debug!("file_metadata: file_name: {}, directory: {}", file_name, directory);
 
     let file_name = CString::new(file_name).unwrap();
-    let work_dir = CString::new(work_dir).unwrap();
+    let directory = CString::new(directory).unwrap();
+
     let file_metadata = unsafe {
-        llvm::LLVMRustDIBuilderCreateFile(DIB(cx), file_name.as_ptr(),
-                                          work_dir.as_ptr())
+        llvm::LLVMRustDIBuilderCreateFile(DIB(cx),
+                                          file_name.as_ptr(),
+                                          directory.as_ptr())
     };
 
     let mut created_files = debug_context(cx).created_files.borrow_mut();
-    created_files.insert(key.to_string(), file_metadata);
+    created_files.insert(key, file_metadata);
     file_metadata
 }
 
@@ -694,7 +722,7 @@ fn basic_type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
     let (name, encoding) = match t.sty {
         ty::TyNever => ("!", DW_ATE_unsigned),
-        ty::TyTuple(ref elements) if elements.is_empty() =>
+        ty::TyTuple(ref elements, _) if elements.is_empty() =>
             ("()", DW_ATE_unsigned),
         ty::TyBool => ("bool", DW_ATE_boolean),
         ty::TyChar => ("char", DW_ATE_unsigned_char),
@@ -745,55 +773,80 @@ fn pointer_type_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 }
 
 pub fn compile_unit_metadata(scc: &SharedCrateContext,
+                             codegen_unit_name: &str,
                              debug_context: &CrateDebugContext,
                              sess: &Session)
                              -> DIDescriptor {
-    let work_dir = &sess.working_dir;
-    let compile_unit_name = match sess.local_crate_source_file {
-        None => fallback_path(scc),
-        Some(ref abs_path) => {
-            if abs_path.is_relative() {
-                sess.warn("debuginfo: Invalid path to crate's local root source file!");
-                fallback_path(scc)
-            } else {
-                match abs_path.strip_prefix(work_dir) {
-                    Ok(ref p) if p.is_relative() => {
-                        if p.starts_with(Path::new("./")) {
-                            path2cstr(p)
-                        } else {
-                            path2cstr(&Path::new(".").join(p))
-                        }
-                    }
-                    _ => fallback_path(scc)
-                }
-            }
-        }
+    let mut name_in_debuginfo = match sess.local_crate_source_file {
+        Some(ref path) => path.clone(),
+        None => scc.tcx().crate_name(LOCAL_CRATE).to_string(),
     };
 
-    debug!("compile_unit_metadata: {:?}", compile_unit_name);
-    let producer = format!("rustc version {}",
+    // The OSX linker has an idiosyncrasy where it will ignore some debuginfo
+    // if multiple object files with the same DW_AT_name are linked together.
+    // As a workaround we generate unique names for each object file. Those do
+    // not correspond to an actual source file but that should be harmless.
+    if scc.sess().target.target.options.is_like_osx {
+        name_in_debuginfo.push_str("@");
+        name_in_debuginfo.push_str(codegen_unit_name);
+    }
+
+    debug!("compile_unit_metadata: {:?}", name_in_debuginfo);
+    // FIXME(#41252) Remove "clang LLVM" if we can get GDB and LLVM to play nice.
+    let producer = format!("clang LLVM (rustc version {})",
                            (option_env!("CFG_VERSION")).expect("CFG_VERSION"));
 
-    let compile_unit_name = compile_unit_name.as_ptr();
-    let work_dir = path2cstr(&work_dir);
+    let name_in_debuginfo = CString::new(name_in_debuginfo).unwrap();
+    let work_dir = CString::new(&sess.working_dir.0[..]).unwrap();
     let producer = CString::new(producer).unwrap();
     let flags = "\0";
     let split_name = "\0";
-    return unsafe {
-        llvm::LLVMRustDIBuilderCreateCompileUnit(
+
+    unsafe {
+        let file_metadata = llvm::LLVMRustDIBuilderCreateFile(
+            debug_context.builder, name_in_debuginfo.as_ptr(), work_dir.as_ptr());
+
+        let unit_metadata = llvm::LLVMRustDIBuilderCreateCompileUnit(
             debug_context.builder,
             DW_LANG_RUST,
-            compile_unit_name,
-            work_dir.as_ptr(),
+            file_metadata,
             producer.as_ptr(),
             sess.opts.optimize != config::OptLevel::No,
             flags.as_ptr() as *const _,
             0,
-            split_name.as_ptr() as *const _)
+            split_name.as_ptr() as *const _);
+
+        if sess.opts.debugging_opts.profile {
+            let cu_desc_metadata = llvm::LLVMRustMetadataAsValue(debug_context.llcontext,
+                                                                 unit_metadata);
+
+            let gcov_cu_info = [
+                path_to_mdstring(debug_context.llcontext,
+                                 &scc.tcx().output_filenames(LOCAL_CRATE).with_extension("gcno")),
+                path_to_mdstring(debug_context.llcontext,
+                                 &scc.tcx().output_filenames(LOCAL_CRATE).with_extension("gcda")),
+                cu_desc_metadata,
+            ];
+            let gcov_metadata = llvm::LLVMMDNodeInContext(debug_context.llcontext,
+                                                          gcov_cu_info.as_ptr(),
+                                                          gcov_cu_info.len() as c_uint);
+
+            let llvm_gcov_ident = CString::new("llvm.gcov").unwrap();
+            llvm::LLVMAddNamedMetadataOperand(debug_context.llmod,
+                                              llvm_gcov_ident.as_ptr(),
+                                              gcov_metadata);
+        }
+
+        return unit_metadata;
     };
 
-    fn fallback_path(scc: &SharedCrateContext) -> CString {
-        CString::new(scc.link_meta().crate_name.to_string()).unwrap()
+    fn path_to_mdstring(llcx: llvm::ContextRef, path: &Path) -> llvm::ValueRef {
+        let path_str = path2cstr(path);
+        unsafe {
+            llvm::LLVMMDStringInContext(llcx,
+                                        path_str.as_ptr(),
+                                        path_str.as_bytes().len() as c_uint)
+        }
     }
 }
 
@@ -805,8 +858,8 @@ struct MetadataCreationResult {
 impl MetadataCreationResult {
     fn new(metadata: DIType, already_stored_in_typemap: bool) -> MetadataCreationResult {
         MetadataCreationResult {
-            metadata: metadata,
-            already_stored_in_typemap: already_stored_in_typemap
+            metadata,
+            already_stored_in_typemap,
         }
     }
 }
@@ -885,7 +938,7 @@ impl<'tcx> StructMemberDescriptionFactory<'tcx> {
         let offsets = match *layout {
             layout::Univariant { ref variant, .. } => &variant.offsets,
             layout::Vector { element, count } => {
-                let element_size = element.size(&cx.tcx().data_layout).bytes();
+                let element_size = element.size(cx).bytes();
                 tmp = (0..count).
                   map(|i| layout::Size::from_bytes(i*element_size))
                   .collect::<Vec<layout::Size>>();
@@ -905,10 +958,10 @@ impl<'tcx> StructMemberDescriptionFactory<'tcx> {
             let offset = FixedMemberOffset { bytes: offsets[i].bytes() as usize};
 
             MemberDescription {
-                name: name,
+                name,
                 llvm_type: type_of::in_memory_type_of(cx, fty),
                 type_metadata: type_metadata(cx, fty, self.span),
-                offset: offset,
+                offset,
                 flags: DIFlags::FlagZero,
             }
         }).collect()
@@ -929,7 +982,7 @@ fn prepare_struct_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         _ => bug!("prepare_struct_metadata on a non-ADT")
     };
 
-    let (containing_scope, _) = get_namespace_and_span_for_item(cx, struct_def_id);
+    let containing_scope = get_namespace_for_item(cx, struct_def_id);
 
     let struct_metadata_stub = create_struct_stub(cx,
                                                   struct_llvm_type,
@@ -945,9 +998,9 @@ fn prepare_struct_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         struct_llvm_type,
         StructMDF(StructMemberDescriptionFactory {
             ty: struct_type,
-            variant: variant,
-            substs: substs,
-            span: span,
+            variant,
+            substs,
+            span,
         })
     )
 }
@@ -1010,7 +1063,7 @@ fn prepare_tuple_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         TupleMDF(TupleMemberDescriptionFactory {
             ty: tuple_type,
             component_types: component_types.to_vec(),
-            span: span,
+            span,
         })
     )
 }
@@ -1054,7 +1107,7 @@ fn prepare_union_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         _ => bug!("prepare_union_metadata on a non-ADT")
     };
 
-    let (containing_scope, _) = get_namespace_and_span_for_item(cx, union_def_id);
+    let containing_scope = get_namespace_for_item(cx, union_def_id);
 
     let union_metadata_stub = create_union_stub(cx,
                                                 union_llvm_type,
@@ -1069,9 +1122,9 @@ fn prepare_union_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         union_metadata_stub,
         union_llvm_type,
         UnionMDF(UnionMemberDescriptionFactory {
-            variant: variant,
-            substs: substs,
-            span: span,
+            variant,
+            substs,
+            span,
         })
     )
 }
@@ -1420,14 +1473,14 @@ fn describe_enum_variant<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     let member_description_factory =
         VariantMDF(VariantMemberDescriptionFactory {
             offsets: &struct_def.offsets[..],
-            args: args,
+            args,
             discriminant_type_metadata: match discriminant_info {
                 RegularDiscriminant(discriminant_type_metadata) => {
                     Some(discriminant_type_metadata)
                 }
                 _ => None
             },
-            span: span,
+            span,
         });
 
     (metadata_stub, variant_llvm_type, member_description_factory)
@@ -1441,7 +1494,7 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                    -> RecursiveTypeDescription<'tcx> {
     let enum_name = compute_debuginfo_type_name(cx, enum_type, false);
 
-    let (containing_scope, _) = get_namespace_and_span_for_item(cx, enum_def_id);
+    let containing_scope = get_namespace_for_item(cx, enum_def_id);
     // FIXME: This should emit actual file metadata for the enum, but we
     // currently can't get the necessary information when it comes to types
     // imported from other crates. Formerly we violated the ODR when performing
@@ -1450,10 +1503,10 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
     // <unknown>
     let file_metadata = unknown_file_metadata(cx);
 
-    let variants = &enum_type.ty_adt_def().unwrap().variants;
-    let enumerators_metadata: Vec<DIDescriptor> = variants
-        .iter()
-        .map(|v| {
+    let def = enum_type.ty_adt_def().unwrap();
+    let enumerators_metadata: Vec<DIDescriptor> = def.discriminants(cx.tcx())
+        .zip(&def.variants)
+        .map(|(discr, v)| {
             let token = v.name.as_str();
             let name = CString::new(token.as_bytes()).unwrap();
             unsafe {
@@ -1461,7 +1514,7 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                     DIB(cx),
                     name.as_ptr(),
                     // FIXME: what if enumeration has i128 discriminant?
-                    v.disr_val.to_u128_unchecked() as u64)
+                    discr.to_u128_unchecked() as u64)
             }
         })
         .collect();
@@ -1548,19 +1601,19 @@ fn prepare_enum_metadata<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         enum_metadata,
         enum_llvm_type,
         EnumMDF(EnumMemberDescriptionFactory {
-            enum_type: enum_type,
-            type_rep: type_rep,
-            discriminant_type_metadata: discriminant_type_metadata,
-            containing_scope: containing_scope,
-            file_metadata: file_metadata,
-            span: span,
+            enum_type,
+            type_rep: type_rep.layout,
+            discriminant_type_metadata,
+            containing_scope,
+            file_metadata,
+            span,
         }),
     );
 
     fn get_enum_discriminant_name(cx: &CrateContext,
                                   def_id: DefId)
                                   -> InternedString {
-        cx.tcx().item_name(def_id).as_str()
+        cx.tcx().item_name(def_id)
     }
 }
 
@@ -1738,18 +1791,19 @@ pub fn create_global_var_metadata(cx: &CrateContext,
 
     let tcx = cx.tcx();
 
-    let node_def_id = tcx.map.local_def_id(node_id);
-    let (var_scope, span) = get_namespace_and_span_for_item(cx, node_def_id);
+    let node_def_id = tcx.hir.local_def_id(node_id);
+    let var_scope = get_namespace_for_item(cx, node_def_id);
+    let span = cx.tcx().def_span(node_def_id);
 
     let (file_metadata, line_number) = if span != syntax_pos::DUMMY_SP {
         let loc = span_start(cx, span);
-        (file_metadata(cx, &loc.file.name, &loc.file.abs_path), loc.line as c_uint)
+        (file_metadata(cx, &loc.file.name, LOCAL_CRATE), loc.line as c_uint)
     } else {
         (unknown_file_metadata(cx), UNKNOWN_LINE_NUMBER)
     };
 
     let is_local_to_unit = is_node_local_to_unit(cx, node_id);
-    let variable_type = tcx.erase_regions(&tcx.item_type(node_def_id));
+    let variable_type = common::def_ty(cx.tcx(), node_def_id, Substs::empty());
     let type_metadata = type_metadata(cx, variable_type, span);
     let var_name = tcx.item_name(node_def_id).to_string();
     let linkage_name = mangled_name_of_item(cx, node_def_id, "");
@@ -1757,8 +1811,7 @@ pub fn create_global_var_metadata(cx: &CrateContext,
     let var_name = CString::new(var_name).unwrap();
     let linkage_name = CString::new(linkage_name).unwrap();
 
-    let ty = cx.tcx().item_type(node_def_id);
-    let global_align = type_of::align_of(cx, ty);
+    let global_align = cx.align_of(variable_type);
 
     unsafe {
         llvm::LLVMRustDIBuilderCreateStaticVariable(DIB(cx),
@@ -1771,7 +1824,7 @@ pub fn create_global_var_metadata(cx: &CrateContext,
                                                     is_local_to_unit,
                                                     global,
                                                     ptr::null_mut(),
-                                                    global_align as u64,
+                                                    global_align,
         );
     }
 }
@@ -1779,9 +1832,10 @@ pub fn create_global_var_metadata(cx: &CrateContext,
 // Creates an "extension" of an existing DIScope into another file.
 pub fn extend_scope_to_file(ccx: &CrateContext,
                             scope_metadata: DIScope,
-                            file: &syntax_pos::FileMap)
+                            file: &syntax_pos::FileMap,
+                            defining_crate: CrateNum)
                             -> DILexicalBlock {
-    let file_metadata = file_metadata(ccx, &file.name, &file.abs_path);
+    let file_metadata = file_metadata(ccx, &file.name, defining_crate);
     unsafe {
         llvm::LLVMRustDIBuilderCreateLexicalBlockFile(
             DIB(ccx),

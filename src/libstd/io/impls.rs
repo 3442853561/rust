@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use cmp;
-use io::{self, SeekFrom, Read, Write, Seek, BufRead, Error, ErrorKind};
+use io::{self, SeekFrom, Read, Initializer, Write, Seek, BufRead, Error, ErrorKind};
 use fmt;
 use mem;
 
@@ -21,6 +21,11 @@ impl<'a, R: Read + ?Sized> Read for &'a mut R {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read(buf)
+    }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        (**self).initializer()
     }
 
     #[inline]
@@ -85,6 +90,11 @@ impl<R: Read + ?Sized> Read for Box<R> {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read(buf)
+    }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        (**self).initializer()
     }
 
     #[inline]
@@ -172,6 +182,11 @@ impl<'a> Read for &'a [u8] {
     }
 
     #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
+    }
+
+    #[inline]
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
         if buf.len() > self.len() {
             return Err(Error::new(ErrorKind::UnexpectedEof,
@@ -190,6 +205,14 @@ impl<'a> Read for &'a [u8] {
 
         *self = b;
         Ok(())
+    }
+
+    #[inline]
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        buf.extend_from_slice(*self);
+        let len = self.len();
+        *self = &self[len..];
+        Ok(len)
     }
 }
 

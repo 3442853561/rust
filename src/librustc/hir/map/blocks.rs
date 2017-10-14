@@ -38,7 +38,7 @@ use syntax_pos::Span;
 ///   - The default implementation for a trait method.
 ///
 /// To construct one, use the `Code::from_node` function.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct FnLikeNode<'a> { node: map::Node<'a> }
 
 /// MaybeFnLike wraps a method that indicates if an object
@@ -130,9 +130,9 @@ impl<'a> ClosureParts<'a> {
         ClosureParts {
             decl: d,
             body: b,
-            id: id,
+            id,
             span: s,
-            attrs: attrs,
+            attrs,
         }
     }
 }
@@ -149,7 +149,7 @@ impl<'a> FnLikeNode<'a> {
         };
         if fn_like {
             Some(FnLikeNode {
-                node: node
+                node,
             })
         } else {
             None
@@ -192,6 +192,18 @@ impl<'a> FnLikeNode<'a> {
         }
     }
 
+    pub fn unsafety(self) -> ast::Unsafety {
+        match self.kind() {
+            FnKind::ItemFn(_, _, unsafety, ..) => {
+                unsafety
+            }
+            FnKind::Method(_, m, ..) => {
+                m.unsafety
+            }
+            _ => ast::Unsafety::Normal
+        }
+    }
+
     pub fn kind(self) -> FnKind<'a> {
         let item = |p: ItemFnParts<'a>| -> FnKind<'a> {
             FnKind::ItemFn(p.name, p.generics, p.unsafety, p.constness, p.abi, p.vis, p.attrs)
@@ -224,12 +236,12 @@ impl<'a> FnLikeNode<'a> {
                         id: i.id,
                         name: i.name,
                         decl: &decl,
-                        unsafety: unsafety,
+                        unsafety,
                         body: block,
-                        generics: generics,
-                        abi: abi,
+                        generics,
+                        abi,
                         vis: &i.vis,
-                        constness: constness,
+                        constness,
                         span: i.span,
                         attrs: &i.attrs,
                     }),
@@ -252,7 +264,7 @@ impl<'a> FnLikeNode<'a> {
                 }
             },
             map::NodeExpr(e) => match e.node {
-                ast::ExprClosure(_, ref decl, block, _fn_decl_span) =>
+                ast::ExprClosure(_, ref decl, block, _fn_decl_span, _gen) =>
                     closure(ClosureParts::new(&decl, block, e.id, e.span, &e.attrs)),
                 _ => bug!("expr FnLikeNode that is not fn-like"),
             },

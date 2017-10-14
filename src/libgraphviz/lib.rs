@@ -11,7 +11,7 @@
 //! Generate files suitable for use with [Graphviz](http://www.graphviz.org/)
 //!
 //! The `render` function generates output (e.g. an `output.dot` file) for
-//! use with [Graphviz](http://www.graphviz.org/) by walking a labelled
+//! use with [Graphviz](http://www.graphviz.org/) by walking a labeled
 //! graph. (Graphviz can then automatically lay out the nodes and edges
 //! of the graph, and also optionally render the graph as an image or
 //! other [output formats](
@@ -111,7 +111,7 @@
 //!
 //! Output from first example (in `example1.dot`):
 //!
-//! ```ignore
+//! ```dot
 //! digraph example1 {
 //!     N0[label="N0"];
 //!     N1[label="N1"];
@@ -150,7 +150,7 @@
 //!
 //! The output from this example renders four nodes that make up the
 //! Hasse-diagram for the subsets of the set `{x, y}`. Each edge is
-//! labelled with the &sube; character (specified using the HTML character
+//! labeled with the &sube; character (specified using the HTML character
 //! entity `&sube`).
 //!
 //! ```rust
@@ -283,11 +283,6 @@
 //!
 //! * [DOT language](http://www.graphviz.org/doc/info/lang.html)
 
-#![crate_name = "graphviz"]
-#![unstable(feature = "rustc_private", issue = "27812")]
-#![feature(staged_api)]
-#![crate_type = "rlib"]
-#![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -550,11 +545,11 @@ impl<'a> LabelText<'a> {
     }
 
     /// Renders text as string suitable for a label in a .dot file.
-    /// This includes quotes or suitable delimeters.
+    /// This includes quotes or suitable delimiters.
     pub fn to_dot_string(&self) -> String {
         match self {
             &LabelStr(ref s) => format!("\"{}\"", s.escape_default()),
-            &EscStr(ref s) => format!("\"{}\"", LabelText::escape_str(&s[..])),
+            &EscStr(ref s) => format!("\"{}\"", LabelText::escape_str(&s)),
             &HtmlStr(ref s) => format!("<{}>", s),
         }
     }
@@ -587,7 +582,7 @@ impl<'a> LabelText<'a> {
         let mut prefix = self.pre_escaped_content().into_owned();
         let suffix = suffix.pre_escaped_content();
         prefix.push_str(r"\n\n");
-        prefix.push_str(&suffix[..]);
+        prefix.push_str(&suffix);
         EscStr(prefix.into_cow())
     }
 }
@@ -783,15 +778,15 @@ mod tests {
 
     fn edge(from: usize, to: usize, label: &'static str, style: Style) -> Edge {
         Edge {
-            from: from,
-            to: to,
-            label: label,
-            style: style,
+            from,
+            to,
+            label,
+            style,
         }
     }
 
     struct LabelledGraph {
-        /// The name for this graph. Used for labelling generated `digraph`.
+        /// The name for this graph. Used for labeling generated `digraph`.
         name: &'static str,
 
         /// Each node is an index into `node_labels`; these labels are
@@ -850,9 +845,9 @@ mod tests {
                -> LabelledGraph {
             let count = node_labels.len();
             LabelledGraph {
-                name: name,
+                name,
                 node_labels: node_labels.to_opt_strs(),
-                edges: edges,
+                edges,
                 node_styles: match node_styles {
                     Some(nodes) => nodes,
                     None => vec![Style::None; count],
@@ -878,7 +873,7 @@ mod tests {
         type Node = Node;
         type Edge = &'a Edge;
         fn graph_id(&'a self) -> Id<'a> {
-            Id::new(&self.name[..]).unwrap()
+            Id::new(self.name).unwrap()
         }
         fn node_id(&'a self, n: &Node) -> Id<'a> {
             id_name(n)

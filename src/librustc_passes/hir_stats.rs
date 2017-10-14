@@ -125,6 +125,11 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
         self.visit_impl_item(nested_impl_item)
     }
 
+    fn visit_nested_body(&mut self, body_id: hir::BodyId) {
+        let nested_body = self.krate.unwrap().body(body_id);
+        self.visit_body(nested_body)
+    }
+
     fn visit_item(&mut self, i: &'v hir::Item) {
         self.record("Item", Id::Node(i.id), i);
         hir_visit::walk_item(self, i)
@@ -252,7 +257,7 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
 
 impl<'v> ast_visit::Visitor<'v> for StatCollector<'v> {
 
-    fn visit_mod(&mut self, m: &'v ast::Mod, _s: Span, _n: NodeId) {
+    fn visit_mod(&mut self, m: &'v ast::Mod, _s: Span, _a: &[ast::Attribute], _n: NodeId) {
         self.record("Mod", Id::None, m);
         ast_visit::walk_mod(self, m)
     }
@@ -374,10 +379,5 @@ impl<'v> ast_visit::Visitor<'v> for StatCollector<'v> {
 
     fn visit_attribute(&mut self, attr: &'v ast::Attribute) {
         self.record("Attribute", Id::None, attr);
-    }
-
-    fn visit_macro_def(&mut self, macro_def: &'v ast::MacroDef) {
-        self.record("MacroDef", Id::None, macro_def);
-        ast_visit::walk_macro_def(self, macro_def)
     }
 }

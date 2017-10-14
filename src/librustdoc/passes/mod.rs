@@ -33,6 +33,9 @@ pub use self::strip_priv_imports::strip_priv_imports;
 mod unindent_comments;
 pub use self::unindent_comments::unindent_comments;
 
+mod propagate_doc_cfg;
+pub use self::propagate_doc_cfg::propagate_doc_cfg;
+
 type Pass = (&'static str,                                      // name
              fn(clean::Crate) -> plugins::PluginResult,         // fn
              &'static str);                                     // description
@@ -49,6 +52,8 @@ pub const PASSES: &'static [Pass] = &[
       implies strip-priv-imports"),
     ("strip-priv-imports", strip_priv_imports,
      "strips all private import statements (`use`, `extern crate`) from a crate"),
+    ("propagate-doc-cfg", propagate_doc_cfg,
+     "propagates `#[doc(cfg(...))]` to child items"),
 ];
 
 pub const DEFAULT_PASSES: &'static [&'static str] = &[
@@ -56,6 +61,7 @@ pub const DEFAULT_PASSES: &'static [&'static str] = &[
     "strip-private",
     "collapse-docs",
     "unindent-comments",
+    "propagate-doc-cfg",
 ];
 
 
@@ -83,7 +89,8 @@ impl<'a> fold::DocFolder for Stripper<'a> {
             clean::TraitItem(..) | clean::FunctionItem(..) |
             clean::VariantItem(..) | clean::MethodItem(..) |
             clean::ForeignFunctionItem(..) | clean::ForeignStaticItem(..) |
-            clean::ConstantItem(..) | clean::UnionItem(..) => {
+            clean::ConstantItem(..) | clean::UnionItem(..) |
+            clean::AssociatedConstItem(..) => {
                 if i.def_id.is_local() {
                     if !self.access_levels.is_exported(i.def_id) {
                         return None;
@@ -117,8 +124,7 @@ impl<'a> fold::DocFolder for Stripper<'a> {
             // Primitives are never stripped
             clean::PrimitiveItem(..) => {}
 
-            // Associated consts and types are never stripped
-            clean::AssociatedConstItem(..) |
+            // Associated types are never stripped
             clean::AssociatedTypeItem(..) => {}
         }
 
@@ -145,20 +151,12 @@ impl<'a> fold::DocFolder for Stripper<'a> {
             self.fold_item_recur(i)
         };
 
-        i.and_then(|i| {
-            match i.inner {
-                // emptied modules have no need to exist
-                clean::ModuleItem(ref m)
-                    if m.items.is_empty() &&
-                       i.doc_value().is_none() => None,
-                _ => {
-                    if self.update_retained {
-                        self.retained.insert(i.def_id);
-                    }
-                    Some(i)
-                }
+        if let Some(ref i) = i {
+            if self.update_retained {
+                self.retained.insert(i.def_id);
             }
-        })
+        }
+        i
     }
 }
 

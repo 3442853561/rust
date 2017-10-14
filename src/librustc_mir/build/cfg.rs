@@ -14,7 +14,9 @@
 //! Routines for manipulating the control-flow graph.
 
 use build::CFG;
+use rustc::middle::region;
 use rustc::mir::*;
+use rustc::ty::TyCtxt;
 
 impl<'tcx> CFG<'tcx> {
     pub fn block_data(&self, blk: BasicBlock) -> &BasicBlockData<'tcx> {
@@ -25,6 +27,9 @@ impl<'tcx> CFG<'tcx> {
         &mut self.basic_blocks[blk]
     }
 
+    // llvm.org/PR32488 makes this function use an excess of stack space. Mark
+    // it as #[inline(never)] to keep rustc's stack use in check.
+    #[inline(never)]
     pub fn start_new_block(&mut self) -> BasicBlock {
         self.basic_blocks.push(BasicBlockData::new(None))
     }
@@ -40,13 +45,26 @@ impl<'tcx> CFG<'tcx> {
         self.block_data_mut(block).statements.push(statement);
     }
 
+    pub fn push_end_region<'a, 'gcx:'a+'tcx>(&mut self,
+                                             tcx: TyCtxt<'a, 'gcx, 'tcx>,
+                                             block: BasicBlock,
+                                             source_info: SourceInfo,
+                                             region_scope: region::Scope) {
+        if tcx.sess.emit_end_regions() {
+            self.push(block, Statement {
+                source_info,
+                kind: StatementKind::EndRegion(region_scope),
+            });
+        }
+    }
+
     pub fn push_assign(&mut self,
                        block: BasicBlock,
                        source_info: SourceInfo,
                        lvalue: &Lvalue<'tcx>,
                        rvalue: Rvalue<'tcx>) {
         self.push(block, Statement {
-            source_info: source_info,
+            source_info,
             kind: StatementKind::Assign(lvalue.clone(), rvalue)
         });
     }
@@ -57,7 +75,7 @@ impl<'tcx> CFG<'tcx> {
                                 temp: &Lvalue<'tcx>,
                                 constant: Constant<'tcx>) {
         self.push_assign(block, source_info, temp,
-                         Rvalue::Use(Operand::Constant(constant)));
+                         Rvalue::Use(Operand::Constant(box constant)));
     }
 
     pub fn push_assign_unit(&mut self,
@@ -65,7 +83,7 @@ impl<'tcx> CFG<'tcx> {
                             source_info: SourceInfo,
                             lvalue: &Lvalue<'tcx>) {
         self.push_assign(block, source_info, lvalue, Rvalue::Aggregate(
-            AggregateKind::Tuple, vec![]
+            box AggregateKind::Tuple, vec![]
         ));
     }
 
@@ -79,8 +97,8 @@ impl<'tcx> CFG<'tcx> {
                       block,
                       self.block_data(block));
         self.block_data_mut(block).terminator = Some(Terminator {
-            source_info: source_info,
-            kind: kind,
+            source_info,
+            kind,
         });
     }
 }

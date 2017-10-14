@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! The 32-bit floating point type.
+//! This module provides constants which are specific to the implementation
+//! of the `f32` floating point data type. Mathematically significant
+//! numbers are provided in the `consts` sub-module.
 //!
 //! *[See also the `f32` primitive type](../primitive.f32.html).*
 
@@ -19,8 +21,6 @@
 use core::num;
 #[cfg(not(test))]
 use intrinsics;
-#[cfg(not(test))]
-use libc::c_int;
 #[cfg(not(test))]
 use num::FpCategory;
 
@@ -46,8 +46,6 @@ mod cmath {
         pub fn erfcf(n: c_float) -> c_float;
         pub fn expm1f(n: c_float) -> c_float;
         pub fn fdimf(a: c_float, b: c_float) -> c_float;
-        pub fn fmaxf(a: c_float, b: c_float) -> c_float;
-        pub fn fminf(a: c_float, b: c_float) -> c_float;
         pub fn fmodf(a: c_float, b: c_float) -> c_float;
         pub fn ilogbf(n: c_float) -> c_int;
         pub fn logbf(n: c_float) -> c_float;
@@ -71,8 +69,6 @@ mod cmath {
         pub fn atan2f(a: c_float, b: c_float) -> c_float;
         pub fn atanf(n: c_float) -> c_float;
         pub fn coshf(n: c_float) -> c_float;
-        pub fn frexpf(n: c_float, value: &mut c_int) -> c_float;
-        pub fn ldexpf(x: c_float, n: c_int) -> c_float;
         pub fn sinhf(n: c_float) -> c_float;
         pub fn tanf(n: c_float) -> c_float;
         pub fn tanhf(n: c_float) -> c_float;
@@ -82,7 +78,7 @@ mod cmath {
     pub use self::shims::*;
     #[cfg(target_env = "msvc")]
     mod shims {
-        use libc::{c_float, c_int};
+        use libc::c_float;
 
         #[inline]
         pub unsafe fn acosf(n: c_float) -> c_float {
@@ -107,20 +103,6 @@ mod cmath {
         #[inline]
         pub unsafe fn coshf(n: c_float) -> c_float {
             f64::cosh(n as f64) as c_float
-        }
-
-        #[inline]
-        #[allow(deprecated)]
-        pub unsafe fn frexpf(x: c_float, value: &mut c_int) -> c_float {
-            let (a, b) = f64::frexp(x as f64);
-            *value = b as c_int;
-            a as c_float
-        }
-
-        #[inline]
-        #[allow(deprecated)]
-        pub unsafe fn ldexpf(x: c_float, n: c_int) -> c_float {
-            f64::ldexp(x as f64, n as isize) as c_float
         }
 
         #[inline]
@@ -241,40 +223,6 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn classify(self) -> FpCategory { num::Float::classify(self) }
-
-    /// Returns the mantissa, base 2 exponent, and sign as integers, respectively.
-    /// The original number can be recovered by `sign * mantissa * 2 ^ exponent`.
-    /// The floating point encoding is documented in the [Reference][floating-point].
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// use std::f32;
-    ///
-    /// let num = 2.0f32;
-    ///
-    /// // (8388608, -22, 1)
-    /// let (mantissa, exponent, sign) = num.integer_decode();
-    /// let sign_f = sign as f32;
-    /// let mantissa_f = mantissa as f32;
-    /// let exponent_f = num.powf(exponent as f32);
-    ///
-    /// // 1 * 8388608 * 2^(-22) == 2
-    /// let abs_difference = (sign_f * mantissa_f * exponent_f - num).abs();
-    ///
-    /// assert!(abs_difference <= f32::EPSILON);
-    /// ```
-    /// [floating-point]: ../reference.html#machine-types
-    #[unstable(feature = "float_extras", reason = "signature is undecided",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    #[allow(deprecated)]
-    pub fn integer_decode(self) -> (u64, i16, i8) {
-        num::Float::integer_decode(self)
-    }
 
     /// Returns the largest integer less than or equal to a number.
     ///
@@ -415,39 +363,29 @@ impl f32 {
     #[inline]
     pub fn signum(self) -> f32 { num::Float::signum(self) }
 
-    /// Returns `true` if `self`'s sign bit is positive, including
-    /// `+0.0` and `INFINITY`.
+    /// Returns `true` if and only if `self` has a positive sign, including `+0.0`, `NaN`s with
+    /// positive sign bit and positive infinity.
     ///
     /// ```
-    /// use std::f32;
-    ///
-    /// let nan = f32::NAN;
     /// let f = 7.0_f32;
     /// let g = -7.0_f32;
     ///
     /// assert!(f.is_sign_positive());
     /// assert!(!g.is_sign_positive());
-    /// // Requires both tests to determine if is `NaN`
-    /// assert!(!nan.is_sign_positive() && !nan.is_sign_negative());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn is_sign_positive(self) -> bool { num::Float::is_sign_positive(self) }
 
-    /// Returns `true` if `self`'s sign is negative, including `-0.0`
-    /// and `NEG_INFINITY`.
+    /// Returns `true` if and only if `self` has a negative sign, including `-0.0`, `NaN`s with
+    /// negative sign bit and negative infinity.
     ///
     /// ```
-    /// use std::f32;
-    ///
-    /// let nan = f32::NAN;
     /// let f = 7.0f32;
     /// let g = -7.0f32;
     ///
     /// assert!(!f.is_sign_negative());
     /// assert!(g.is_sign_negative());
-    /// // Requires both tests to determine if is `NaN`.
-    /// assert!(!nan.is_sign_positive() && !nan.is_sign_negative());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -710,89 +648,6 @@ impl f32 {
     #[inline]
     pub fn to_radians(self) -> f32 { num::Float::to_radians(self) }
 
-    /// Constructs a floating point number of `x*2^exp`.
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// use std::f32;
-    /// // 3*2^2 - 12 == 0
-    /// let abs_difference = (f32::ldexp(3.0, 2) - 12.0).abs();
-    ///
-    /// assert!(abs_difference <= f32::EPSILON);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "pending integer conventions",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn ldexp(x: f32, exp: isize) -> f32 {
-        unsafe { cmath::ldexpf(x, exp as c_int) }
-    }
-
-    /// Breaks the number into a normalized fraction and a base-2 exponent,
-    /// satisfying:
-    ///
-    ///  * `self = x * 2^exp`
-    ///  * `0.5 <= abs(x) < 1.0`
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// use std::f32;
-    ///
-    /// let x = 4.0f32;
-    ///
-    /// // (1/2)*2^3 -> 1 * 8/2 -> 4.0
-    /// let f = x.frexp();
-    /// let abs_difference_0 = (f.0 - 0.5).abs();
-    /// let abs_difference_1 = (f.1 as f32 - 3.0).abs();
-    ///
-    /// assert!(abs_difference_0 <= f32::EPSILON);
-    /// assert!(abs_difference_1 <= f32::EPSILON);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "pending integer conventions",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn frexp(self) -> (f32, isize) {
-        unsafe {
-            let mut exp = 0;
-            let x = cmath::frexpf(self, &mut exp);
-            (x, exp as isize)
-        }
-    }
-
-    /// Returns the next representable floating-point value in the direction of
-    /// `other`.
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// use std::f32;
-    ///
-    /// let x = 1.0f32;
-    ///
-    /// let abs_diff = (x.next_after(2.0) - 1.00000011920928955078125_f32).abs();
-    ///
-    /// assert!(abs_diff <= f32::EPSILON);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "unsure about its place in the world",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn next_after(self, other: f32) -> f32 {
-        unsafe { cmath::nextafterf(self, other) }
-    }
-
     /// Returns the maximum of the two numbers.
     ///
     /// ```
@@ -806,7 +661,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn max(self, other: f32) -> f32 {
-        unsafe { cmath::fmaxf(self, other) }
+        num::Float::max(self, other)
     }
 
     /// Returns the minimum of the two numbers.
@@ -822,7 +677,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn min(self, other: f32) -> f32 {
-        unsafe { cmath::fminf(self, other) }
+        num::Float::min(self, other)
     }
 
     /// The positive difference of two numbers.
@@ -1224,6 +1079,69 @@ impl f32 {
     pub fn atanh(self) -> f32 {
         0.5 * ((2.0 * self) / (1.0 - self)).ln_1p()
     }
+
+    /// Raw transmutation to `u32`.
+    ///
+    /// Converts the `f32` into its raw memory representation,
+    /// similar to the `transmute` function.
+    ///
+    /// Note that this function is distinct from casting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_ne!((1f32).to_bits(), 1f32 as u32); // to_bits() is not casting!
+    /// assert_eq!((12.5f32).to_bits(), 0x41480000);
+    ///
+    /// ```
+    #[stable(feature = "float_bits_conv", since = "1.20.0")]
+    #[inline]
+    pub fn to_bits(self) -> u32 {
+        unsafe { ::mem::transmute(self) }
+    }
+
+    /// Raw transmutation from `u32`.
+    ///
+    /// Converts the given `u32` containing the float's raw memory
+    /// representation into the `f32` type, similar to the
+    /// `transmute` function.
+    ///
+    /// There is only one difference to a bare `transmute`:
+    /// Due to the implications onto Rust's safety promises being
+    /// uncertain, if the representation of a signaling NaN "sNaN" float
+    /// is passed to the function, the implementation is allowed to
+    /// return a quiet NaN instead.
+    ///
+    /// Note that this function is distinct from casting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::f32;
+    /// let v = f32::from_bits(0x41480000);
+    /// let difference = (v - 12.5).abs();
+    /// assert!(difference <= 1e-5);
+    /// // Example for a signaling NaN value:
+    /// let snan = 0x7F800001;
+    /// assert_ne!(f32::from_bits(snan).to_bits(), snan);
+    /// ```
+    #[stable(feature = "float_bits_conv", since = "1.20.0")]
+    #[inline]
+    pub fn from_bits(mut v: u32) -> Self {
+        const EXP_MASK: u32   = 0x7F800000;
+        const FRACT_MASK: u32 = 0x007FFFFF;
+        if v & EXP_MASK == EXP_MASK && v & FRACT_MASK != 0 {
+            // While IEEE 754-2008 specifies encodings for quiet NaNs
+            // and signaling ones, certain MIPS and PA-RISC
+            // CPUs treat signaling NaNs differently.
+            // Therefore to be safe, we pass a known quiet NaN
+            // if v is any kind of NaN.
+            // The check above only assumes IEEE 754-1985 to be
+            // valid.
+            v = unsafe { ::mem::transmute(NAN) };
+        }
+        unsafe { ::mem::transmute(v) }
+    }
 }
 
 #[cfg(test)]
@@ -1257,7 +1175,7 @@ mod tests {
         assert!(!nan.is_infinite());
         assert!(!nan.is_finite());
         assert!(!nan.is_normal());
-        assert!(!nan.is_sign_positive());
+        assert!(nan.is_sign_positive());
         assert!(!nan.is_sign_negative());
         assert_eq!(Fp::Nan, nan.classify());
     }
@@ -1399,23 +1317,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_integer_decode() {
-        assert_eq!(3.14159265359f32.integer_decode(), (13176795, -22, 1));
-        assert_eq!((-8573.5918555f32).integer_decode(), (8779358, -10, -1));
-        assert_eq!(2f32.powf(100.0).integer_decode(), (8388608, 77, 1));
-        assert_eq!(0f32.integer_decode(), (0, -150, 1));
-        assert_eq!((-0f32).integer_decode(), (0, -150, -1));
-        assert_eq!(INFINITY.integer_decode(), (8388608, 105, 1));
-        assert_eq!(NEG_INFINITY.integer_decode(), (8388608, 105, -1));
-
-        // Ignore the "sign" (quiet / signalling flag) of NAN.
-        // It can vary between runtime operations and LLVM folding.
-        let (nan_m, nan_e, _nan_s) = NAN.integer_decode();
-        assert_eq!((nan_m, nan_e), (12582912, 105));
-    }
-
-    #[test]
     fn test_floor() {
         assert_approx_eq!(1.0f32.floor(), 1.0f32);
         assert_approx_eq!(1.3f32.floor(), 1.0f32);
@@ -1518,7 +1419,8 @@ mod tests {
         assert!(!(-1f32).is_sign_positive());
         assert!(!NEG_INFINITY.is_sign_positive());
         assert!(!(1f32/NEG_INFINITY).is_sign_positive());
-        assert!(!NAN.is_sign_positive());
+        assert!(NAN.is_sign_positive());
+        assert!(!(-NAN).is_sign_positive());
     }
 
     #[test]
@@ -1531,6 +1433,7 @@ mod tests {
         assert!(NEG_INFINITY.is_sign_negative());
         assert!((1f32/NEG_INFINITY).is_sign_negative());
         assert!(!NAN.is_sign_negative());
+        assert!((-NAN).is_sign_negative());
     }
 
     #[test]
@@ -1727,58 +1630,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_ldexp() {
-        let f1 = 2.0f32.powi(-123);
-        let f2 = 2.0f32.powi(-111);
-        let f3 = 1.75 * 2.0f32.powi(-12);
-        assert_eq!(f32::ldexp(1f32, -123), f1);
-        assert_eq!(f32::ldexp(1f32, -111), f2);
-        assert_eq!(f32::ldexp(1.75f32, -12), f3);
-
-        assert_eq!(f32::ldexp(0f32, -123), 0f32);
-        assert_eq!(f32::ldexp(-0f32, -123), -0f32);
-
-        let inf: f32 = f32::INFINITY;
-        let neg_inf: f32 = f32::NEG_INFINITY;
-        let nan: f32 = f32::NAN;
-        assert_eq!(f32::ldexp(inf, -123), inf);
-        assert_eq!(f32::ldexp(neg_inf, -123), neg_inf);
-        assert!(f32::ldexp(nan, -123).is_nan());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_frexp() {
-        let f1 = 2.0f32.powi(-123);
-        let f2 = 2.0f32.powi(-111);
-        let f3 = 1.75 * 2.0f32.powi(-123);
-        let (x1, exp1) = f1.frexp();
-        let (x2, exp2) = f2.frexp();
-        let (x3, exp3) = f3.frexp();
-        assert_eq!((x1, exp1), (0.5f32, -122));
-        assert_eq!((x2, exp2), (0.5f32, -110));
-        assert_eq!((x3, exp3), (0.875f32, -122));
-        assert_eq!(f32::ldexp(x1, exp1), f1);
-        assert_eq!(f32::ldexp(x2, exp2), f2);
-        assert_eq!(f32::ldexp(x3, exp3), f3);
-
-        assert_eq!(0f32.frexp(), (0f32, 0));
-        assert_eq!((-0f32).frexp(), (-0f32, 0));
-    }
-
-    #[test] #[cfg_attr(windows, ignore)] // FIXME #8755
-    #[allow(deprecated)]
-    fn test_frexp_nowin() {
-        let inf: f32 = f32::INFINITY;
-        let neg_inf: f32 = f32::NEG_INFINITY;
-        let nan: f32 = f32::NAN;
-        assert_eq!(match inf.frexp() { (x, _) => x }, inf);
-        assert_eq!(match neg_inf.frexp() { (x, _) => x }, neg_inf);
-        assert!(match nan.frexp() { (x, _) => x.is_nan() })
-    }
-
-    #[test]
     fn test_asinh() {
         assert_eq!(0.0f32.asinh(), 0.0f32);
         assert_eq!((-0.0f32).asinh(), -0.0f32);
@@ -1867,5 +1718,37 @@ mod tests {
         assert_approx_eq!(log10_e, e.log10());
         assert_approx_eq!(ln_2, 2f32.ln());
         assert_approx_eq!(ln_10, 10f32.ln());
+    }
+
+    #[test]
+    fn test_float_bits_conv() {
+        assert_eq!((1f32).to_bits(), 0x3f800000);
+        assert_eq!((12.5f32).to_bits(), 0x41480000);
+        assert_eq!((1337f32).to_bits(), 0x44a72000);
+        assert_eq!((-14.25f32).to_bits(), 0xc1640000);
+        assert_approx_eq!(f32::from_bits(0x3f800000), 1.0);
+        assert_approx_eq!(f32::from_bits(0x41480000), 12.5);
+        assert_approx_eq!(f32::from_bits(0x44a72000), 1337.0);
+        assert_approx_eq!(f32::from_bits(0xc1640000), -14.25);
+    }
+    #[test]
+    fn test_snan_masking() {
+        // NOTE: this test assumes that our current platform
+        // implements IEEE 754-2008 that specifies the difference
+        // in encoding of quiet and signaling NaNs.
+        // If you are porting Rust to a platform that does not
+        // implement IEEE 754-2008 (but e.g. IEEE 754-1985, which
+        // only says that "Signaling NaNs shall be reserved operands"
+        // but doesn't specify the actual setup), feel free to
+        // cfg out this test.
+        let snan: u32 = 0x7F801337;
+        const QNAN_MASK: u32  = 0x00400000;
+        let nan_masked_fl = f32::from_bits(snan);
+        let nan_masked = nan_masked_fl.to_bits();
+        // Ensure that signaling NaNs don't stay the same
+        assert_ne!(nan_masked, snan);
+        // Ensure that we have a quiet NaN
+        assert_ne!(nan_masked & QNAN_MASK, 0);
+        assert!(nan_masked_fl.is_nan());
     }
 }

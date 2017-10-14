@@ -8,8 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(box_syntax)]
-#![feature(const_fn)]
+#![feature(box_syntax, const_refcell_new)]
 
 use std::cell::RefCell;
 
@@ -17,5 +16,6 @@ use std::cell::RefCell;
 static boxed: Box<RefCell<isize>> = box RefCell::new(0);
 //~^ ERROR allocations are not allowed in statics
 //~| ERROR `std::cell::RefCell<isize>: std::marker::Sync` is not satisfied
+//~| WARN unsupported constant expr
 
 fn main() { }

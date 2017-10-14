@@ -8,11 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use llvm::*;
-use abi::{ArgAttribute, FnType};
-use type_::Type;
-use super::common::*;
-use super::machine::*;
+use abi::{ArgAttribute, FnType, LayoutExt, Reg, RegKind};
+use common::CrateContext;
+
+use rustc::ty::layout::{self, Layout, TyLayout};
 
 #[derive(PartialEq)]
 pub enum Flavor {
@@ -20,9 +19,27 @@ pub enum Flavor {
     Fastcall
 }
 
-pub fn compute_abi_info(ccx: &CrateContext, fty: &mut FnType, flavor: Flavor) {
+fn is_single_fp_element<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                                  layout: TyLayout<'tcx>) -> bool {
+    match *layout {
+        Layout::Scalar { value: layout::F32, .. } |
+        Layout::Scalar { value: layout::F64, .. } => true,
+        Layout::Univariant { .. } => {
+            if layout.field_count() == 1 {
+                is_single_fp_element(ccx, layout.field(ccx, 0))
+            } else {
+                false
+            }
+        }
+        _ => false
+    }
+}
+
+pub fn compute_abi_info<'a, 'tcx>(ccx: &CrateContext<'a, 'tcx>,
+                                  fty: &mut FnType<'tcx>,
+                                  flavor: Flavor) {
     if !fty.ret.is_ignore() {
-        if fty.ret.ty.kind() == Struct {
+        if fty.ret.layout.is_aggregate() {
             // Returning a structure. Most often, this will use
             // a hidden first argument. On some platforms, though,
             // small structs are returned as integers.
@@ -33,12 +50,24 @@ pub fn compute_abi_info(ccx: &CrateContext, fty: &mut FnType, flavor: Flavor) {
             let t = &ccx.sess().target.target;
             if t.options.is_like_osx || t.options.is_like_windows
                 || t.options.is_like_openbsd {
-                match llsize_of_alloc(ccx, fty.ret.ty) {
-                    1 => fty.ret.cast = Some(Type::i8(ccx)),
-                    2 => fty.ret.cast = Some(Type::i16(ccx)),
-                    4 => fty.ret.cast = Some(Type::i32(ccx)),
-                    8 => fty.ret.cast = Some(Type::i64(ccx)),
-                    _ => fty.ret.make_indirect(ccx)
+                let size = fty.ret.layout.size(ccx);
+
+                // According to Clang, everyone but MSVC returns single-element
+                // float aggregates directly in a floating-point register.
+                if !t.options.is_like_msvc && is_single_fp_element(ccx, fty.ret.layout) {
+                    match size.bytes() {
+                        4 => fty.ret.cast_to(ccx, Reg::f32()),
+                        8 => fty.ret.cast_to(ccx, Reg::f64()),
+                        _ => fty.ret.make_indirect(ccx)
+                    }
+                } else {
+                    match size.bytes() {
+                        1 => fty.ret.cast_to(ccx, Reg::i8()),
+                        2 => fty.ret.cast_to(ccx, Reg::i16()),
+                        4 => fty.ret.cast_to(ccx, Reg::i32()),
+                        8 => fty.ret.cast_to(ccx, Reg::i64()),
+                        _ => fty.ret.make_indirect(ccx)
+                    }
                 }
             } else {
                 fty.ret.make_indirect(ccx);
@@ -50,7 +79,7 @@ pub fn compute_abi_info(ccx: &CrateContext, fty: &mut FnType, flavor: Flavor) {
 
     for arg in &mut fty.args {
         if arg.is_ignore() { continue; }
-        if arg.ty.kind() == Struct {
+        if arg.layout.is_aggregate() {
             arg.make_indirect(ccx);
             arg.attrs.set(ArgAttribute::ByVal);
         } else {
@@ -73,12 +102,15 @@ pub fn compute_abi_info(ccx: &CrateContext, fty: &mut FnType, flavor: Flavor) {
         for arg in &mut fty.args {
             if arg.is_ignore() || arg.is_indirect() { continue; }
 
-            if arg.ty.kind() == Float {
+            // At this point we know this must be a primitive of sorts.
+            let unit = arg.layout.homogeneous_aggregate(ccx).unwrap();
+            let size = arg.layout.size(ccx);
+            assert_eq!(unit.size, size);
+            if unit.kind == RegKind::Float {
                 continue;
             }
 
-            let size = llbitsize_of_real(ccx, arg.ty);
-            let size_in_regs = (size + 31) / 32;
+            let size_in_regs = (size.bits() + 31) / 32;
 
             if size_in_regs == 0 {
                 continue;
@@ -90,7 +122,7 @@ pub fn compute_abi_info(ccx: &CrateContext, fty: &mut FnType, flavor: Flavor) {
 
             free_regs -= size_in_regs;
 
-            if size <= 32 && (arg.ty.kind() == Pointer || arg.ty.kind() == Integer) {
+            if size.bits() <= 32 && unit.kind == RegKind::Integer {
                 arg.attrs.set(ArgAttribute::InReg);
             }
 

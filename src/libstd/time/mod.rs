@@ -33,10 +33,10 @@ pub use self::duration::Duration;
 
 mod duration;
 
-/// A measurement of a monotonically increasing clock.
+/// A measurement of a monotonically nondecreasing clock.
 /// Opaque and useful only with `Duration`.
 ///
-/// Instants are always guaranteed to be greater than any previously measured
+/// Instants are always guaranteed to be no less than any previously measured
 /// instant when created, and are often useful for tasks such as measuring
 /// benchmarks or timing how long an operation takes.
 ///
@@ -112,7 +112,7 @@ pub struct Instant(time::Instant);
 ///            println!("{}", elapsed.as_secs());
 ///        }
 ///        Err(e) => {
-///            // an error occured!
+///            // an error occurred!
 ///            println!("Error: {:?}", e);
 ///        }
 ///    }
@@ -163,10 +163,7 @@ impl Instant {
     ///
     /// # Panics
     ///
-    /// This function will panic if `earlier` is later than `self`, which should
-    /// only be possible if `earlier` was created after `self`. Because
-    /// `Instant` is monotonic, the only time that this should happen should be
-    /// a bug.
+    /// This function will panic if `earlier` is later than `self`.
     ///
     /// # Examples
     ///
@@ -385,6 +382,17 @@ impl fmt::Debug for SystemTime {
 /// [`SystemTime`] instance to represent another fixed point in time.
 ///
 /// [`SystemTime`]: ../../std/time/struct.SystemTime.html
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::{SystemTime, UNIX_EPOCH};
+///
+/// match SystemTime::now().duration_since(UNIX_EPOCH) {
+///     Ok(n) => println!("1970-01-01 00:00:00 UTC was {} seconds ago!", n.as_secs()),
+///     Err(_) => panic!("SystemTime before UNIX EPOCH!"),
+/// }
+/// ```
 #[stable(feature = "time2", since = "1.8.0")]
 pub const UNIX_EPOCH: SystemTime = SystemTime(time::UNIX_EPOCH);
 
@@ -501,7 +509,7 @@ mod tests {
                 let dur = dur.duration();
                 assert!(a > b);
                 assert_almost_eq!(b + dur, a);
-                assert_almost_eq!(b - dur, a);
+                assert_almost_eq!(a - dur, b);
             }
         }
 
@@ -512,9 +520,12 @@ mod tests {
 
         assert_almost_eq!(a - second + second, a);
 
-        let eighty_years = second * 60 * 60 * 24 * 365 * 80;
-        assert_almost_eq!(a - eighty_years + eighty_years, a);
-        assert_almost_eq!(a - (eighty_years * 10) + (eighty_years * 10), a);
+        // A difference of 80 and 800 years cannot fit inside a 32-bit time_t
+        if !(cfg!(unix) && ::mem::size_of::<::libc::time_t>() <= 4) {
+            let eighty_years = second * 60 * 60 * 24 * 365 * 80;
+            assert_almost_eq!(a - eighty_years + eighty_years, a);
+            assert_almost_eq!(a - (eighty_years * 10) + (eighty_years * 10), a);
+        }
 
         let one_second_from_epoch = UNIX_EPOCH + Duration::new(1, 0);
         let one_second_from_epoch2 = UNIX_EPOCH + Duration::new(0, 500_000_000)
@@ -536,9 +547,17 @@ mod tests {
         assert!(b > a);
         assert_eq!(b - a, Duration::new(1, 0));
 
-        // let's assume that we're all running computers later than 2000
         let thirty_years = Duration::new(1, 0) * 60 * 60 * 24 * 365 * 30;
-        assert!(a > thirty_years);
+
+        // Right now for CI this test is run in an emulator, and apparently the
+        // aarch64 emulator's sense of time is that we're still living in the
+        // 70s.
+        //
+        // Otherwise let's assume that we're all running computers later than
+        // 2000.
+        if !cfg!(target_arch = "aarch64") {
+            assert!(a > thirty_years);
+        }
 
         // let's assume that we're all running computers earlier than 2090.
         // Should give us ~70 years to fix this!

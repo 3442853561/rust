@@ -11,6 +11,7 @@
 //! A wrapper around another RNG that reseeds it after it
 //! generates a certain number of random bytes.
 
+use core::fmt;
 use {Rng, SeedableRng};
 
 /// How many bytes of entropy the underling RNG is allowed to generate
@@ -23,7 +24,7 @@ pub struct ReseedingRng<R, Rsdr> {
     rng: R,
     generation_threshold: usize,
     bytes_generated: usize,
-    /// Controls the behaviour when reseeding the RNG.
+    /// Controls the behavior when reseeding the RNG.
     pub reseeder: Rsdr,
 }
 
@@ -37,10 +38,10 @@ impl<R: Rng, Rsdr: Reseeder<R>> ReseedingRng<R, Rsdr> {
     /// * `reseeder`: the reseeding object to use.
     pub fn new(rng: R, generation_threshold: usize, reseeder: Rsdr) -> ReseedingRng<R, Rsdr> {
         ReseedingRng {
-            rng: rng,
-            generation_threshold: generation_threshold,
+            rng,
+            generation_threshold,
             bytes_generated: 0,
-            reseeder: reseeder,
+            reseeder,
         }
     }
 
@@ -53,7 +54,6 @@ impl<R: Rng, Rsdr: Reseeder<R>> ReseedingRng<R, Rsdr> {
         }
     }
 }
-
 
 impl<R: Rng, Rsdr: Reseeder<R>> Rng for ReseedingRng<R, Rsdr> {
     fn next_u32(&mut self) -> u32 {
@@ -95,6 +95,17 @@ impl<S, R: SeedableRng<S>, Rsdr: Reseeder<R> + Default>
     }
 }
 
+impl<R: fmt::Debug, Rsdr: fmt::Debug> fmt::Debug for ReseedingRng<R, Rsdr> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ReseedingRng")
+         .field("rng", &self.rng)
+         .field("generation_threshold", &self.generation_threshold)
+         .field("bytes_generated", &self.bytes_generated)
+         .field("reseeder", &self.reseeder)
+         .finish()
+    }
+}
+
 /// Something that can be used to reseed an RNG via `ReseedingRng`.
 pub trait Reseeder<R> {
     /// Reseed the given RNG.
@@ -103,7 +114,7 @@ pub trait Reseeder<R> {
 
 /// Reseed an RNG using a `Default` instance. This reseeds by
 /// replacing the RNG with the result of a `Default::default` call.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct ReseedWithDefault;
 
 impl<R: Rng + Default> Reseeder<R> for ReseedWithDefault {

@@ -15,6 +15,8 @@ use syntax::feature_gate;
 use syntax::parse::token;
 use syntax::ptr::P;
 use syntax_pos::Span;
+use syntax_pos::symbol::Symbol;
+use syntax_pos::hygiene::SyntaxContext;
 use syntax::tokenstream::TokenTree;
 
 pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
@@ -50,7 +52,10 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
             }
         }
     }
-    let res = ast::Ident::from_str(&res_str);
+    let res = ast::Ident {
+        name: Symbol::intern(&res_str),
+        ctxt: SyntaxContext::empty().apply_mark(cx.current_expansion.mark),
+    };
 
     struct Result {
         ident: ast::Ident,
@@ -61,7 +66,7 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
         fn path(&self) -> ast::Path {
             ast::Path {
                 span: self.span,
-                segments: vec![self.ident.into()],
+                segments: vec![ast::PathSegment::from_ident(self.ident, self.span)],
             }
         }
     }
@@ -87,6 +92,6 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
 
     Box::new(Result {
         ident: res,
-        span: sp,
+        span: sp.with_ctxt(sp.ctxt().apply_mark(cx.current_expansion.mark)),
     })
 }

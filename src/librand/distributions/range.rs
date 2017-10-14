@@ -12,6 +12,7 @@
 
 // this is surprisingly complicated to be both generic & correct
 
+use core::fmt;
 use core::marker::Sized;
 use Rng;
 use distributions::{IndependentSample, Sample};
@@ -50,9 +51,20 @@ impl<Sup: SampleRange> Sample<Sup> for Range<Sup> {
         self.ind_sample(rng)
     }
 }
+
 impl<Sup: SampleRange> IndependentSample<Sup> for Range<Sup> {
     fn ind_sample<R: Rng>(&self, rng: &mut R) -> Sup {
         SampleRange::sample_range(self, rng)
+    }
+}
+
+impl<X: fmt::Debug> fmt::Debug for Range<X> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Range")
+         .field("low", &self.low)
+         .field("range", &self.range)
+         .field("accept_zone", &self.accept_zone)
+         .finish()
     }
 }
 
@@ -92,7 +104,7 @@ macro_rules! integer_impl {
                 let zone = unsigned_max - unsigned_max % range;
 
                 Range {
-                    low: low,
+                    low,
                     range: range as $ty,
                     accept_zone: zone as $ty
                 }
@@ -131,7 +143,7 @@ macro_rules! float_impl {
         impl SampleRange for $ty {
             fn construct_range(low: $ty, high: $ty) -> Range<$ty> {
                 Range {
-                    low: low,
+                    low,
                     range: high - low,
                     accept_zone: 0.0 // unused
                 }

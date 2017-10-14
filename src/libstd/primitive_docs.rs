@@ -12,7 +12,8 @@
 //
 /// The boolean type.
 ///
-/// The `bool` represents a value, which could only be either `true` or `false`.
+/// The `bool` represents a value, which could only be either `true` or `false`. If you cast
+/// a `bool` into an integer, `true` will be 1 and `false` will be 0.
 ///
 /// # Basic usage
 ///
@@ -28,7 +29,7 @@
 /// ```
 ///
 /// [`assert!`]: macro.assert.html
-/// [`if`]: ../book/if.html
+/// [`if`]: ../book/first-edition/if.html
 /// [`BitAnd`]: ops/trait.BitAnd.html
 /// [`BitOr`]: ops/trait.BitOr.html
 /// [`Not`]: ops/trait.Not.html
@@ -56,6 +57,13 @@
 ///
 /// Also, since `bool` implements the [`Copy`](marker/trait.Copy.html) trait, we don't
 /// have to worry about the move semantics (just like the integer and float primitives).
+///
+/// Now an example of `bool` cast to integer type:
+///
+/// ```
+/// assert_eq!(true as i32, 1);
+/// assert_eq!(false as i32, 0);
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_bool { }
 
@@ -95,26 +103,31 @@ mod prim_bool { }
 /// [`String`]: string/struct.String.html
 ///
 /// As always, remember that a human intuition for 'character' may not map to
-/// Unicode's definitions. For example, emoji symbols such as '❤️' can be more
-/// than one Unicode code point; this ❤️ in particular is two:
+/// Unicode's definitions. For example, despite looking similar, the 'é'
+/// character is one Unicode code point while 'é' is two Unicode code points:
 ///
 /// ```
-/// let s = String::from("❤️");
+/// let mut chars = "é".chars();
+/// // U+00e9: 'latin small letter e with acute'
+/// assert_eq!(Some('\u{00e9}'), chars.next());
+/// assert_eq!(None, chars.next());
 ///
-/// // we get two chars out of a single ❤️
-/// let mut iter = s.chars();
-/// assert_eq!(Some('\u{2764}'), iter.next());
-/// assert_eq!(Some('\u{fe0f}'), iter.next());
-/// assert_eq!(None, iter.next());
+/// let mut chars = "é".chars();
+/// // U+0065: 'latin small letter e'
+/// assert_eq!(Some('\u{0065}'), chars.next());
+/// // U+0301: 'combining acute accent'
+/// assert_eq!(Some('\u{0301}'), chars.next());
+/// assert_eq!(None, chars.next());
 /// ```
 ///
-/// This means it won't fit into a `char`. Trying to create a literal with
-/// `let heart = '❤️';` gives an error:
+/// This means that the contents of the first string above _will_ fit into a
+/// `char` while the contents of the second string _will not_. Trying to create
+/// a `char` literal with the contents of the second string gives an error:
 ///
 /// ```text
-/// error: character literal may only contain one codepoint: '❤
-/// let heart = '❤️';
-///             ^~
+/// error: character literal may only contain one codepoint: 'é'
+/// let c = 'é';
+///         ^^^^
 /// ```
 ///
 /// Another implication of the 4-byte fixed size of a `char` is that
@@ -175,9 +188,10 @@ mod prim_unit { }
 /// Working with raw pointers in Rust is uncommon,
 /// typically limited to a few patterns.
 ///
-/// Use the `null` function to create null pointers, and the `is_null` method
-/// of the `*const T` type  to check for null. The `*const T` type also defines
-/// the `offset` method, for pointer math.
+/// Use the [`null`] and [`null_mut`] functions to create null pointers, and the
+/// [`is_null`] method of the `*const T` and `*mut T` types to check for null.
+/// The `*const T` and `*mut T` types also define the [`offset`] method, for
+/// pointer math.
 ///
 /// # Common ways to create raw pointers
 ///
@@ -205,7 +219,7 @@ mod prim_unit { }
 ///
 /// ## 2. Consume a box (`Box<T>`).
 ///
-/// The `into_raw` function consumes a box and returns
+/// The [`into_raw`] function consumes a box and returns
 /// the raw pointer. It doesn't destroy `T` or deallocate any memory.
 ///
 /// ```
@@ -219,7 +233,7 @@ mod prim_unit { }
 /// }
 /// ```
 ///
-/// Note that here the call to `drop` is for clarity - it indicates
+/// Note that here the call to [`drop`] is for clarity - it indicates
 /// that we are done with the given value and it should be destroyed.
 ///
 /// ## 3. Get it from C.
@@ -247,6 +261,12 @@ mod prim_unit { }
 ///
 /// *[See also the `std::ptr` module](ptr/index.html).*
 ///
+/// [`null`]: ../std/ptr/fn.null.html
+/// [`null_mut`]: ../std/ptr/fn.null_mut.html
+/// [`is_null`]: ../std/primitive.pointer.html#method.is_null
+/// [`offset`]: ../std/primitive.pointer.html#method.offset
+/// [`into_raw`]: ../std/boxed/struct.Box.html#method.into_raw
+/// [`drop`]: ../std/mem/fn.drop.html
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_pointer { }
 
@@ -264,7 +284,7 @@ mod prim_pointer { }
 /// Arrays of sizes from 0 to 32 (inclusive) implement the following traits if
 /// the element type allows it:
 ///
-/// - [`Clone`][clone] (only if `T: Copy`)
+/// - [`Clone`][clone] (only if `T: `[`Copy`][copy])
 /// - [`Debug`][debug]
 /// - [`IntoIterator`][intoiterator] (implemented for `&[T; N]` and `&mut [T; N]`)
 /// - [`PartialEq`][partialeq], [`PartialOrd`][partialord], [`Eq`][eq], [`Ord`][ord]
@@ -279,8 +299,8 @@ mod prim_pointer { }
 /// entirely different types. As a stopgap, trait implementations are
 /// statically generated up to size 32.
 ///
-/// Arrays of *any* size are [`Copy`][copy] if the element type is `Copy`. This
-/// works because the `Copy` trait is specially known to the compiler.
+/// Arrays of *any* size are [`Copy`][copy] if the element type is [`Copy`][copy]. This
+/// works because the [`Copy`][copy] trait is specially known to the compiler.
 ///
 /// Arrays coerce to [slices (`[T]`)][slice], so a slice method may be called on
 /// an array. Indeed, this provides most of the API for working with arrays.
@@ -288,23 +308,6 @@ mod prim_pointer { }
 ///
 /// There is no way to move elements out of an array. See [`mem::replace`][replace]
 /// for an alternative.
-///
-/// [slice]: primitive.slice.html
-/// [copy]: marker/trait.Copy.html
-/// [clone]: clone/trait.Clone.html
-/// [debug]: fmt/trait.Debug.html
-/// [intoiterator]: iter/trait.IntoIterator.html
-/// [partialeq]: cmp/trait.PartialEq.html
-/// [partialord]: cmp/trait.PartialOrd.html
-/// [eq]: cmp/trait.Eq.html
-/// [ord]: cmp/trait.Ord.html
-/// [hash]: hash/trait.Hash.html
-/// [asref]: convert/trait.AsRef.html
-/// [asmut]: convert/trait.AsMut.html
-/// [borrow]: borrow/trait.Borrow.html
-/// [borrowmut]: borrow/trait.BorrowMut.html
-/// [default]: default/trait.Default.html
-/// [replace]: mem/fn.replace.html
 ///
 /// # Examples
 ///
@@ -324,7 +327,7 @@ mod prim_pointer { }
 ///
 /// An array itself is not iterable:
 ///
-/// ```ignore
+/// ```compile_fail,E0277
 /// let array: [i32; 3] = [0; 3];
 ///
 /// for x in array { }
@@ -339,12 +342,30 @@ mod prim_pointer { }
 /// ```
 ///
 /// If the array has 32 or fewer elements (see above), you can also use the
-/// array reference's `IntoIterator` implementation:
+/// array reference's [`IntoIterator`] implementation:
 ///
 /// ```
 /// # let array: [i32; 3] = [0; 3];
 /// for x in &array { }
 /// ```
+///
+/// [slice]: primitive.slice.html
+/// [copy]: marker/trait.Copy.html
+/// [clone]: clone/trait.Clone.html
+/// [debug]: fmt/trait.Debug.html
+/// [intoiterator]: iter/trait.IntoIterator.html
+/// [partialeq]: cmp/trait.PartialEq.html
+/// [partialord]: cmp/trait.PartialOrd.html
+/// [eq]: cmp/trait.Eq.html
+/// [ord]: cmp/trait.Ord.html
+/// [hash]: hash/trait.Hash.html
+/// [asref]: convert/trait.AsRef.html
+/// [asmut]: convert/trait.AsMut.html
+/// [borrow]: borrow/trait.Borrow.html
+/// [borrowmut]: borrow/trait.BorrowMut.html
+/// [default]: default/trait.Default.html
+/// [replace]: mem/fn.replace.html
+/// [`IntoIterator`]: iter/trait.IntoIterator.html
 ///
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_array { }
@@ -392,7 +413,7 @@ mod prim_slice { }
 ///
 /// This documentation describes a number of methods and trait implementations
 /// on the `str` type. For technical reasons, there is additional, separate
-/// documentation in [the `std::str` module](str/index.html) as well.
+/// documentation in the [`std::str`](str/index.html) module as well.
 ///
 /// # Examples
 ///
@@ -411,7 +432,7 @@ mod prim_slice { }
 /// # Representation
 ///
 /// A `&str` is made up of two components: a pointer to some bytes, and a
-/// length. You can look at these with the [`.as_ptr()`] and [`len()`] methods:
+/// length. You can look at these with the [`as_ptr`] and [`len`] methods:
 ///
 /// ```
 /// use std::slice;
@@ -438,11 +459,11 @@ mod prim_slice { }
 /// assert_eq!(s, Ok(story));
 /// ```
 ///
-/// [`.as_ptr()`]: #method.as_ptr
-/// [`len()`]: #method.len
+/// [`as_ptr`]: #method.as_ptr
+/// [`len`]: #method.len
 ///
 /// Note: This example shows the internals of `&str`. `unsafe` should not be
-/// used to get a string slice under normal circumstances. Use `.as_slice()`
+/// used to get a string slice under normal circumstances. Use `as_slice`
 /// instead.
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_str { }
@@ -466,8 +487,10 @@ mod prim_str { }
 /// Tuples are *heterogeneous*. This means that each element of the tuple can
 /// have a different type. In that tuple above, it has the type:
 ///
-/// ```rust,ignore
+/// ```
+/// # let _:
 /// (&'static str, i32, char)
+/// # = ("hello", 5, 'c');
 /// ```
 ///
 /// Tuples are a *sequence*. This means that they can be accessed by position;
@@ -481,7 +504,7 @@ mod prim_str { }
 /// assert_eq!(tuple.2, 'c');
 /// ```
 ///
-/// For more about tuples, see [the book](../book/primitive-types.html#tuples).
+/// For more about tuples, see [the book](../book/first-edition/primitive-types.html#tuples).
 ///
 /// # Trait implementations
 ///
@@ -687,6 +710,10 @@ mod prim_u128 { }
 //
 /// The pointer-sized signed integer type.
 ///
+/// The size of this primitive is how many bytes it takes to reference any
+/// location in memory. For example, on a 32 bit target, this is 4 bytes
+/// and on a 64 bit target, this is 8 bytes.
+///
 /// *[See also the `std::isize` module](isize/index.html).*
 ///
 /// However, please note that examples are shared between primitive integer
@@ -699,6 +726,10 @@ mod prim_isize { }
 //
 /// The pointer-sized unsigned integer type.
 ///
+/// The size of this primitive is how many bytes it takes to reference any
+/// location in memory. For example, on a 32 bit target, this is 4 bytes
+/// and on a 64 bit target, this is 8 bytes.
+///
 /// *[See also the `std::usize` module](usize/index.html).*
 ///
 /// However, please note that examples are shared between primitive integer
@@ -706,3 +737,221 @@ mod prim_isize { }
 ///
 #[stable(feature = "rust1", since = "1.0.0")]
 mod prim_usize { }
+
+#[doc(primitive = "reference")]
+//
+/// References, both shared and mutable.
+///
+/// A reference represents a borrow of some owned value. You can get one by using the `&` or `&mut`
+/// operators on a value, or by using a `ref` or `ref mut` pattern.
+///
+/// For those familiar with pointers, a reference is just a pointer that is assumed to not be null.
+/// In fact, `Option<&T>` has the same memory representation as a nullable pointer, and can be
+/// passed across FFI boundaries as such.
+///
+/// In most cases, references can be used much like the original value. Field access, method
+/// calling, and indexing work the same (save for mutability rules, of course). In addition, the
+/// comparison operators transparently defer to the referent's implementation, allowing references
+/// to be compared the same as owned values.
+///
+/// References have a lifetime attached to them, which represents the scope for which the borrow is
+/// valid. A lifetime is said to "outlive" another one if its representative scope is as long or
+/// longer than the other. The `'static` lifetime is the longest lifetime, which represents the
+/// total life of the program. For example, string literals have a `'static` lifetime because the
+/// text data is embedded into the binary of the program, rather than in an allocation that needs
+/// to be dynamically managed.
+///
+/// `&mut T` references can be freely coerced into `&T` references with the same referent type, and
+/// references with longer lifetimes can be freely coerced into references with shorter ones.
+///
+/// For more information on how to use references, see [the book's section on "References and
+/// Borrowing"][book-refs].
+///
+/// [book-refs]: ../book/second-edition/ch04-02-references-and-borrowing.html
+///
+/// The following traits are implemented for all `&T`, regardless of the type of its referent:
+///
+/// * [`Copy`]
+/// * [`Clone`] \(Note that this will not defer to `T`'s `Clone` implementation if it exists!)
+/// * [`Deref`]
+/// * [`Borrow`]
+/// * [`Pointer`]
+///
+/// [`Copy`]: marker/trait.Copy.html
+/// [`Clone`]: clone/trait.Clone.html
+/// [`Deref`]: ops/trait.Deref.html
+/// [`Borrow`]: borrow/trait.Borrow.html
+/// [`Pointer`]: fmt/trait.Pointer.html
+///
+/// `&mut T` references get all of the above except `Copy` and `Clone` (to prevent creating
+/// multiple simultaneous mutable borrows), plus the following, regardless of the type of its
+/// referent:
+///
+/// * [`DerefMut`]
+/// * [`BorrowMut`]
+///
+/// [`DerefMut`]: ops/trait.DerefMut.html
+/// [`BorrowMut`]: borrow/trait.BorrowMut.html
+///
+/// The following traits are implemented on `&T` references if the underlying `T` also implements
+/// that trait:
+///
+/// * All the traits in [`std::fmt`] except [`Pointer`] and [`fmt::Write`]
+/// * [`PartialOrd`]
+/// * [`Ord`]
+/// * [`PartialEq`]
+/// * [`Eq`]
+/// * [`AsRef`]
+/// * [`Fn`] \(in addition, `&T` references get [`FnMut`] and [`FnOnce`] if `T: Fn`)
+/// * [`Hash`]
+/// * [`ToSocketAddrs`]
+///
+/// [`std::fmt`]: fmt/index.html
+/// [`fmt::Write`]: fmt/trait.Write.html
+/// [`PartialOrd`]: cmp/trait.PartialOrd.html
+/// [`Ord`]: cmp/trait.Ord.html
+/// [`PartialEq`]: cmp/trait.PartialEq.html
+/// [`Eq`]: cmp/trait.Eq.html
+/// [`AsRef`]: convert/trait.AsRef.html
+/// [`Fn`]: ops/trait.Fn.html
+/// [`FnMut`]: ops/trait.FnMut.html
+/// [`FnOnce`]: ops/trait.FnOnce.html
+/// [`Hash`]: hash/trait.Hash.html
+/// [`ToSocketAddrs`]: net/trait.ToSocketAddrs.html
+///
+/// `&mut T` references get all of the above except `ToSocketAddrs`, plus the following, if `T`
+/// implements that trait:
+///
+/// * [`AsMut`]
+/// * [`FnMut`] \(in addition, `&mut T` references get [`FnOnce`] if `T: FnMut`)
+/// * [`fmt::Write`]
+/// * [`Iterator`]
+/// * [`DoubleEndedIterator`]
+/// * [`ExactSizeIterator`]
+/// * [`FusedIterator`]
+/// * [`TrustedLen`]
+/// * [`Send`] \(note that `&T` references only get `Send` if `T: Sync`)
+/// * [`io::Write`]
+/// * [`Read`]
+/// * [`Seek`]
+/// * [`BufRead`]
+///
+/// [`AsMut`]: convert/trait.AsMut.html
+/// [`Iterator`]: iter/trait.Iterator.html
+/// [`DoubleEndedIterator`]: iter/trait.DoubleEndedIterator.html
+/// [`ExactSizeIterator`]: iter/trait.ExactSizeIterator.html
+/// [`FusedIterator`]: iter/trait.FusedIterator.html
+/// [`TrustedLen`]: iter/trait.TrustedLen.html
+/// [`Send`]: marker/trait.Send.html
+/// [`io::Write`]: io/trait.Write.html
+/// [`Read`]: io/trait.Read.html
+/// [`Seek`]: io/trait.Seek.html
+/// [`BufRead`]: io/trait.BufRead.html
+///
+/// Note that due to method call deref coercion, simply calling a trait method will act like they
+/// work on references as well as they do on owned values! The implementations described here are
+/// meant for generic contexts, where the final type `T` is a type parameter or otherwise not
+/// locally known.
+#[stable(feature = "rust1", since = "1.0.0")]
+mod prim_ref { }
+
+#[doc(primitive = "fn")]
+//
+/// Function pointers, like `fn(usize) -> bool`.
+///
+/// *See also the traits [`Fn`], [`FnMut`], and [`FnOnce`].*
+///
+/// [`Fn`]: ops/trait.Fn.html
+/// [`FnMut`]: ops/trait.FnMut.html
+/// [`FnOnce`]: ops/trait.FnOnce.html
+///
+/// Plain function pointers are obtained by casting either plain functions, or closures that don't
+/// capture an environment:
+///
+/// ```
+/// fn add_one(x: usize) -> usize {
+///     x + 1
+/// }
+///
+/// let ptr: fn(usize) -> usize = add_one;
+/// assert_eq!(ptr(5), 6);
+///
+/// let clos: fn(usize) -> usize = |x| x + 5;
+/// assert_eq!(clos(5), 10);
+/// ```
+///
+/// In addition to varying based on their signature, function pointers come in two flavors: safe
+/// and unsafe. Plain `fn()` function pointers can only point to safe functions,
+/// while `unsafe fn()` function pointers can point to safe or unsafe functions.
+///
+/// ```
+/// fn add_one(x: usize) -> usize {
+///     x + 1
+/// }
+///
+/// unsafe fn add_one_unsafely(x: usize) -> usize {
+///     x + 1
+/// }
+///
+/// let safe_ptr: fn(usize) -> usize = add_one;
+///
+/// //ERROR: mismatched types: expected normal fn, found unsafe fn
+/// //let bad_ptr: fn(usize) -> usize = add_one_unsafely;
+///
+/// let unsafe_ptr: unsafe fn(usize) -> usize = add_one_unsafely;
+/// let really_safe_ptr: unsafe fn(usize) -> usize = add_one;
+/// ```
+///
+/// On top of that, function pointers can vary based on what ABI they use. This is achieved by
+/// adding the `extern` keyword to the type name, followed by the ABI in question. For example,
+/// `fn()` is different from `extern "C" fn()`, which itself is different from `extern "stdcall"
+/// fn()`, and so on for the various ABIs that Rust supports.  Non-`extern` functions have an ABI
+/// of `"Rust"`, and `extern` functions without an explicit ABI have an ABI of `"C"`. For more
+/// information, see [the nomicon's section on foreign calling conventions][nomicon-abi].
+///
+/// [nomicon-abi]: ../nomicon/ffi.html#foreign-calling-conventions
+///
+/// Extern function declarations with the "C" or "cdecl" ABIs can also be *variadic*, allowing them
+/// to be called with a variable number of arguments. Normal rust functions, even those with an
+/// `extern "ABI"`, cannot be variadic. For more information, see [the nomicon's section on
+/// variadic functions][nomicon-variadic].
+///
+/// [nomicon-variadic]: ../nomicon/ffi.html#variadic-functions
+///
+/// These markers can be combined, so `unsafe extern "stdcall" fn()` is a valid type.
+///
+/// Like references in rust, function pointers are assumed to not be null, so if you want to pass a
+/// function pointer over FFI and be able to accommodate null pointers, make your type
+/// `Option<fn()>` with your required signature.
+///
+/// Function pointers implement the following traits:
+///
+/// * [`Clone`]
+/// * [`PartialEq`]
+/// * [`Eq`]
+/// * [`PartialOrd`]
+/// * [`Ord`]
+/// * [`Hash`]
+/// * [`Pointer`]
+/// * [`Debug`]
+///
+/// [`Clone`]: clone/trait.Clone.html
+/// [`PartialEq`]: cmp/trait.PartialEq.html
+/// [`Eq`]: cmp/trait.Eq.html
+/// [`PartialOrd`]: cmp/trait.PartialOrd.html
+/// [`Ord`]: cmp/trait.Ord.html
+/// [`Hash`]: hash/trait.Hash.html
+/// [`Pointer`]: fmt/trait.Pointer.html
+/// [`Debug`]: fmt/trait.Debug.html
+///
+/// Due to a temporary restriction in Rust's type system, these traits are only implemented on
+/// functions that take 12 arguments or less, with the `"Rust"` and `"C"` ABIs. In the future, this
+/// may change.
+///
+/// In addition, function pointers of *any* signature, ABI, or safety are [`Copy`], and all *safe*
+/// function pointers implement [`Fn`], [`FnMut`], and [`FnOnce`]. This works because these traits
+/// are specially known to the compiler.
+///
+/// [`Copy`]: marker/trait.Copy.html
+#[stable(feature = "rust1", since = "1.0.0")]
+mod prim_fn { }

@@ -37,7 +37,7 @@ pub use panicking::{take_hook, set_hook, PanicInfo, Location};
 /// In Rust a function can "return" early if it either panics or calls a
 /// function which transitively panics. This sort of control flow is not always
 /// anticipated, and has the possibility of causing subtle bugs through a
-/// combination of two cricial components:
+/// combination of two critical components:
 ///
 /// 1. A data structure is in a temporarily invalid state when the thread
 ///    panics.
@@ -112,7 +112,7 @@ pub trait UnwindSafe {}
 /// This is a "helper marker trait" used to provide impl blocks for the
 /// `UnwindSafe` trait, for more information see that documentation.
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-#[rustc_on_unimplemented = "the type {Self} contains interior mutability \
+#[rustc_on_unimplemented = "the type {Self} may contain interior mutability \
                             and a reference may not be safely transferrable \
                             across a catch_unwind boundary"]
 pub trait RefUnwindSafe {}
@@ -198,7 +198,7 @@ impl<T: RefUnwindSafe + ?Sized> UnwindSafe for *const T {}
 #[stable(feature = "catch_unwind", since = "1.9.0")]
 impl<T: RefUnwindSafe + ?Sized> UnwindSafe for *mut T {}
 #[unstable(feature = "unique", issue = "27730")]
-impl<T: UnwindSafe> UnwindSafe for Unique<T> {}
+impl<T: UnwindSafe + ?Sized> UnwindSafe for Unique<T> {}
 #[unstable(feature = "shared", issue = "27730")]
 impl<T: RefUnwindSafe + ?Sized> UnwindSafe for Shared<T> {}
 #[stable(feature = "catch_unwind", since = "1.9.0")]
@@ -297,7 +297,7 @@ impl<R, F: FnOnce() -> R> FnOnce<()> for AssertUnwindSafe<F> {
     }
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<T: fmt::Debug> fmt::Debug for AssertUnwindSafe<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_tuple("AssertUnwindSafe")

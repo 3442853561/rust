@@ -12,7 +12,7 @@ use io::prelude::*;
 
 use core::convert::TryInto;
 use cmp;
-use io::{self, SeekFrom, Error, ErrorKind};
+use io::{self, Initializer, SeekFrom, Error, ErrorKind};
 
 /// A `Cursor` wraps another type and provides it with a
 /// [`Seek`] implementation.
@@ -45,10 +45,10 @@ use io::{self, SeekFrom, Error, ErrorKind};
 ///
 /// // a library function we've written
 /// fn write_ten_bytes_at_end<W: Write + Seek>(writer: &mut W) -> io::Result<()> {
-///     try!(writer.seek(SeekFrom::End(-10)));
+///     writer.seek(SeekFrom::End(-10))?;
 ///
 ///     for i in 0..10 {
-///         try!(writer.write(&[i]));
+///         writer.write(&[i])?;
 ///     }
 ///
 ///     // all went well
@@ -60,16 +60,16 @@ use io::{self, SeekFrom, Error, ErrorKind};
 /// //
 /// // We might want to use a BufReader here for efficiency, but let's
 /// // keep this example focused.
-/// let mut file = try!(File::create("foo.txt"));
+/// let mut file = File::create("foo.txt")?;
 ///
-/// try!(write_ten_bytes_at_end(&mut file));
+/// write_ten_bytes_at_end(&mut file)?;
 /// # Ok(())
 /// # }
 ///
 /// // now let's write a test
 /// #[test]
 /// fn test_writes_bytes() {
-///     // setting up a real File is much more slow than an in-memory buffer,
+///     // setting up a real File is much slower than an in-memory buffer,
 ///     // let's use a cursor instead
 ///     use std::io::Cursor;
 ///     let mut buff = Cursor::new(vec![0; 15]);
@@ -88,6 +88,10 @@ pub struct Cursor<T> {
 
 impl<T> Cursor<T> {
     /// Creates a new cursor wrapping the provided underlying I/O object.
+    ///
+    /// Cursor initial position is `0` even if underlying object (e.
+    /// g. `Vec`) is not empty. So writing to cursor starts with
+    /// overwriting `Vec` content, not with appending to it.
     ///
     /// # Examples
     ///
@@ -200,18 +204,20 @@ impl<T> Cursor<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> io::Seek for Cursor<T> where T: AsRef<[u8]> {
     fn seek(&mut self, style: SeekFrom) -> io::Result<u64> {
-        let pos = match style {
-            SeekFrom::Start(n) => { self.pos = n; return Ok(n) }
-            SeekFrom::End(n) => self.inner.as_ref().len() as i64 + n,
-            SeekFrom::Current(n) => self.pos as i64 + n,
+        let (base_pos, offset) = match style {
+            SeekFrom::Start(n) => { self.pos = n; return Ok(n); }
+            SeekFrom::End(n) => (self.inner.as_ref().len() as u64, n),
+            SeekFrom::Current(n) => (self.pos, n),
         };
-
-        if pos < 0 {
-            Err(Error::new(ErrorKind::InvalidInput,
-                           "invalid seek to a negative position"))
+        let new_pos = if offset >= 0 {
+            base_pos.checked_add(offset as u64)
         } else {
-            self.pos = pos as u64;
-            Ok(self.pos)
+            base_pos.checked_sub((offset.wrapping_neg()) as u64)
+        };
+        match new_pos {
+            Some(n) => {self.pos = n; Ok(self.pos)}
+            None => Err(Error::new(ErrorKind::InvalidInput,
+                           "invalid seek to a negative or overflowing position"))
         }
     }
 }
@@ -222,6 +228,11 @@ impl<T> Read for Cursor<T> where T: AsRef<[u8]> {
         let n = Read::read(&mut self.fill_buf()?, buf)?;
         self.pos += n as u64;
         Ok(n)
+    }
+
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::nop()
     }
 }
 
@@ -445,7 +456,7 @@ mod tests {
     #[test]
     fn test_slice_reader() {
         let in_buf = vec![0, 1, 2, 3, 4, 5, 6, 7];
-        let mut reader = &mut &in_buf[..];
+        let reader = &mut &in_buf[..];
         let mut buf = [];
         assert_eq!(reader.read(&mut buf).unwrap(), 0);
         let mut buf = [0];
@@ -524,6 +535,43 @@ mod tests {
         let mut r = Cursor::new(vec![10].into_boxed_slice());
         assert_eq!(r.seek(SeekFrom::Start(10)).unwrap(), 10);
         assert_eq!(r.write(&[3]).unwrap(), 0);
+    }
+
+    #[test]
+    fn seek_past_i64() {
+        let buf = [0xff];
+        let mut r = Cursor::new(&buf[..]);
+        assert_eq!(r.seek(SeekFrom::Start(6)).unwrap(), 6);
+        assert_eq!(r.seek(SeekFrom::Current(0x7ffffffffffffff0)).unwrap(), 0x7ffffffffffffff6);
+        assert_eq!(r.seek(SeekFrom::Current(0x10)).unwrap(), 0x8000000000000006);
+        assert_eq!(r.seek(SeekFrom::Current(0)).unwrap(), 0x8000000000000006);
+        assert!(r.seek(SeekFrom::Current(0x7ffffffffffffffd)).is_err());
+        assert_eq!(r.seek(SeekFrom::Current(-0x8000000000000000)).unwrap(), 6);
+
+        let mut r = Cursor::new(vec![10]);
+        assert_eq!(r.seek(SeekFrom::Start(6)).unwrap(), 6);
+        assert_eq!(r.seek(SeekFrom::Current(0x7ffffffffffffff0)).unwrap(), 0x7ffffffffffffff6);
+        assert_eq!(r.seek(SeekFrom::Current(0x10)).unwrap(), 0x8000000000000006);
+        assert_eq!(r.seek(SeekFrom::Current(0)).unwrap(), 0x8000000000000006);
+        assert!(r.seek(SeekFrom::Current(0x7ffffffffffffffd)).is_err());
+        assert_eq!(r.seek(SeekFrom::Current(-0x8000000000000000)).unwrap(), 6);
+
+        let mut buf = [0];
+        let mut r = Cursor::new(&mut buf[..]);
+        assert_eq!(r.seek(SeekFrom::Start(6)).unwrap(), 6);
+        assert_eq!(r.seek(SeekFrom::Current(0x7ffffffffffffff0)).unwrap(), 0x7ffffffffffffff6);
+        assert_eq!(r.seek(SeekFrom::Current(0x10)).unwrap(), 0x8000000000000006);
+        assert_eq!(r.seek(SeekFrom::Current(0)).unwrap(), 0x8000000000000006);
+        assert!(r.seek(SeekFrom::Current(0x7ffffffffffffffd)).is_err());
+        assert_eq!(r.seek(SeekFrom::Current(-0x8000000000000000)).unwrap(), 6);
+
+        let mut r = Cursor::new(vec![10].into_boxed_slice());
+        assert_eq!(r.seek(SeekFrom::Start(6)).unwrap(), 6);
+        assert_eq!(r.seek(SeekFrom::Current(0x7ffffffffffffff0)).unwrap(), 0x7ffffffffffffff6);
+        assert_eq!(r.seek(SeekFrom::Current(0x10)).unwrap(), 0x8000000000000006);
+        assert_eq!(r.seek(SeekFrom::Current(0)).unwrap(), 0x8000000000000006);
+        assert!(r.seek(SeekFrom::Current(0x7ffffffffffffffd)).is_err());
+        assert_eq!(r.seek(SeekFrom::Current(-0x8000000000000000)).unwrap(), 6);
     }
 
     #[test]

@@ -16,9 +16,9 @@
 use build::{BlockAnd, BlockAndExtension, Builder};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::bitvec::BitVector;
-use rustc::middle::const_val::ConstVal;
-use rustc::ty::{AdtDef, Ty};
+use rustc::ty::{self, Ty};
 use rustc::mir::*;
+use rustc::hir;
 use hair::*;
 use syntax::ast::{Name, NodeId};
 use syntax_pos::Span;
@@ -46,8 +46,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         // Get the arm bodies and their scopes, while declaring bindings.
         let arm_bodies: Vec<_> = arms.iter().map(|arm| {
+            // BUG: use arm lint level
             let body = self.hir.mirror(arm.body.clone());
-            let scope = self.declare_bindings(None, body.span, &arm.patterns[0]);
+            let scope = self.declare_bindings(None, body.span,
+                                              LintLevel::Inherited,
+                                              &arm.patterns[0]);
             (body, scope.unwrap_or(self.visibility_scope))
         }).collect();
 
@@ -68,8 +71,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         span: pattern.span,
                         match_pairs: vec![MatchPair::new(discriminant_lvalue.clone(), pattern)],
                         bindings: vec![],
-                        guard: guard,
-                        arm_index: arm_index,
+                        guard,
+                        arm_index,
                     }
                 })
                 .collect();
@@ -122,16 +125,16 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             PatternKind::Binding { mode: BindingMode::ByValue,
                                    var,
                                    subpattern: None, .. } => {
-                self.storage_live_for_bindings(block, &irrefutable_pat);
-                let lvalue = Lvalue::Local(self.var_indices[&var]);
-                return self.into(&lvalue, block, initializer);
+                let lvalue = self.storage_live_binding(block, var, irrefutable_pat.span);
+                unpack!(block = self.into(&lvalue, block, initializer));
+                self.schedule_drop_for_binding(var, irrefutable_pat.span);
+                block.unit()
             }
-            _ => {}
+            _ => {
+                let lvalue = unpack!(block = self.as_lvalue(block, initializer));
+                self.lvalue_into_pattern(block, irrefutable_pat, &lvalue)
+            }
         }
-        let lvalue = unpack!(block = self.as_lvalue(block, initializer));
-        self.lvalue_into_pattern(block,
-                                 irrefutable_pat,
-                                 &lvalue)
     }
 
     pub fn lvalue_into_pattern(&mut self,
@@ -171,80 +174,87 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub fn declare_bindings(&mut self,
                             mut var_scope: Option<VisibilityScope>,
                             scope_span: Span,
+                            lint_level: LintLevel,
                             pattern: &Pattern<'tcx>)
                             -> Option<VisibilityScope> {
-        match *pattern.kind {
-            PatternKind::Binding { mutability, name, mode: _, var, ty, ref subpattern } => {
-                if var_scope.is_none() {
-                    var_scope = Some(self.new_visibility_scope(scope_span));
-                }
-                let source_info = SourceInfo {
-                    span: pattern.span,
-                    scope: var_scope.unwrap()
-                };
-                self.declare_binding(source_info, mutability, name, var, ty);
-                if let Some(subpattern) = subpattern.as_ref() {
-                    var_scope = self.declare_bindings(var_scope, scope_span, subpattern);
-                }
-            }
-            PatternKind::Array { ref prefix, ref slice, ref suffix } |
-            PatternKind::Slice { ref prefix, ref slice, ref suffix } => {
-                for subpattern in prefix.iter().chain(slice).chain(suffix) {
-                    var_scope = self.declare_bindings(var_scope, scope_span, subpattern);
+        assert!(!(var_scope.is_some() && lint_level.is_explicit()),
+               "can't have both a var and a lint scope at the same time");
+        self.visit_bindings(pattern, &mut |this, mutability, name, var, span, ty| {
+            if var_scope.is_none() {
+                var_scope = Some(this.new_visibility_scope(scope_span,
+                                                           LintLevel::Inherited,
+                                                           None));
+                // If we have lints, create a new visibility scope
+                // that marks the lints for the locals.
+                if lint_level.is_explicit() {
+                    this.visibility_scope =
+                        this.new_visibility_scope(scope_span, lint_level, None);
                 }
             }
-            PatternKind::Constant { .. } | PatternKind::Range { .. } | PatternKind::Wild => {
-            }
-            PatternKind::Deref { ref subpattern } => {
-                var_scope = self.declare_bindings(var_scope, scope_span, subpattern);
-            }
-            PatternKind::Leaf { ref subpatterns } |
-            PatternKind::Variant { ref subpatterns, .. } => {
-                for subpattern in subpatterns {
-                    var_scope = self.declare_bindings(var_scope, scope_span, &subpattern.pattern);
-                }
-            }
+            let source_info = SourceInfo {
+                span,
+                scope: var_scope.unwrap()
+            };
+            this.declare_binding(source_info, mutability, name, var, ty);
+        });
+        // Pop any scope we created for the locals.
+        if let Some(var_scope) = var_scope {
+            self.visibility_scope = var_scope;
         }
         var_scope
     }
 
-    /// Emit `StorageLive` for every binding in the pattern.
-    pub fn storage_live_for_bindings(&mut self,
-                                     block: BasicBlock,
-                                     pattern: &Pattern<'tcx>) {
-        match *pattern.kind {
-            PatternKind::Binding { var, ref subpattern, .. } => {
-                let lvalue = Lvalue::Local(self.var_indices[&var]);
-                let source_info = self.source_info(pattern.span);
-                self.cfg.push(block, Statement {
-                    source_info: source_info,
-                    kind: StatementKind::StorageLive(lvalue)
-                });
+    pub fn storage_live_binding(&mut self, block: BasicBlock, var: NodeId, span: Span)
+                            -> Lvalue<'tcx>
+    {
+        let local_id = self.var_indices[&var];
+        let source_info = self.source_info(span);
+        self.cfg.push(block, Statement {
+            source_info,
+            kind: StatementKind::StorageLive(local_id)
+        });
+        Lvalue::Local(local_id)
+    }
 
+    pub fn schedule_drop_for_binding(&mut self, var: NodeId, span: Span) {
+        let local_id = self.var_indices[&var];
+        let var_ty = self.local_decls[local_id].ty;
+        let hir_id = self.hir.tcx().hir.node_to_hir_id(var);
+        let region_scope = self.hir.region_scope_tree.var_scope(hir_id.local_id);
+        self.schedule_drop(span, region_scope, &Lvalue::Local(local_id), var_ty);
+    }
+
+    pub fn visit_bindings<F>(&mut self, pattern: &Pattern<'tcx>, f: &mut F)
+        where F: FnMut(&mut Self, Mutability, Name, NodeId, Span, Ty<'tcx>)
+    {
+        match *pattern.kind {
+            PatternKind::Binding { mutability, name, var, ty, ref subpattern, .. } => {
+                f(self, mutability, name, var, pattern.span, ty);
                 if let Some(subpattern) = subpattern.as_ref() {
-                    self.storage_live_for_bindings(block, subpattern);
+                    self.visit_bindings(subpattern, f);
                 }
             }
             PatternKind::Array { ref prefix, ref slice, ref suffix } |
             PatternKind::Slice { ref prefix, ref slice, ref suffix } => {
                 for subpattern in prefix.iter().chain(slice).chain(suffix) {
-                    self.storage_live_for_bindings(block, subpattern);
+                    self.visit_bindings(subpattern, f);
                 }
             }
             PatternKind::Constant { .. } | PatternKind::Range { .. } | PatternKind::Wild => {
             }
             PatternKind::Deref { ref subpattern } => {
-                self.storage_live_for_bindings(block, subpattern);
+                self.visit_bindings(subpattern, f);
             }
             PatternKind::Leaf { ref subpatterns } |
             PatternKind::Variant { ref subpatterns, .. } => {
                 for subpattern in subpatterns {
-                    self.storage_live_for_bindings(block, &subpattern.pattern);
+                    self.visit_bindings(&subpattern.pattern, f);
                 }
             }
         }
     }
 }
+
 
 /// List of blocks for each arm (and potentially other metadata in the
 /// future).
@@ -301,28 +311,29 @@ pub struct MatchPair<'pat, 'tcx:'pat> {
 enum TestKind<'tcx> {
     // test the branches of enum
     Switch {
-        adt_def: &'tcx AdtDef,
+        adt_def: &'tcx ty::AdtDef,
         variants: BitVector,
     },
 
     // test the branches of enum
     SwitchInt {
         switch_ty: Ty<'tcx>,
-        options: Vec<ConstVal>,
-        indices: FxHashMap<ConstVal, usize>,
+        options: Vec<&'tcx ty::Const<'tcx>>,
+        indices: FxHashMap<&'tcx ty::Const<'tcx>, usize>,
     },
 
     // test for equality
     Eq {
-        value: ConstVal,
+        value: &'tcx ty::Const<'tcx>,
         ty: Ty<'tcx>,
     },
 
-    // test whether the value falls within an inclusive range
+    // test whether the value falls within an inclusive or exclusive range
     Range {
         lo: Literal<'tcx>,
         hi: Literal<'tcx>,
         ty: Ty<'tcx>,
+        end: hir::RangeEnd,
     },
 
     // test length of the slice is equal to len
@@ -478,7 +489,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// But there may also be candidates that the test just doesn't
     /// apply to. The classical example involves wildcards:
     ///
-    /// ```rust,ignore
+    /// ```
+    /// # let (x, y, z) = (true, true, true);
     /// match (x, y, z) {
     ///     (true, _, true) => true,    // (0)
     ///     (_, true, _) => true,       // (1)
@@ -668,11 +680,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             // guard, this block is simply unreachable
             let guard = self.hir.mirror(guard);
             let source_info = self.source_info(guard.span);
-            let cond = unpack!(block = self.as_operand(block, guard));
+            let cond = unpack!(block = self.as_local_operand(block, guard));
             let otherwise = self.cfg.start_new_block();
             self.cfg.terminate(block, source_info,
-                               TerminatorKind::If { cond: cond,
-                                                    targets: (arm_block, otherwise)});
+                               TerminatorKind::if_(self.hir.tcx(), cond, arm_block, otherwise));
             Some(otherwise)
         } else {
             let source_info = self.source_info(candidate.span);
@@ -690,25 +701,16 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         // Assign each of the bindings. This may trigger moves out of the candidate.
         for binding in bindings {
-            // Find the variable for the `var_id` being bound. It
-            // should have been created by a previous call to
-            // `declare_bindings`.
-            let var_index = self.var_indices[&binding.var_id];
-
+            let source_info = self.source_info(binding.span);
+            let local = self.storage_live_binding(block, binding.var_id, binding.span);
+            self.schedule_drop_for_binding(binding.var_id, binding.span);
             let rvalue = match binding.binding_mode {
                 BindingMode::ByValue =>
                     Rvalue::Use(Operand::Consume(binding.source)),
                 BindingMode::ByRef(region, borrow_kind) =>
                     Rvalue::Ref(region, borrow_kind, binding.source),
             };
-
-            let source_info = self.source_info(binding.span);
-            self.cfg.push(block, Statement {
-                source_info: source_info,
-                kind: StatementKind::StorageLive(Lvalue::Local(var_index))
-            });
-            self.cfg.push_assign(block, source_info,
-                                 &Lvalue::Local(var_index), rvalue);
+            self.cfg.push_assign(block, source_info, &local, rvalue);
         }
     }
 
@@ -724,13 +726,14 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                var_id, name, var_ty, source_info);
 
         let var = self.local_decls.push(LocalDecl::<'tcx> {
-            mutability: mutability,
+            mutability,
             ty: var_ty.clone(),
             name: Some(name),
-            source_info: Some(source_info),
+            source_info,
+            lexical_scope: self.visibility_scope,
+            internal: false,
+            is_user_variable: true,
         });
-        let extent = self.hir.tcx().region_maps.var_scope(var_id);
-        self.schedule_drop(source_info.span, extent, &Lvalue::Local(var), var_ty);
         self.var_indices.insert(var_id, var);
 
         debug!("declare_binding: var={:?}", var);

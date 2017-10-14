@@ -1,34 +1,36 @@
 FROM ubuntu:16.04
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  g++ \
-  make \
-  file \
-  curl \
-  ca-certificates \
-  python2.7 \
-  git \
-  cmake \
-  sudo \
-  gdb \
-  xz-utils \
-  g++-arm-linux-gnueabi \
-  g++-arm-linux-gnueabihf
+COPY scripts/cross-apt-packages.sh /scripts/
+RUN sh /scripts/cross-apt-packages.sh
 
-ENV SCCACHE_DIGEST=7237e38e029342fa27b7ac25412cb9d52554008b12389727320bd533fd7f05b6a96d55485f305caf95e5c8f5f97c3313e10012ccad3e752aba2518f3522ba783
-RUN curl -L https://api.pub.build.mozilla.org/tooltool/sha512/$SCCACHE_DIGEST | \
-      tar xJf - -C /usr/local/bin --strip-components=1
+# Ubuntu 16.04 (this container) ships with make 4, but something in the
+# toolchains we build below chokes on that, so go back to make 3
+COPY scripts/make3.sh /scripts/
+RUN sh /scripts/make3.sh
 
-RUN curl -OL https://github.com/Yelp/dumb-init/releases/download/v1.2.0/dumb-init_1.2.0_amd64.deb && \
-    dpkg -i dumb-init_*.deb && \
-    rm dumb-init_*.deb
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+COPY scripts/crosstool-ng.sh /scripts/
+RUN sh /scripts/crosstool-ng.sh
 
-ENV RUST_CONFIGURE_ARGS \
-      --host=arm-unknown-linux-gnueabi,arm-unknown-linux-gnueabihf
-ENV SCRIPT \
-      python2.7 ../x.py dist \
-        --host arm-unknown-linux-gnueabi \
-        --target arm-unknown-linux-gnueabi \
-        --host arm-unknown-linux-gnueabihf \
-        --target arm-unknown-linux-gnueabihf
+COPY scripts/rustbuild-setup.sh /scripts/
+RUN sh /scripts/rustbuild-setup.sh
+USER rustbuild
+WORKDIR /tmp
+
+COPY dist-arm-linux/arm-linux-gnueabi.config dist-arm-linux/build-toolchains.sh /tmp/
+RUN ./build-toolchains.sh
+
+USER root
+
+COPY scripts/sccache.sh /scripts/
+RUN sh /scripts/sccache.sh
+
+ENV PATH=$PATH:/x-tools/arm-unknown-linux-gnueabi/bin
+
+ENV CC_arm_unknown_linux_gnueabi=arm-unknown-linux-gnueabi-gcc \
+    AR_arm_unknown_linux_gnueabi=arm-unknown-linux-gnueabi-ar \
+    CXX_arm_unknown_linux_gnueabi=arm-unknown-linux-gnueabi-g++
+
+ENV HOSTS=arm-unknown-linux-gnueabi
+
+ENV RUST_CONFIGURE_ARGS --host=$HOSTS --enable-extended
+ENV SCRIPT python2.7 ../x.py dist --host $HOSTS --target $HOSTS

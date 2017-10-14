@@ -65,7 +65,7 @@ const EXCEPTION_PATHS: &'static [&'static str] = &[
     "src/rtstartup", // Not sure what to do about this. magic stuff for mingw
 
     // temporary exceptions
-    "src/libstd/rtdeps.rs", // Until rustbuild replaces make
+    "src/libstd/lib.rs", // FIXME(#44217)
     "src/libstd/path.rs",
     "src/libstd/f32.rs",
     "src/libstd/f64.rs",
@@ -75,7 +75,8 @@ const EXCEPTION_PATHS: &'static [&'static str] = &[
     "src/libtest", // Probably should defer to unstable std::sys APIs
 
     // std testing crates, ok for now at least
-    "src/libcoretest",
+    "src/libcore/tests",
+    "src/liballoc/tests/lib.rs",
 
     // non-std crates
     "src/test",
@@ -126,8 +127,7 @@ fn check_cfgs(contents: &mut String, file: &Path,
             Ok(_) => unreachable!(),
             Err(i) => i + 1
         };
-        println!("{}:{}: platform-specific cfg: {}", file.display(), line, cfg);
-        *bad = true;
+        tidy_error!(bad, "{}:{}: platform-specific cfg: {}", file.display(), line, cfg);
     };
 
     for (idx, cfg) in cfgs.into_iter() {

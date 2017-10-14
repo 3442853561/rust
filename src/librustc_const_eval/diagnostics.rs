@@ -16,7 +16,7 @@
 register_long_diagnostics! {
 
 E0001: r##"
-## Note: this error code is no longer emitted by the compiler.
+#### Note: this error code is no longer emitted by the compiler.
 
 This error suggests that the expression arm corresponding to the noted pattern
 will never be reached as for all possible values of the expression being
@@ -43,7 +43,7 @@ arms.
 "##,
 
 E0002: r##"
-## Note: this error code is no longer emitted by the compiler.
+#### Note: this error code is no longer emitted by the compiler.
 
 This error indicates that an empty match expression is invalid because the type
 it is matching on is non-empty (there exist values of this type). In safe code
@@ -75,7 +75,7 @@ fn foo(x: Option<String>) {
 "##,
 
 E0003: r##"
-## Note: this error code is no longer emitted by the compiler.
+#### Note: this error code is no longer emitted by the compiler.
 
 Not-a-Number (NaN) values cannot be compared for equality and hence can never
 match the input to a match expression. So, the following will not compile:
@@ -436,28 +436,32 @@ that happens.
 Qualified names are good practice, and most code works well with them. But if
 you prefer them unqualified, you can import the variants into scope:
 
-```ignore
+```
 use Method::*;
 enum Method { GET, POST }
+# fn main() {}
 ```
 
 If you want others to be able to import variants from your module directly, use
 `pub use`:
 
-```ignore
+```
 pub use Method::*;
-enum Method { GET, POST }
+pub enum Method { GET, POST }
+# fn main() {}
 ```
 "##,
 
 
 E0297: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 Patterns used to bind names must be irrefutable. That is, they must guarantee
 that a name will be extracted in all cases. Instead of pattern matching the
 loop variable, consider using a `match` or `if let` inside the loop body. For
 instance:
 
-```compile_fail,E0297
+```compile_fail,E0005
 let xs : Vec<Option<i32>> = vec![Some(1), None];
 
 // This fails because `None` is not covered.
@@ -557,46 +561,11 @@ The `op_string_ref` binding has type `&Option<&String>` in both cases.
 See also https://github.com/rust-lang/rust/issues/14587
 "##,
 
-E0080: r##"
-This error indicates that the compiler was unable to sensibly evaluate an
-constant expression that had to be evaluated. Attempting to divide by 0
-or causing integer overflow are two ways to induce this error. For example:
-
-```compile_fail,E0080
-enum Enum {
-    X = (1 << 500),
-    Y = (1 / 0)
-}
-```
-
-Ensure that the expressions given can be evaluated as the desired integer type.
-See the FFI section of the Reference for more information about using a custom
-integer type:
-
-https://doc.rust-lang.org/reference.html#ffi-attributes
-"##,
-
-
-E0306: r##"
-In an array type `[T; N]`, `N` is the number of elements in the array. This
-must be an unsigned integer. Erroneous code example:
-
-```compile_fail,E0306
-const X: [i32; true] = [0]; // error: expected `usize` for array length,
-                            //        found boolean
-```
-
-Working example:
-
-```
-const X: [i32; 1] = [0];
-```
-"##,
 }
 
 
 register_diagnostics! {
-    E0298, // cannot compare constants
+//  E0298, // cannot compare constants
 //  E0299, // mismatched types between arms
 //  E0471, // constant evaluation error (in pattern)
 }

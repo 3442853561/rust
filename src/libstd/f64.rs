@@ -8,7 +8,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! The 64-bit floating point type.
+//! This module provides constants which are specific to the implementation
+//! of the `f64` floating point data type. Mathematically significant
+//! numbers are provided in the `consts` sub-module.
 //!
 //! *[See also the `f64` primitive type](../primitive.f64.html).*
 
@@ -19,8 +21,6 @@
 use core::num;
 #[cfg(not(test))]
 use intrinsics;
-#[cfg(not(test))]
-use libc::c_int;
 #[cfg(not(test))]
 use num::FpCategory;
 
@@ -51,8 +51,6 @@ mod cmath {
         pub fn erfc(n: c_double) -> c_double;
         pub fn expm1(n: c_double) -> c_double;
         pub fn fdim(a: c_double, b: c_double) -> c_double;
-        pub fn fmax(a: c_double, b: c_double) -> c_double;
-        pub fn fmin(a: c_double, b: c_double) -> c_double;
         pub fn fmod(a: c_double, b: c_double) -> c_double;
         pub fn frexp(n: c_double, value: &mut c_int) -> c_double;
         pub fn ilogb(n: c_double) -> c_int;
@@ -186,36 +184,6 @@ impl f64 {
     #[inline]
     pub fn classify(self) -> FpCategory { num::Float::classify(self) }
 
-    /// Returns the mantissa, base 2 exponent, and sign as integers, respectively.
-    /// The original number can be recovered by `sign * mantissa * 2 ^ exponent`.
-    /// The floating point encoding is documented in the [Reference][floating-point].
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// let num = 2.0f64;
-    ///
-    /// // (8388608, -22, 1)
-    /// let (mantissa, exponent, sign) = num.integer_decode();
-    /// let sign_f = sign as f64;
-    /// let mantissa_f = mantissa as f64;
-    /// let exponent_f = num.powf(exponent as f64);
-    ///
-    /// // 1 * 8388608 * 2^(-22) == 2
-    /// let abs_difference = (sign_f * mantissa_f * exponent_f - num).abs();
-    ///
-    /// assert!(abs_difference < 1e-10);
-    /// ```
-    /// [floating-point]: ../reference.html#machine-types
-    #[unstable(feature = "float_extras", reason = "signature is undecided",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    #[allow(deprecated)]
-    pub fn integer_decode(self) -> (u64, i16, i8) { num::Float::integer_decode(self) }
-
     /// Returns the largest integer less than or equal to a number.
     ///
     /// ```
@@ -333,21 +301,15 @@ impl f64 {
     #[inline]
     pub fn signum(self) -> f64 { num::Float::signum(self) }
 
-    /// Returns `true` if `self`'s sign bit is positive, including
-    /// `+0.0` and `INFINITY`.
+    /// Returns `true` if and only if `self` has a positive sign, including `+0.0`, `NaN`s with
+    /// positive sign bit and positive infinity.
     ///
     /// ```
-    /// use std::f64;
-    ///
-    /// let nan: f64 = f64::NAN;
-    ///
     /// let f = 7.0_f64;
     /// let g = -7.0_f64;
     ///
     /// assert!(f.is_sign_positive());
     /// assert!(!g.is_sign_positive());
-    /// // Requires both tests to determine if is `NaN`
-    /// assert!(!nan.is_sign_positive() && !nan.is_sign_negative());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -358,21 +320,15 @@ impl f64 {
     #[inline]
     pub fn is_positive(self) -> bool { num::Float::is_sign_positive(self) }
 
-    /// Returns `true` if `self`'s sign is negative, including `-0.0`
-    /// and `NEG_INFINITY`.
+    /// Returns `true` if and only if `self` has a negative sign, including `-0.0`, `NaN`s with
+    /// negative sign bit and negative infinity.
     ///
     /// ```
-    /// use std::f64;
-    ///
-    /// let nan = f64::NAN;
-    ///
     /// let f = 7.0_f64;
     /// let g = -7.0_f64;
     ///
     /// assert!(!f.is_sign_negative());
     /// assert!(g.is_sign_negative());
-    /// // Requires both tests to determine if is `NaN`.
-    /// assert!(!nan.is_sign_positive() && !nan.is_sign_negative());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -604,84 +560,6 @@ impl f64 {
     #[inline]
     pub fn to_radians(self) -> f64 { num::Float::to_radians(self) }
 
-    /// Constructs a floating point number of `x*2^exp`.
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// // 3*2^2 - 12 == 0
-    /// let abs_difference = (f64::ldexp(3.0, 2) - 12.0).abs();
-    ///
-    /// assert!(abs_difference < 1e-10);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "pending integer conventions",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn ldexp(x: f64, exp: isize) -> f64 {
-        unsafe { cmath::ldexp(x, exp as c_int) }
-    }
-
-    /// Breaks the number into a normalized fraction and a base-2 exponent,
-    /// satisfying:
-    ///
-    ///  * `self = x * 2^exp`
-    ///  * `0.5 <= abs(x) < 1.0`
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// let x = 4.0_f64;
-    ///
-    /// // (1/2)*2^3 -> 1 * 8/2 -> 4.0
-    /// let f = x.frexp();
-    /// let abs_difference_0 = (f.0 - 0.5).abs();
-    /// let abs_difference_1 = (f.1 as f64 - 3.0).abs();
-    ///
-    /// assert!(abs_difference_0 < 1e-10);
-    /// assert!(abs_difference_1 < 1e-10);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "pending integer conventions",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn frexp(self) -> (f64, isize) {
-        unsafe {
-            let mut exp = 0;
-            let x = cmath::frexp(self, &mut exp);
-            (x, exp as isize)
-        }
-    }
-
-    /// Returns the next representable floating-point value in the direction of
-    /// `other`.
-    ///
-    /// ```
-    /// #![feature(float_extras)]
-    ///
-    /// let x = 1.0f64;
-    ///
-    /// let abs_diff = (x.next_after(2.0) - 1.0000000000000002220446049250313_f64).abs();
-    ///
-    /// assert!(abs_diff < 1e-10);
-    /// ```
-    #[unstable(feature = "float_extras",
-               reason = "unsure about its place in the world",
-               issue = "27752")]
-    #[rustc_deprecated(since = "1.11.0",
-                       reason = "never really came to fruition and easily \
-                                 implementable outside the standard library")]
-    #[inline]
-    pub fn next_after(self, other: f64) -> f64 {
-        unsafe { cmath::nextafter(self, other) }
-    }
-
     /// Returns the maximum of the two numbers.
     ///
     /// ```
@@ -695,7 +573,7 @@ impl f64 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn max(self, other: f64) -> f64 {
-        unsafe { cmath::fmax(self, other) }
+        num::Float::max(self, other)
     }
 
     /// Returns the minimum of the two numbers.
@@ -711,7 +589,7 @@ impl f64 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn min(self, other: f64) -> f64 {
-        unsafe { cmath::fmin(self, other) }
+        num::Float::min(self, other)
     }
 
     /// The positive difference of two numbers.
@@ -1116,6 +994,69 @@ impl f64 {
             }
         }
     }
+
+    /// Raw transmutation to `u64`.
+    ///
+    /// Converts the `f64` into its raw memory representation,
+    /// similar to the `transmute` function.
+    ///
+    /// Note that this function is distinct from casting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert!((1f64).to_bits() != 1f64 as u64); // to_bits() is not casting!
+    /// assert_eq!((12.5f64).to_bits(), 0x4029000000000000);
+    ///
+    /// ```
+    #[stable(feature = "float_bits_conv", since = "1.20.0")]
+    #[inline]
+    pub fn to_bits(self) -> u64 {
+        unsafe { ::mem::transmute(self) }
+    }
+
+    /// Raw transmutation from `u64`.
+    ///
+    /// Converts the given `u64` containing the float's raw memory
+    /// representation into the `f64` type, similar to the
+    /// `transmute` function.
+    ///
+    /// There is only one difference to a bare `transmute`:
+    /// Due to the implications onto Rust's safety promises being
+    /// uncertain, if the representation of a signaling NaN "sNaN" float
+    /// is passed to the function, the implementation is allowed to
+    /// return a quiet NaN instead.
+    ///
+    /// Note that this function is distinct from casting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::f64;
+    /// let v = f64::from_bits(0x4029000000000000);
+    /// let difference = (v - 12.5).abs();
+    /// assert!(difference <= 1e-5);
+    /// // Example for a signaling NaN value:
+    /// let snan = 0x7FF0000000000001;
+    /// assert_ne!(f64::from_bits(snan).to_bits(), snan);
+    /// ```
+    #[stable(feature = "float_bits_conv", since = "1.20.0")]
+    #[inline]
+    pub fn from_bits(mut v: u64) -> Self {
+        const EXP_MASK: u64   = 0x7FF0000000000000;
+        const FRACT_MASK: u64 = 0x000FFFFFFFFFFFFF;
+        if v & EXP_MASK == EXP_MASK && v & FRACT_MASK != 0 {
+            // While IEEE 754-2008 specifies encodings for quiet NaNs
+            // and signaling ones, certain MIPS and PA-RISC
+            // CPUs treat signaling NaNs differently.
+            // Therefore to be safe, we pass a known quiet NaN
+            // if v is any kind of NaN.
+            // The check above only assumes IEEE 754-1985 to be
+            // valid.
+            v = unsafe { ::mem::transmute(NAN) };
+        }
+        unsafe { ::mem::transmute(v) }
+    }
 }
 
 #[cfg(test)]
@@ -1149,7 +1090,7 @@ mod tests {
         assert!(!nan.is_infinite());
         assert!(!nan.is_finite());
         assert!(!nan.is_normal());
-        assert!(!nan.is_sign_positive());
+        assert!(nan.is_sign_positive());
         assert!(!nan.is_sign_negative());
         assert_eq!(Fp::Nan, nan.classify());
     }
@@ -1204,6 +1145,7 @@ mod tests {
         assert_eq!(Fp::Zero, neg_zero.classify());
     }
 
+    #[cfg_attr(all(target_arch = "wasm32", target_os = "emscripten"), ignore)] // issue 42630
     #[test]
     fn test_one() {
         let one: f64 = 1.0f64;
@@ -1256,6 +1198,7 @@ mod tests {
         assert!((-109.2f64).is_finite());
     }
 
+    #[cfg_attr(all(target_arch = "wasm32", target_os = "emscripten"), ignore)] // issue 42630
     #[test]
     fn test_is_normal() {
         let nan: f64 = NAN;
@@ -1273,6 +1216,7 @@ mod tests {
         assert!(!1e-308f64.is_normal());
     }
 
+    #[cfg_attr(all(target_arch = "wasm32", target_os = "emscripten"), ignore)] // issue 42630
     #[test]
     fn test_classify() {
         let nan: f64 = NAN;
@@ -1287,23 +1231,6 @@ mod tests {
         assert_eq!(neg_zero.classify(), Fp::Zero);
         assert_eq!(1e-307f64.classify(), Fp::Normal);
         assert_eq!(1e-308f64.classify(), Fp::Subnormal);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_integer_decode() {
-        assert_eq!(3.14159265359f64.integer_decode(), (7074237752028906, -51, 1));
-        assert_eq!((-8573.5918555f64).integer_decode(), (4713381968463931, -39, -1));
-        assert_eq!(2f64.powf(100.0).integer_decode(), (4503599627370496, 48, 1));
-        assert_eq!(0f64.integer_decode(), (0, -1075, 1));
-        assert_eq!((-0f64).integer_decode(), (0, -1075, -1));
-        assert_eq!(INFINITY.integer_decode(), (4503599627370496, 972, 1));
-        assert_eq!(NEG_INFINITY.integer_decode(), (4503599627370496, 972, -1));
-
-        // Ignore the "sign" (quiet / signalling flag) of NAN.
-        // It can vary between runtime operations and LLVM folding.
-        let (nan_m, nan_e, _nan_s) = NAN.integer_decode();
-        assert_eq!((nan_m, nan_e), (6755399441055744, 972));
     }
 
     #[test]
@@ -1409,7 +1336,8 @@ mod tests {
         assert!(!(-1f64).is_sign_positive());
         assert!(!NEG_INFINITY.is_sign_positive());
         assert!(!(1f64/NEG_INFINITY).is_sign_positive());
-        assert!(!NAN.is_sign_positive());
+        assert!(NAN.is_sign_positive());
+        assert!(!(-NAN).is_sign_positive());
     }
 
     #[test]
@@ -1422,6 +1350,7 @@ mod tests {
         assert!(NEG_INFINITY.is_sign_negative());
         assert!((1f64/NEG_INFINITY).is_sign_negative());
         assert!(!NAN.is_sign_negative());
+        assert!((-NAN).is_sign_negative());
     }
 
     #[test]
@@ -1618,58 +1547,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_ldexp() {
-        let f1 = 2.0f64.powi(-123);
-        let f2 = 2.0f64.powi(-111);
-        let f3 = 1.75 * 2.0f64.powi(-12);
-        assert_eq!(f64::ldexp(1f64, -123), f1);
-        assert_eq!(f64::ldexp(1f64, -111), f2);
-        assert_eq!(f64::ldexp(1.75f64, -12), f3);
-
-        assert_eq!(f64::ldexp(0f64, -123), 0f64);
-        assert_eq!(f64::ldexp(-0f64, -123), -0f64);
-
-        let inf: f64 = INFINITY;
-        let neg_inf: f64 = NEG_INFINITY;
-        let nan: f64 = NAN;
-        assert_eq!(f64::ldexp(inf, -123), inf);
-        assert_eq!(f64::ldexp(neg_inf, -123), neg_inf);
-        assert!(f64::ldexp(nan, -123).is_nan());
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_frexp() {
-        let f1 = 2.0f64.powi(-123);
-        let f2 = 2.0f64.powi(-111);
-        let f3 = 1.75 * 2.0f64.powi(-123);
-        let (x1, exp1) = f1.frexp();
-        let (x2, exp2) = f2.frexp();
-        let (x3, exp3) = f3.frexp();
-        assert_eq!((x1, exp1), (0.5f64, -122));
-        assert_eq!((x2, exp2), (0.5f64, -110));
-        assert_eq!((x3, exp3), (0.875f64, -122));
-        assert_eq!(f64::ldexp(x1, exp1), f1);
-        assert_eq!(f64::ldexp(x2, exp2), f2);
-        assert_eq!(f64::ldexp(x3, exp3), f3);
-
-        assert_eq!(0f64.frexp(), (0f64, 0));
-        assert_eq!((-0f64).frexp(), (-0f64, 0));
-    }
-
-    #[test] #[cfg_attr(windows, ignore)] // FIXME #8755
-    #[allow(deprecated)]
-    fn test_frexp_nowin() {
-        let inf: f64 = INFINITY;
-        let neg_inf: f64 = NEG_INFINITY;
-        let nan: f64 = NAN;
-        assert_eq!(match inf.frexp() { (x, _) => x }, inf);
-        assert_eq!(match neg_inf.frexp() { (x, _) => x }, neg_inf);
-        assert!(match nan.frexp() { (x, _) => x.is_nan() })
-    }
-
-    #[test]
     fn test_asinh() {
         assert_eq!(0.0f64.asinh(), 0.0f64);
         assert_eq!((-0.0f64).asinh(), -0.0f64);
@@ -1752,5 +1629,17 @@ mod tests {
         assert_approx_eq!(log10_e, e.log10());
         assert_approx_eq!(ln_2, 2f64.ln());
         assert_approx_eq!(ln_10, 10f64.ln());
+    }
+
+    #[test]
+    fn test_float_bits_conv() {
+        assert_eq!((1f64).to_bits(), 0x3ff0000000000000);
+        assert_eq!((12.5f64).to_bits(), 0x4029000000000000);
+        assert_eq!((1337f64).to_bits(), 0x4094e40000000000);
+        assert_eq!((-14.25f64).to_bits(), 0xc02c800000000000);
+        assert_approx_eq!(f64::from_bits(0x3ff0000000000000), 1.0);
+        assert_approx_eq!(f64::from_bits(0x4029000000000000), 12.5);
+        assert_approx_eq!(f64::from_bits(0x4094e40000000000), 1337.0);
+        assert_approx_eq!(f64::from_bits(0xc02c800000000000), -14.25);
     }
 }

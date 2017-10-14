@@ -70,12 +70,14 @@ impl Category {
             ExprKind::Cast { .. } |
             ExprKind::Use { .. } |
             ExprKind::ReifyFnPointer { .. } |
+            ExprKind::ClosureFnPointer { .. } |
             ExprKind::UnsafeFnPointer { .. } |
             ExprKind::Unsize { .. } |
             ExprKind::Repeat { .. } |
             ExprKind::Borrow { .. } |
             ExprKind::Assign { .. } |
             ExprKind::AssignOp { .. } |
+            ExprKind::Yield { .. } |
             ExprKind::InlineAsm { .. } =>
                 Some(Category::Rvalue(RvalueFunc::AsRvalue)),
 

@@ -23,19 +23,22 @@ use sys::time::SystemTime;
 use sys::{cvt, cvt_r};
 use sys_common::{AsInner, FromInner};
 
-#[cfg(any(target_os = "linux", target_os = "emscripten"))]
+#[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "l4re"))]
 use libc::{stat64, fstat64, lstat64, off64_t, ftruncate64, lseek64, dirent64, readdir64_r, open64};
 #[cfg(target_os = "android")]
 use libc::{stat as stat64, fstat as fstat64, lstat as lstat64, lseek64,
            dirent as dirent64, open as open64};
 #[cfg(not(any(target_os = "linux",
               target_os = "emscripten",
+              target_os = "l4re",
               target_os = "android")))]
 use libc::{stat as stat64, fstat as fstat64, lstat as lstat64, off_t as off64_t,
            ftruncate as ftruncate64, lseek as lseek64, dirent as dirent64, open as open64};
 #[cfg(not(any(target_os = "linux",
               target_os = "emscripten",
-              target_os = "solaris")))]
+              target_os = "solaris",
+              target_os = "l4re",
+              target_os = "fuchsia")))]
 use libc::{readdir_r as readdir64_r};
 
 pub struct File(FileDesc);
@@ -59,10 +62,10 @@ pub struct DirEntry {
     entry: dirent64,
     root: Arc<PathBuf>,
     // We need to store an owned copy of the directory name
-    // on Solaris because a) it uses a zero-length array to
-    // store the name, b) its lifetime between readdir calls
-    // is not guaranteed.
-    #[cfg(target_os = "solaris")]
+    // on Solaris and Fuchsia because a) it uses a zero-length
+    // array to store the name, b) its lifetime between readdir
+    // calls is not guaranteed.
+    #[cfg(any(target_os = "solaris", target_os = "fuchsia"))]
     name: Box<[u8]>
 }
 
@@ -92,7 +95,7 @@ pub struct DirBuilder { mode: mode_t }
 impl FileAttr {
     pub fn size(&self) -> u64 { self.stat.st_size as u64 }
     pub fn perm(&self) -> FilePermissions {
-        FilePermissions { mode: (self.stat.st_mode as mode_t) & 0o777 }
+        FilePermissions { mode: (self.stat.st_mode as mode_t) }
     }
 
     pub fn file_type(&self) -> FileType {
@@ -169,11 +172,17 @@ impl AsInner<stat64> for FileAttr {
 }
 
 impl FilePermissions {
-    pub fn readonly(&self) -> bool { self.mode & 0o222 == 0 }
+    pub fn readonly(&self) -> bool {
+        // check if any class (owner, group, others) has write permission
+        self.mode & 0o222 == 0
+    }
+
     pub fn set_readonly(&mut self, readonly: bool) {
         if readonly {
+            // remove write permission for all classes; equivalent to `chmod a-w <file>`
             self.mode &= !0o222;
         } else {
+            // add write permission for all classes; equivalent to `chmod a+w <file>`
             self.mode |= 0o222;
         }
     }
@@ -205,14 +214,14 @@ impl fmt::Debug for ReadDir {
 impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
-    #[cfg(target_os = "solaris")]
+    #[cfg(any(target_os = "solaris", target_os = "fuchsia"))]
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
         unsafe {
             loop {
                 // Although readdir_r(3) would be a correct function to use here because
-                // of the thread safety, on Illumos the readdir(3C) function is safe to use
-                // in threaded applications and it is generally preferred over the
-                // readdir_r(3C) function.
+                // of the thread safety, on Illumos and Fuchsia the readdir(3C) function
+                // is safe to use in threaded applications and it is generally preferred
+                // over the readdir_r(3C) function.
                 super::os::set_errno(0);
                 let entry_ptr = libc::readdir(self.dirp.0);
                 if entry_ptr.is_null() {
@@ -240,7 +249,7 @@ impl Iterator for ReadDir {
         }
     }
 
-    #[cfg(not(target_os = "solaris"))]
+    #[cfg(not(any(target_os = "solaris", target_os = "fuchsia")))]
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
         unsafe {
             let mut ret = DirEntry {
@@ -283,12 +292,7 @@ impl DirEntry {
         lstat(&self.path())
     }
 
-    #[cfg(target_os = "solaris")]
-    pub fn file_type(&self) -> io::Result<FileType> {
-        stat(&self.path()).map(|m| m.file_type())
-    }
-
-    #[cfg(target_os = "haiku")]
+    #[cfg(any(target_os = "solaris", target_os = "haiku"))]
     pub fn file_type(&self) -> io::Result<FileType> {
         lstat(&self.path()).map(|m| m.file_type())
     }
@@ -314,6 +318,7 @@ impl DirEntry {
               target_os = "android",
               target_os = "solaris",
               target_os = "haiku",
+              target_os = "l4re",
               target_os = "fuchsia"))]
     pub fn ino(&self) -> u64 {
         self.entry.d_ino as u64
@@ -344,14 +349,15 @@ impl DirEntry {
     #[cfg(any(target_os = "android",
               target_os = "linux",
               target_os = "emscripten",
-              target_os = "haiku",
-              target_os = "fuchsia"))]
+              target_os = "l4re",
+              target_os = "haiku"))]
     fn name_bytes(&self) -> &[u8] {
         unsafe {
             CStr::from_ptr(self.entry.d_name.as_ptr()).to_bytes()
         }
     }
-    #[cfg(target_os = "solaris")]
+    #[cfg(any(target_os = "solaris",
+              target_os = "fuchsia"))]
     fn name_bytes(&self) -> &[u8] {
         &*self.name
     }
@@ -438,7 +444,7 @@ impl File {
         // Linux kernel then the flag is just ignored by the OS, so we continue
         // to explicitly ask for a CLOEXEC fd here.
         //
-        // The CLOEXEC flag, however, is supported on versions of OSX/BSD/etc
+        // The CLOEXEC flag, however, is supported on versions of macOS/BSD/etc
         // that we support, so we only do this on Linux currently.
         if cfg!(target_os = "linux") {
             fd.set_cloexec()?;
@@ -490,10 +496,6 @@ impl File {
         self.0.read(buf)
     }
 
-    pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.0.read_to_end(buf)
-    }
-
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         self.0.read_at(buf, offset)
     }
@@ -516,6 +518,8 @@ impl File {
             SeekFrom::End(off) => (libc::SEEK_END, off),
             SeekFrom::Current(off) => (libc::SEEK_CUR, off),
         };
+        #[cfg(target_os = "emscripten")]
+        let pos = pos as i32;
         let n = cvt(unsafe { lseek64(self.0.raw(), pos, whence) })?;
         Ok(n as u64)
     }
@@ -572,7 +576,7 @@ impl fmt::Debug for File {
         #[cfg(target_os = "macos")]
         fn get_path(fd: c_int) -> Option<PathBuf> {
             // FIXME: The use of PATH_MAX is generally not encouraged, but it
-            // is inevitable in this case because OS X defines `fcntl` with
+            // is inevitable in this case because macOS defines `fcntl` with
             // `F_GETPATH` in terms of `MAXPATHLEN`, and there are no
             // alternatives. If a better method is invented, it should be used
             // instead.

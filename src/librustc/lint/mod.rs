@@ -31,17 +31,27 @@
 pub use self::Level::*;
 pub use self::LintSource::*;
 
-use std::hash;
-use std::ascii::AsciiExt;
-use syntax_pos::Span;
-use hir::intravisit::FnKind;
-use syntax::visit as ast_visit;
-use syntax::ast;
+use std::rc::Rc;
+
+use errors::DiagnosticBuilder;
+use hir::def_id::{CrateNum, LOCAL_CRATE};
+use hir::intravisit::{self, FnKind};
 use hir;
+use session::Session;
+use std::ascii::AsciiExt;
+use std::hash;
+use syntax::ast;
+use syntax::codemap::MultiSpan;
+use syntax::symbol::Symbol;
+use syntax::visit as ast_visit;
+use syntax_pos::Span;
+use ty::TyCtxt;
+use ty::maps::Providers;
+use util::nodemap::NodeMap;
 
 pub use lint::context::{LateContext, EarlyContext, LintContext, LintStore,
-                        raw_emit_lint, check_crate, check_ast_crate, gather_attrs,
-                        raw_struct_lint, FutureIncompatibleInfo, EarlyLint, IntoEarlyLint};
+                        check_crate, check_ast_crate,
+                        FutureIncompatibleInfo, BufferedEarlyLint};
 
 /// Specification of a single lint.
 #[derive(Copy, Clone, Debug)]
@@ -130,6 +140,8 @@ pub trait LintPass {
 // FIXME: eliminate the duplication with `Visitor`. But this also
 // contains a few lint-specific methods with no equivalent in `Visitor`.
 pub trait LateLintPass<'a, 'tcx>: LintPass {
+    fn check_body(&mut self, _: &LateContext, _: &'tcx hir::Body) { }
+    fn check_body_post(&mut self, _: &LateContext, _: &'tcx hir::Body) { }
     fn check_name(&mut self, _: &LateContext, _: Span, _: ast::Name) { }
     fn check_crate(&mut self, _: &LateContext<'a, 'tcx>, _: &'tcx hir::Crate) { }
     fn check_crate_post(&mut self, _: &LateContext<'a, 'tcx>, _: &'tcx hir::Crate) { }
@@ -289,8 +301,12 @@ impl LintId {
     /// Get the `LintId` for a `Lint`.
     pub fn of(lint: &'static Lint) -> LintId {
         LintId {
-            lint: lint,
+            lint,
         }
+    }
+
+    pub fn lint_name_raw(&self) -> &'static str {
+        self.lint.name
     }
 
     /// Get the name of the lint.
@@ -304,6 +320,13 @@ impl LintId {
 pub enum Level {
     Allow, Warn, Deny, Forbid
 }
+
+impl_stable_hash_for!(enum self::Level {
+    Allow,
+    Warn,
+    Deny,
+    Forbid
+});
 
 impl Level {
     /// Convert a level to a lower-case string.
@@ -336,13 +359,231 @@ pub enum LintSource {
     Default,
 
     /// Lint level was set by an attribute.
-    Node(Span),
+    Node(ast::Name, Span),
 
     /// Lint level was set by a command-line flag.
-    CommandLine,
+    CommandLine(Symbol),
 }
+
+impl_stable_hash_for!(enum self::LintSource {
+    Default,
+    Node(name, span),
+    CommandLine(text)
+});
 
 pub type LevelSource = (Level, LintSource);
 
 pub mod builtin;
 mod context;
+mod levels;
+
+pub use self::levels::{LintLevelSets, LintLevelMap};
+
+pub struct LintBuffer {
+    map: NodeMap<Vec<BufferedEarlyLint>>,
+}
+
+impl LintBuffer {
+    pub fn new() -> LintBuffer {
+        LintBuffer { map: NodeMap() }
+    }
+
+    pub fn add_lint(&mut self,
+                    lint: &'static Lint,
+                    id: ast::NodeId,
+                    sp: MultiSpan,
+                    msg: &str) {
+        let early_lint = BufferedEarlyLint {
+            lint_id: LintId::of(lint),
+            ast_id: id,
+            span: sp,
+            msg: msg.to_string(),
+        };
+        let arr = self.map.entry(id).or_insert(Vec::new());
+        if !arr.contains(&early_lint) {
+            arr.push(early_lint);
+        }
+    }
+
+    pub fn take(&mut self, id: ast::NodeId) -> Vec<BufferedEarlyLint> {
+        self.map.remove(&id).unwrap_or(Vec::new())
+    }
+
+    pub fn get_any(&self) -> Option<&[BufferedEarlyLint]> {
+        let key = self.map.keys().next().map(|k| *k);
+        key.map(|k| &self.map[&k][..])
+    }
+}
+
+pub fn struct_lint_level<'a>(sess: &'a Session,
+                             lint: &'static Lint,
+                             level: Level,
+                             src: LintSource,
+                             span: Option<MultiSpan>,
+                             msg: &str)
+    -> DiagnosticBuilder<'a>
+{
+    let mut err = match (level, span) {
+        (Level::Allow, _) => return sess.diagnostic().struct_dummy(),
+        (Level::Warn, Some(span)) => sess.struct_span_warn(span, msg),
+        (Level::Warn, None) => sess.struct_warn(msg),
+        (Level::Deny, Some(span)) |
+        (Level::Forbid, Some(span)) => sess.struct_span_err(span, msg),
+        (Level::Deny, None) |
+        (Level::Forbid, None) => sess.struct_err(msg),
+    };
+
+    let name = lint.name_lower();
+    match src {
+        LintSource::Default => {
+            sess.diag_note_once(
+                &mut err,
+                lint,
+                &format!("#[{}({})] on by default", level.as_str(), name));
+        }
+        LintSource::CommandLine(lint_flag_val) => {
+            let flag = match level {
+                Level::Warn => "-W",
+                Level::Deny => "-D",
+                Level::Forbid => "-F",
+                Level::Allow => panic!(),
+            };
+            let hyphen_case_lint_name = name.replace("_", "-");
+            if lint_flag_val.as_str() == name {
+                sess.diag_note_once(
+                    &mut err,
+                    lint,
+                    &format!("requested on the command line with `{} {}`",
+                             flag, hyphen_case_lint_name));
+            } else {
+                let hyphen_case_flag_val = lint_flag_val.as_str().replace("_", "-");
+                sess.diag_note_once(
+                    &mut err,
+                    lint,
+                    &format!("`{} {}` implied by `{} {}`",
+                             flag, hyphen_case_lint_name, flag,
+                             hyphen_case_flag_val));
+            }
+        }
+        LintSource::Node(lint_attr_name, src) => {
+            sess.diag_span_note_once(&mut err, lint, src, "lint level defined here");
+            if lint_attr_name.as_str() != name {
+                let level_str = level.as_str();
+                sess.diag_note_once(&mut err, lint,
+                                    &format!("#[{}({})] implied by #[{}({})]",
+                                             level_str, name, level_str, lint_attr_name));
+            }
+        }
+    }
+
+    // Check for future incompatibility lints and issue a stronger warning.
+    let lints = sess.lint_store.borrow();
+    if let Some(future_incompatible) = lints.future_incompatible(LintId::of(lint)) {
+        let explanation = format!("this was previously accepted by the compiler \
+                                   but is being phased out; \
+                                   it will become a hard error in a future release!");
+        let citation = format!("for more information, see {}",
+                               future_incompatible.reference);
+        err.warn(&explanation);
+        err.note(&citation);
+    }
+
+    return err
+}
+
+fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
+    -> Rc<LintLevelMap>
+{
+    assert_eq!(cnum, LOCAL_CRATE);
+    let mut builder = LintLevelMapBuilder {
+        levels: LintLevelSets::builder(tcx.sess),
+        tcx: tcx,
+    };
+    let krate = tcx.hir.krate();
+
+    builder.with_lint_attrs(ast::CRATE_NODE_ID, &krate.attrs, |builder| {
+        intravisit::walk_crate(builder, krate);
+    });
+
+    Rc::new(builder.levels.build_map())
+}
+
+struct LintLevelMapBuilder<'a, 'tcx: 'a> {
+    levels: levels::LintLevelsBuilder<'tcx>,
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+}
+
+impl<'a, 'tcx> LintLevelMapBuilder<'a, 'tcx> {
+    fn with_lint_attrs<F>(&mut self,
+                          id: ast::NodeId,
+                          attrs: &[ast::Attribute],
+                          f: F)
+        where F: FnOnce(&mut Self)
+    {
+        let push = self.levels.push(attrs);
+        self.levels.register_id(self.tcx.hir.definitions().node_to_hir_id(id));
+        f(self);
+        self.levels.pop(push);
+    }
+}
+
+impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
+    fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, 'tcx> {
+        intravisit::NestedVisitorMap::All(&self.tcx.hir)
+    }
+
+    fn visit_item(&mut self, it: &'tcx hir::Item) {
+        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+            intravisit::walk_item(builder, it);
+        });
+    }
+
+    fn visit_foreign_item(&mut self, it: &'tcx hir::ForeignItem) {
+        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+            intravisit::walk_foreign_item(builder, it);
+        })
+    }
+
+    fn visit_expr(&mut self, e: &'tcx hir::Expr) {
+        self.with_lint_attrs(e.id, &e.attrs, |builder| {
+            intravisit::walk_expr(builder, e);
+        })
+    }
+
+    fn visit_struct_field(&mut self, s: &'tcx hir::StructField) {
+        self.with_lint_attrs(s.id, &s.attrs, |builder| {
+            intravisit::walk_struct_field(builder, s);
+        })
+    }
+
+    fn visit_variant(&mut self,
+                     v: &'tcx hir::Variant,
+                     g: &'tcx hir::Generics,
+                     item_id: ast::NodeId) {
+        self.with_lint_attrs(v.node.data.id(), &v.node.attrs, |builder| {
+            intravisit::walk_variant(builder, v, g, item_id);
+        })
+    }
+
+    fn visit_local(&mut self, l: &'tcx hir::Local) {
+        self.with_lint_attrs(l.id, &l.attrs, |builder| {
+            intravisit::walk_local(builder, l);
+        })
+    }
+
+    fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
+        self.with_lint_attrs(trait_item.id, &trait_item.attrs, |builder| {
+            intravisit::walk_trait_item(builder, trait_item);
+        });
+    }
+
+    fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
+        self.with_lint_attrs(impl_item.id, &impl_item.attrs, |builder| {
+            intravisit::walk_impl_item(builder, impl_item);
+        });
+    }
+}
+
+pub fn provide(providers: &mut Providers) {
+    providers.lint_levels = lint_levels;
+}

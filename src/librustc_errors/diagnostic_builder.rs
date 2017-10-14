@@ -9,6 +9,8 @@
 // except according to those terms.
 
 use Diagnostic;
+use DiagnosticStyledString;
+
 use Level;
 use Handler;
 use std::fmt::{self, Debug};
@@ -80,28 +82,61 @@ impl<'a> DiagnosticBuilder<'a> {
             return;
         }
 
-        match self.level {
+        let is_error = match self.level {
             Level::Bug |
             Level::Fatal |
             Level::PhaseFatal |
             Level::Error => {
-                self.handler.bump_err_count();
+                true
             }
 
             Level::Warning |
             Level::Note |
             Level::Help |
             Level::Cancelled => {
+                false
             }
-        }
+        };
 
-        self.handler.emitter.borrow_mut().emit(&self);
+        self.handler.emit_db(&self);
         self.cancel();
-        self.handler.panic_if_treat_err_as_bug();
+
+        if is_error {
+            self.handler.bump_err_count();
+        }
 
         // if self.is_fatal() {
         //     panic!(FatalError);
         // }
+    }
+
+    /// Convenience function for internal use, clients should use one of the
+    /// span_* methods instead.
+    pub fn sub<S: Into<MultiSpan>>(
+        &mut self,
+        level: Level,
+        message: &str,
+        span: Option<S>,
+    ) -> &mut Self {
+        let span = span.map(|s| s.into()).unwrap_or(MultiSpan::new());
+        self.diagnostic.sub(level, message, span, None);
+        self
+    }
+
+    /// Delay emission of this diagnostic as a bug.
+    ///
+    /// This can be useful in contexts where an error indicates a bug but
+    /// typically this only happens when other compilation errors have already
+    /// happened. In those cases this can be used to defer emission of this
+    /// diagnostic as a bug in the compiler only if no other errors have been
+    /// emitted.
+    ///
+    /// In the meantime, though, callsites are required to deal with the "bug"
+    /// locally in whichever way makes the most sense.
+    pub fn delay_as_bug(&mut self) {
+        self.level = Level::Bug;
+        *self.handler.delayed_span_bug.borrow_mut() = Some(self.diagnostic.clone());
+        self.cancel();
     }
 
     /// Add a span/label to be included in the resulting snippet.
@@ -110,19 +145,21 @@ impl<'a> DiagnosticBuilder<'a> {
     /// all, and you just supplied a `Span` to create the diagnostic,
     /// then the snippet will just include that `Span`, which is
     /// called the primary span.
-    forward!(pub fn span_label(&mut self, span: Span, label: &fmt::Display)
-                               -> &mut Self);
+    pub fn span_label<T: Into<String>>(&mut self, span: Span, label: T) -> &mut Self {
+        self.diagnostic.span_label(span, label);
+        self
+    }
 
     forward!(pub fn note_expected_found(&mut self,
                                         label: &fmt::Display,
-                                        expected: &fmt::Display,
-                                        found: &fmt::Display)
+                                        expected: DiagnosticStyledString,
+                                        found: DiagnosticStyledString)
                                         -> &mut Self);
 
     forward!(pub fn note_expected_found_extra(&mut self,
                                               label: &fmt::Display,
-                                              expected: &fmt::Display,
-                                              found: &fmt::Display,
+                                              expected: DiagnosticStyledString,
+                                              found: DiagnosticStyledString,
                                               expected_extra: &fmt::Display,
                                               found_extra: &fmt::Display)
                                               -> &mut Self);
@@ -139,11 +176,21 @@ impl<'a> DiagnosticBuilder<'a> {
                                                   sp: S,
                                                   msg: &str)
                                                   -> &mut Self);
-    forward!(pub fn span_suggestion<S: Into<MultiSpan>>(&mut self,
-                                                        sp: S,
-                                                        msg: &str,
-                                                        suggestion: String)
-                                                        -> &mut Self);
+    forward!(pub fn span_suggestion_short(&mut self,
+                                          sp: Span,
+                                          msg: &str,
+                                          suggestion: String)
+                                          -> &mut Self);
+    forward!(pub fn span_suggestion(&mut self,
+                                    sp: Span,
+                                    msg: &str,
+                                    suggestion: String)
+                                    -> &mut Self);
+    forward!(pub fn span_suggestions(&mut self,
+                                     sp: Span,
+                                     msg: &str,
+                                     suggestions: Vec<String>)
+                                     -> &mut Self);
     forward!(pub fn set_span<S: Into<MultiSpan>>(&mut self, sp: S) -> &mut Self);
     forward!(pub fn code(&mut self, s: String) -> &mut Self);
 
@@ -160,17 +207,15 @@ impl<'a> DiagnosticBuilder<'a> {
                          code: Option<String>,
                          message: &str)
                          -> DiagnosticBuilder<'a> {
-        DiagnosticBuilder {
-            handler: handler,
-            diagnostic: Diagnostic::new_with_code(level, code, message)
-        }
+        let diagnostic = Diagnostic::new_with_code(level, code, message);
+        DiagnosticBuilder::new_diagnostic(handler, diagnostic)
     }
 
-    pub fn into_diagnostic(mut self) -> Diagnostic {
-        // annoyingly, the Drop impl means we can't actually move
-        let result = self.diagnostic.clone();
-        self.cancel();
-        result
+    /// Creates a new `DiagnosticBuilder` with an already constructed
+    /// diagnostic.
+    pub fn new_diagnostic(handler: &'a Handler, diagnostic: Diagnostic)
+                         -> DiagnosticBuilder<'a> {
+        DiagnosticBuilder { handler, diagnostic }
     }
 }
 
@@ -180,8 +225,8 @@ impl<'a> Debug for DiagnosticBuilder<'a> {
     }
 }
 
-/// Destructor bomb - a DiagnosticBuilder must be either emitted or cancelled or
-/// we emit a bug.
+/// Destructor bomb - a `DiagnosticBuilder` must be either emitted or canceled
+/// or we emit a bug.
 impl<'a> Drop for DiagnosticBuilder<'a> {
     fn drop(&mut self) {
         if !panicking() && !self.cancelled() {
@@ -193,4 +238,3 @@ impl<'a> Drop for DiagnosticBuilder<'a> {
         }
     }
 }
-

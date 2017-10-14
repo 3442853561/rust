@@ -12,6 +12,7 @@
 // We specify -Z incremental here because we want to test the partitioning for
 // incremental compilation
 // compile-flags:-Zprint-trans-items=lazy -Zincremental=tmp/partitioning-tests/local-transitive-inlining
+// compile-flags:-Zinline-in-all-cgus
 
 #![allow(dead_code)]
 #![crate_type="lib"]
@@ -39,7 +40,7 @@ mod direct_user {
 mod indirect_user {
     use super::direct_user;
 
-    //~ TRANS_ITEM fn local_transitive_inlining::indirect_user[0]::bar[0] @@ local_transitive_inlining-indirect_user[External]
+    //~ TRANS_ITEM fn local_transitive_inlining::indirect_user[0]::bar[0] @@ local_transitive_inlining-indirect_user[Internal]
     fn bar() {
         direct_user::foo();
     }
@@ -47,7 +48,7 @@ mod indirect_user {
 
 mod non_user {
 
-    //~ TRANS_ITEM fn local_transitive_inlining::non_user[0]::baz[0] @@ local_transitive_inlining-non_user[External]
+    //~ TRANS_ITEM fn local_transitive_inlining::non_user[0]::baz[0] @@ local_transitive_inlining-non_user[Internal]
     fn baz() {
 
     }

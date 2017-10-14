@@ -33,9 +33,16 @@ use vec;
 const TMPBUF_SZ: usize = 128;
 static ENV_LOCK: Mutex = Mutex::new();
 
+extern {
+    #[link_name = "__errno_location"]
+    fn errno_location() -> *mut i32;
+}
+
 /// Returns the platform-specific value of errno
 pub fn errno() -> i32 {
-    0
+    unsafe {
+        (*errno_location())
+    }
 }
 
 /// Gets a detailed string description for the given error number.
@@ -66,10 +73,10 @@ pub fn split_paths(unparsed: &OsStr) -> SplitPaths {
     fn bytes_to_path(b: &[u8]) -> PathBuf {
         PathBuf::from(<OsStr as OsStrExt>::from_bytes(b))
     }
-    fn is_colon(b: &u8) -> bool { *b == b':' }
+    fn is_semicolon(b: &u8) -> bool { *b == b';' }
     let unparsed = unparsed.as_bytes();
     SplitPaths {
-        iter: unparsed.split(is_colon as fn(&u8) -> bool)
+        iter: unparsed.split(is_semicolon as fn(&u8) -> bool)
                       .map(bytes_to_path as fn(&[u8]) -> PathBuf)
     }
 }
@@ -87,7 +94,7 @@ pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
     where I: Iterator<Item=T>, T: AsRef<OsStr>
 {
     let mut joined = Vec::new();
-    let sep = b':';
+    let sep = b';';
 
     for (i, path) in paths.enumerate() {
         let path = path.as_ref().as_bytes();
@@ -172,7 +179,7 @@ pub fn getenv(key: &OsStr) -> io::Result<Option<OsString>> {
 
 pub fn setenv(key: &OsStr, value: &OsStr) -> io::Result<()> {
     if ! key.is_empty() {
-        let mut file = ::fs::File::open(&("env:".to_owned() + key.to_str().unwrap()))?;
+        let mut file = ::fs::File::create(&("env:".to_owned() + key.to_str().unwrap()))?;
         file.write_all(value.as_bytes())?;
         file.set_len(value.len() as u64)?;
     }

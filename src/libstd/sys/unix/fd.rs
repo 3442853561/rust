@@ -17,7 +17,6 @@ use mem;
 use sync::atomic::{AtomicBool, Ordering};
 use sys::cvt;
 use sys_common::AsInner;
-use sys_common::io::read_to_end_uninitialized;
 
 #[derive(Debug)]
 pub struct FileDesc {
@@ -29,7 +28,7 @@ fn max_len() -> usize {
     // with the man page quoting that if the count of bytes to read is
     // greater than `SSIZE_MAX` the result is "unspecified".
     //
-    // On OSX, however, apparently the 64-bit libc is either buggy or
+    // On macOS, however, apparently the 64-bit libc is either buggy or
     // intentionally showing odd behavior by rejecting any read with a size
     // larger than or equal to INT_MAX. To handle both of these the read
     // size is capped on both platforms.
@@ -72,13 +71,21 @@ impl FileDesc {
         #[cfg(target_os = "android")]
         use super::android::cvt_pread64;
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "emscripten")]
         unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: usize, offset: i64)
             -> io::Result<isize>
         {
-            #[cfg(any(target_os = "linux", target_os = "emscripten"))]
             use libc::pread64;
-            #[cfg(not(any(target_os = "linux", target_os = "emscripten")))]
+            cvt(pread64(fd, buf, count, offset as i32))
+        }
+
+        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: usize, offset: i64)
+            -> io::Result<isize>
+        {
+            #[cfg(target_os = "linux")]
+            use libc::pread64;
+            #[cfg(not(target_os = "linux"))]
             use libc::pread as pread64;
             cvt(pread64(fd, buf, count, offset))
         }
@@ -105,13 +112,21 @@ impl FileDesc {
         #[cfg(target_os = "android")]
         use super::android::cvt_pwrite64;
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "emscripten")]
         unsafe fn cvt_pwrite64(fd: c_int, buf: *const c_void, count: usize, offset: i64)
             -> io::Result<isize>
         {
-            #[cfg(any(target_os = "linux", target_os = "emscripten"))]
             use libc::pwrite64;
-            #[cfg(not(any(target_os = "linux", target_os = "emscripten")))]
+            cvt(pwrite64(fd, buf, count, offset as i32))
+        }
+
+        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        unsafe fn cvt_pwrite64(fd: c_int, buf: *const c_void, count: usize, offset: i64)
+            -> io::Result<isize>
+        {
+            #[cfg(target_os = "linux")]
+            use libc::pwrite64;
+            #[cfg(not(target_os = "linux"))]
             use libc::pwrite as pwrite64;
             cvt(pwrite64(fd, buf, count, offset))
         }
@@ -129,6 +144,7 @@ impl FileDesc {
                   target_os = "solaris",
                   target_os = "emscripten",
                   target_os = "fuchsia",
+                  target_os = "l4re",
                   target_os = "haiku")))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
@@ -140,15 +156,29 @@ impl FileDesc {
               target_os = "solaris",
               target_os = "emscripten",
               target_os = "fuchsia",
+              target_os = "l4re",
               target_os = "haiku"))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
             let previous = cvt(libc::fcntl(self.fd, libc::F_GETFD))?;
-            cvt(libc::fcntl(self.fd, libc::F_SETFD, previous | libc::FD_CLOEXEC))?;
+            let new = previous | libc::FD_CLOEXEC;
+            if new != previous {
+                cvt(libc::fcntl(self.fd, libc::F_SETFD, new))?;
+            }
             Ok(())
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        unsafe {
+            let v = nonblocking as c_int;
+            cvt(libc::ioctl(self.fd, libc::FIONBIO, &v))?;
+            Ok(())
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         unsafe {
             let previous = cvt(libc::fcntl(self.fd, libc::F_GETFL))?;
@@ -157,7 +187,9 @@ impl FileDesc {
             } else {
                 previous & !libc::O_NONBLOCK
             };
-            cvt(libc::fcntl(self.fd, libc::F_SETFL, new))?;
+            if new != previous {
+                cvt(libc::fcntl(self.fd, libc::F_SETFL, new))?;
+            }
             Ok(())
         }
     }
@@ -216,10 +248,6 @@ impl FileDesc {
 impl<'a> Read for &'a FileDesc {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         (**self).read(buf)
-    }
-
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        unsafe { read_to_end_uninitialized(self, buf) }
     }
 }
 

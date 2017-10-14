@@ -120,7 +120,7 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
 
         // URLs can be unavoidably longer than the line limit, so we allow them.
         // Allowed format is: `[name]: https://www.rust-lang.org/`
-        let is_url = |l: &str| l.starts_with('[') && l.contains("]:") && l.contains("http");
+        let is_url = |l: &str| l.starts_with("[") && l.contains("]:") && l.contains("http");
 
         if msg.lines().any(|line| line.len() > MAX_DESCRIPTION_WIDTH && !is_url(line)) {
             ecx.span_err(span, &format!(
@@ -133,7 +133,7 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
     // Add the error to the map.
     with_registered_diagnostics(|diagnostics| {
         let info = ErrorInfo {
-            description: description,
+            description,
             use_site: None
         };
         if diagnostics.insert(code.name, info).is_some() {
@@ -177,7 +177,7 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
             if let Err(e) = output_metadata(ecx,
                                             &target_triple,
                                             &crate_name.name.as_str(),
-                                            &diagnostics) {
+                                            diagnostics) {
                 ecx.span_bug(span, &format!(
                     "error writing metadata for triple `{}` and crate `{}`, error: {}, \
                      cause: {:?}",
@@ -206,7 +206,7 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
             (descriptions.len(), ecx.expr_vec(span, descriptions))
         });
 
-    let static_ = ecx.lifetime(span, ecx.name_of("'static"));
+    let static_ = ecx.lifetime(span, Ident::from_str("'static"));
     let ty_str = ecx.ty_rptr(
         span,
         ecx.ty_ident(span, ecx.ident_of("str")),
@@ -227,7 +227,7 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
 
     MacEager::items(SmallVector::many(vec![
         P(ast::Item {
-            ident: name.clone(),
+            ident: *name,
             attrs: Vec::new(),
             id: ast::DUMMY_NODE_ID,
             node: ast::ItemKind::Const(
@@ -235,7 +235,8 @@ pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
                 expr,
             ),
             vis: ast::Visibility::Public,
-            span: span,
+            span,
+            tokens: None,
         })
     ]))
 }

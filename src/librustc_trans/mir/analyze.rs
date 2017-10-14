@@ -13,12 +13,13 @@
 
 use rustc_data_structures::bitvec::BitVector;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
-use rustc::mir::{self, Location, TerminatorKind};
+use rustc::middle::const_val::ConstVal;
+use rustc::mir::{self, Location, TerminatorKind, Literal};
 use rustc::mir::visit::{Visitor, LvalueContext};
 use rustc::mir::traversal;
+use rustc::ty;
 use common;
 use super::MirContext;
-use super::rvalue;
 
 pub fn lvalue_locals<'a, 'tcx>(mircx: &MirContext<'a, 'tcx>) -> BitVector {
     let mir = mircx.mir;
@@ -30,7 +31,7 @@ pub fn lvalue_locals<'a, 'tcx>(mircx: &MirContext<'a, 'tcx>) -> BitVector {
         let ty = mircx.monomorphize(&ty);
         debug!("local {} has type {:?}", index, ty);
         if ty.is_scalar() ||
-            ty.is_unique() ||
+            ty.is_box() ||
             ty.is_region_ptr() ||
             ty.is_simd() ||
             common::type_is_zero_size(mircx.ccx, ty)
@@ -92,7 +93,7 @@ impl<'mir, 'a, 'tcx> Visitor<'tcx> for LocalAnalyzer<'mir, 'a, 'tcx> {
 
         if let mir::Lvalue::Local(index) = *lvalue {
             self.mark_assigned(index);
-            if !rvalue::rvalue_creates_operand(rvalue) {
+            if !self.cx.rvalue_creates_operand(rvalue) {
                 self.mark_as_lvalue(index);
             }
         } else {
@@ -108,11 +109,13 @@ impl<'mir, 'a, 'tcx> Visitor<'tcx> for LocalAnalyzer<'mir, 'a, 'tcx> {
                              location: Location) {
         match *kind {
             mir::TerminatorKind::Call {
-                func: mir::Operand::Constant(mir::Constant {
-                    literal: mir::Literal::Item { def_id, .. }, ..
+                func: mir::Operand::Constant(box mir::Constant {
+                    literal: Literal::Value {
+                        value: &ty::Const { val: ConstVal::Function(def_id, _), .. }, ..
+                    }, ..
                 }),
                 ref args, ..
-            } if Some(def_id) == self.cx.ccx.tcx().lang_items.box_free_fn() => {
+            } if Some(def_id) == self.cx.ccx.tcx().lang_items().box_free_fn() => {
                 // box_free(x) shares with `drop x` the property that it
                 // is not guaranteed to be statically dominated by the
                 // definition of x, so x must always be in an alloca.
@@ -132,59 +135,61 @@ impl<'mir, 'a, 'tcx> Visitor<'tcx> for LocalAnalyzer<'mir, 'a, 'tcx> {
                     location: Location) {
         debug!("visit_lvalue(lvalue={:?}, context={:?})", lvalue, context);
 
-        // Allow uses of projections of immediate pair fields.
         if let mir::Lvalue::Projection(ref proj) = *lvalue {
-            if let mir::Lvalue::Local(_) = proj.base {
-                let ty = proj.base.ty(self.cx.mir, self.cx.ccx.tcx());
-
-                let ty = self.cx.monomorphize(&ty.to_ty(self.cx.ccx.tcx()));
-                if common::type_is_imm_pair(self.cx.ccx, ty) {
+            // Allow uses of projections of immediate pair fields.
+            if let LvalueContext::Consume = context {
+                if let mir::Lvalue::Local(_) = proj.base {
                     if let mir::ProjectionElem::Field(..) = proj.elem {
-                        if let LvalueContext::Consume = context {
+                        let ty = proj.base.ty(self.cx.mir, self.cx.ccx.tcx());
+
+                        let ty = self.cx.monomorphize(&ty.to_ty(self.cx.ccx.tcx()));
+                        if common::type_is_imm_pair(self.cx.ccx, ty) {
                             return;
                         }
                     }
                 }
             }
-        }
 
-        if let mir::Lvalue::Local(index) = *lvalue {
-            match context {
-                LvalueContext::Call => {
-                    self.mark_assigned(index);
-                }
-
-                LvalueContext::StorageLive |
-                LvalueContext::StorageDead |
-                LvalueContext::Consume => {}
-
-                LvalueContext::Store |
-                LvalueContext::Inspect |
-                LvalueContext::Borrow { .. } |
-                LvalueContext::Projection(..) => {
-                    self.mark_as_lvalue(index);
-                }
-
-                LvalueContext::Drop => {
-                    let ty = lvalue.ty(self.cx.mir, self.cx.ccx.tcx());
-                    let ty = self.cx.monomorphize(&ty.to_ty(self.cx.ccx.tcx()));
-
-                    // Only need the lvalue if we're actually dropping it.
-                    if self.cx.ccx.shared().type_needs_drop(ty) {
-                        self.mark_as_lvalue(index);
-                    }
-                }
-            }
-        }
-
-        // A deref projection only reads the pointer, never needs the lvalue.
-        if let mir::Lvalue::Projection(ref proj) = *lvalue {
+            // A deref projection only reads the pointer, never needs the lvalue.
             if let mir::ProjectionElem::Deref = proj.elem {
                 return self.visit_lvalue(&proj.base, LvalueContext::Consume, location);
             }
         }
 
         self.super_lvalue(lvalue, context, location);
+    }
+
+    fn visit_local(&mut self,
+                   &index: &mir::Local,
+                   context: LvalueContext<'tcx>,
+                   _: Location) {
+        match context {
+            LvalueContext::Call => {
+                self.mark_assigned(index);
+            }
+
+            LvalueContext::StorageLive |
+            LvalueContext::StorageDead |
+            LvalueContext::Validate |
+            LvalueContext::Inspect |
+            LvalueContext::Consume => {}
+
+            LvalueContext::Store |
+            LvalueContext::Borrow { .. } |
+            LvalueContext::Projection(..) => {
+                self.mark_as_lvalue(index);
+            }
+
+            LvalueContext::Drop => {
+                let ty = mir::Lvalue::Local(index).ty(self.cx.mir, self.cx.ccx.tcx());
+                let ty = self.cx.monomorphize(&ty.to_ty(self.cx.ccx.tcx()));
+
+                // Only need the lvalue if we're actually dropping it.
+                if self.cx.ccx.shared().type_needs_drop(ty) {
+                    self.mark_as_lvalue(index);
+                }
+            }
+        }
     }
 }
 
@@ -195,6 +200,16 @@ pub enum CleanupKind {
     Internal { funclet: mir::BasicBlock }
 }
 
+impl CleanupKind {
+    pub fn funclet_bb(self, for_bb: mir::BasicBlock) -> Option<mir::BasicBlock> {
+        match self {
+            CleanupKind::NotCleanup => None,
+            CleanupKind::Funclet => Some(for_bb),
+            CleanupKind::Internal { funclet } => Some(funclet),
+        }
+    }
+}
+
 pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock, CleanupKind> {
     fn discover_masters<'tcx>(result: &mut IndexVec<mir::BasicBlock, CleanupKind>,
                               mir: &mir::Mir<'tcx>) {
@@ -203,10 +218,10 @@ pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock
                 TerminatorKind::Goto { .. } |
                 TerminatorKind::Resume |
                 TerminatorKind::Return |
+                TerminatorKind::GeneratorDrop |
                 TerminatorKind::Unreachable |
-                TerminatorKind::If { .. } |
-                TerminatorKind::Switch { .. } |
-                TerminatorKind::SwitchInt { .. } => {
+                TerminatorKind::SwitchInt { .. } |
+                TerminatorKind::Yield { .. }  => {
                     /* nothing to do */
                 }
                 TerminatorKind::Call { cleanup: unwind, .. } |
@@ -260,7 +275,9 @@ pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock
                         result[succ] = CleanupKind::Internal { funclet: funclet };
                     }
                     CleanupKind::Funclet => {
-                        set_successor(funclet, succ);
+                        if funclet != succ {
+                            set_successor(funclet, succ);
+                        }
                     }
                     CleanupKind::Internal { funclet: succ_funclet } => {
                         if funclet != succ_funclet {

@@ -26,7 +26,7 @@ pub fn FxHashSet<V: Hash + Eq>() -> FxHashSet<V> {
     HashSet::default()
 }
 
-/// A speedy hash algorithm for use within rustc. The hashmap in libcollections
+/// A speedy hash algorithm for use within rustc. The hashmap in liballoc
 /// by default uses SipHash which isn't quite as speedy as we want. In the
 /// compiler we're not really worried about DOS attempts, so we use a fast
 /// non-cryptographic hash.
@@ -106,10 +106,4 @@ impl Hasher for FxHasher {
     fn finish(&self) -> u64 {
         self.hash as u64
     }
-}
-
-pub fn hash<T: Hash>(v: &T) -> u64 {
-    let mut state = FxHasher::default();
-    v.hash(&mut state);
-    state.finish()
 }

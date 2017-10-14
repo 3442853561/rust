@@ -20,9 +20,7 @@
 //! provide for basic string-related manipulations. This crate does not
 //! (yet) aim to provide a full set of Unicode tables.
 
-#![crate_name = "std_unicode"]
 #![unstable(feature = "unicode", issue = "27783")]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -32,26 +30,28 @@
 #![deny(warnings)]
 #![no_std]
 
-#![feature(char_escape_debug)]
 #![feature(core_char_ext)]
+#![feature(str_internals)]
 #![feature(decode_utf8)]
 #![feature(fused)]
+#![feature(fn_traits)]
 #![feature(lang_items)]
 #![feature(staged_api)]
 #![feature(try_from)]
+#![feature(unboxed_closures)]
 
 mod tables;
 mod u_str;
 pub mod char;
+pub mod lossy;
 
 #[allow(deprecated)]
 pub mod str {
     pub use u_str::{SplitWhitespace, UnicodeStr};
-    pub use u_str::{is_utf16, utf8_char_width};
     pub use u_str::Utf16Encoder;
 }
 
-// For use in libcollections, not re-exported in libstd.
+// For use in liballoc, not re-exported in libstd.
 pub mod derived_property {
     pub use tables::derived_property::{Case_Ignorable, Cased};
 }

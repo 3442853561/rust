@@ -10,32 +10,64 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   git \
   cmake \
   sudo \
-  xz-utils
+  xz-utils \
+  zlib1g-dev \
+  g++-arm-linux-gnueabi \
+  g++-arm-linux-gnueabihf \
+  g++-aarch64-linux-gnu \
+  gcc-sparc64-linux-gnu \
+  libc6-dev-sparc64-cross \
+  bzip2 \
+  patch \
+  libssl-dev \
+  pkg-config
 
-ENV SCCACHE_DIGEST=7237e38e029342fa27b7ac25412cb9d52554008b12389727320bd533fd7f05b6a96d55485f305caf95e5c8f5f97c3313e10012ccad3e752aba2518f3522ba783
-RUN curl -L https://api.pub.build.mozilla.org/tooltool/sha512/$SCCACHE_DIGEST | \
-      tar xJf - -C /usr/local/bin --strip-components=1
+WORKDIR /tmp
 
-RUN curl -OL https://github.com/Yelp/dumb-init/releases/download/v1.2.0/dumb-init_1.2.0_amd64.deb && \
-    dpkg -i dumb-init_*.deb && \
-    rm dumb-init_*.deb
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+COPY cross/build-rumprun.sh /tmp/
+RUN ./build-rumprun.sh
+
+COPY cross/build-arm-musl.sh /tmp/
+RUN ./build-arm-musl.sh
+
+COPY cross/install-mips-musl.sh /tmp/
+RUN ./install-mips-musl.sh
+
+COPY cross/install-mipsel-musl.sh /tmp/
+RUN ./install-mipsel-musl.sh
+
+COPY cross/install-x86_64-redox.sh /tmp/
+RUN ./install-x86_64-redox.sh
 
 ENV TARGETS=asmjs-unknown-emscripten
 ENV TARGETS=$TARGETS,wasm32-unknown-emscripten
+ENV TARGETS=$TARGETS,x86_64-rumprun-netbsd
+ENV TARGETS=$TARGETS,mips-unknown-linux-musl
+ENV TARGETS=$TARGETS,mipsel-unknown-linux-musl
+ENV TARGETS=$TARGETS,arm-unknown-linux-musleabi
+ENV TARGETS=$TARGETS,arm-unknown-linux-musleabihf
+ENV TARGETS=$TARGETS,armv7-unknown-linux-musleabihf
+ENV TARGETS=$TARGETS,aarch64-unknown-linux-musl
+ENV TARGETS=$TARGETS,sparc64-unknown-linux-gnu
+ENV TARGETS=$TARGETS,x86_64-unknown-redox
 
-#ENV TARGETS=$TARGETS,mips-unknown-linux-musl
-#ENV TARGETS=$TARGETS,arm-unknown-linux-musleabi
-#ENV TARGETS=$TARGETS,arm-unknown-linux-musleabihf
-#ENV TARGETS=$TARGETS,armv7-unknown-linux-musleabihf
-#ENV TARGETS=$TARGETS,x86_64-rumprun-netbsd
+ENV CC_mipsel_unknown_linux_musl=mipsel-openwrt-linux-gcc \
+    CC_mips_unknown_linux_musl=mips-openwrt-linux-gcc \
+    CC_sparc64_unknown_linux_gnu=sparc64-linux-gnu-gcc \
+    CC_x86_64_unknown_redox=x86_64-unknown-redox-gcc
+
+# Suppress some warnings in the openwrt toolchains we downloaded
+ENV STAGING_DIR=/tmp
 
 ENV RUST_CONFIGURE_ARGS \
+      --enable-extended \
       --target=$TARGETS \
-      --enable-rustbuild
+      --musl-root-arm=/usr/local/arm-linux-musleabi \
+      --musl-root-armhf=/usr/local/arm-linux-musleabihf \
+      --musl-root-armv7=/usr/local/armv7-linux-musleabihf \
+      --musl-root-aarch64=/usr/local/aarch64-linux-musl
+ENV SCRIPT python2.7 ../x.py dist --target $TARGETS
 
-# Just a smoke test in dist to see if this works for now, we should expand this
-# to all the targets above eventually.
-ENV SCRIPT \
-  python2.7 ../x.py build && \
-  python2.7 ../x.py dist --target wasm32-unknown-emscripten
+# sccache
+COPY scripts/sccache.sh /scripts/
+RUN sh /scripts/sccache.sh

@@ -15,6 +15,7 @@ extern crate rustc_driver;
 extern crate rustc_lint;
 extern crate rustc_metadata;
 extern crate rustc_errors;
+extern crate rustc_trans;
 extern crate syntax;
 
 use rustc::dep_graph::DepGraph;
@@ -57,9 +58,9 @@ fn basic_sess(sysroot: PathBuf) -> (Session, Rc<CStore>) {
     opts.maybe_sysroot = Some(sysroot);
 
     let descriptions = Registry::new(&rustc::DIAGNOSTICS);
-    let dep_graph = DepGraph::new(opts.build_dep_graph());
-    let cstore = Rc::new(CStore::new(&dep_graph));
-    let sess = build_session(opts, &dep_graph, None, descriptions, cstore.clone());
+    let cstore = Rc::new(CStore::new(Box::new(rustc_trans::LlvmMetadataLoader)));
+    let sess = build_session(opts, None, descriptions);
+    rustc_trans::init(&sess);
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
     (sess, cstore)
 }

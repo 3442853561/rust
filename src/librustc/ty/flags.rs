@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use middle::const_val::{ConstVal, ConstAggregate};
 use ty::subst::Substs;
 use ty::{self, Ty, TypeFlags, TypeFoldable};
 
@@ -85,6 +86,13 @@ impl FlagComputation {
                 }
             }
 
+            &ty::TyGenerator(_, ref substs, ref interior) => {
+                self.add_flags(TypeFlags::HAS_TY_CLOSURE);
+                self.add_flags(TypeFlags::HAS_LOCAL_NAMES);
+                self.add_substs(&substs.substs);
+                self.add_ty(interior.witness);
+            }
+
             &ty::TyClosure(_, ref substs) => {
                 self.add_flags(TypeFlags::HAS_TY_CLOSURE);
                 self.add_flags(TypeFlags::HAS_LOCAL_NAMES);
@@ -138,7 +146,12 @@ impl FlagComputation {
                 self.add_region(r);
             }
 
-            &ty::TyBox(tt) | &ty::TyArray(tt, _) | &ty::TySlice(tt) => {
+            &ty::TyArray(tt, len) => {
+                self.add_ty(tt);
+                self.add_const(len);
+            }
+
+            &ty::TySlice(tt) => {
                 self.add_ty(tt)
             }
 
@@ -151,23 +164,25 @@ impl FlagComputation {
                 self.add_ty(m.ty);
             }
 
-            &ty::TyTuple(ref ts) => {
+            &ty::TyTuple(ref ts, is_default) => {
+                if is_default {
+                    self.add_flags(TypeFlags::KEEP_IN_LOCAL_TCX);
+                }
                 self.add_tys(&ts[..]);
             }
 
-            &ty::TyFnDef(_, substs, ref f) => {
+            &ty::TyFnDef(_, substs) => {
                 self.add_substs(substs);
-                self.add_fn_sig(&f.sig);
             }
 
-            &ty::TyFnPtr(ref f) => {
-                self.add_fn_sig(&f.sig);
+            &ty::TyFnPtr(f) => {
+                self.add_fn_sig(f);
             }
         }
     }
 
     fn add_ty(&mut self, ty: Ty) {
-        self.add_flags(ty.flags.get());
+        self.add_flags(ty.flags);
         self.add_depth(ty.region_depth);
     }
 
@@ -177,7 +192,7 @@ impl FlagComputation {
         }
     }
 
-    fn add_fn_sig(&mut self, fn_sig: &ty::PolyFnSig) {
+    fn add_fn_sig(&mut self, fn_sig: ty::PolyFnSig) {
         let mut computation = FlagComputation::new();
 
         computation.add_tys(fn_sig.skip_binder().inputs());
@@ -186,20 +201,54 @@ impl FlagComputation {
         self.add_bound_computation(&computation);
     }
 
-    fn add_region(&mut self, r: &ty::Region) {
+    fn add_region(&mut self, r: ty::Region) {
         self.add_flags(r.type_flags());
         if let ty::ReLateBound(debruijn, _) = *r {
             self.add_depth(debruijn.depth);
         }
     }
 
+    fn add_const(&mut self, constant: &ty::Const) {
+        self.add_ty(constant.ty);
+        match constant.val {
+            ConstVal::Integral(_) |
+            ConstVal::Float(_) |
+            ConstVal::Str(_) |
+            ConstVal::ByteStr(_) |
+            ConstVal::Bool(_) |
+            ConstVal::Char(_) |
+            ConstVal::Variant(_) => {}
+            ConstVal::Function(_, substs) => {
+                self.add_substs(substs);
+            }
+            ConstVal::Aggregate(ConstAggregate::Struct(fields)) => {
+                for &(_, v) in fields {
+                    self.add_const(v);
+                }
+            }
+            ConstVal::Aggregate(ConstAggregate::Tuple(fields)) |
+            ConstVal::Aggregate(ConstAggregate::Array(fields)) => {
+                for v in fields {
+                    self.add_const(v);
+                }
+            }
+            ConstVal::Aggregate(ConstAggregate::Repeat(v, _)) => {
+                self.add_const(v);
+            }
+            ConstVal::Unevaluated(_, substs) => {
+                self.add_flags(TypeFlags::HAS_PROJECTION);
+                self.add_substs(substs);
+            }
+        }
+    }
+
     fn add_existential_projection(&mut self, projection: &ty::ExistentialProjection) {
-        self.add_substs(projection.trait_ref.substs);
+        self.add_substs(projection.substs);
         self.add_ty(projection.ty);
     }
 
     fn add_projection_ty(&mut self, projection_ty: &ty::ProjectionTy) {
-        self.add_substs(projection_ty.trait_ref.substs);
+        self.add_substs(projection_ty.substs);
     }
 
     fn add_substs(&mut self, substs: &Substs) {

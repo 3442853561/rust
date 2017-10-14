@@ -8,11 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use ast;
+use ast::{self, NodeId};
 use codemap::{DUMMY_SP, dummy_spanned};
 use ext::base::ExtCtxt;
 use ext::expand::{Expansion, ExpansionKind};
 use ext::hygiene::Mark;
+use tokenstream::TokenStream;
 use fold::*;
 use ptr::P;
 use symbol::keywords;
@@ -20,13 +21,12 @@ use util::move_map::MoveMap;
 use util::small_vector::SmallVector;
 
 use std::collections::HashMap;
-use std::mem;
 
 pub fn placeholder(kind: ExpansionKind, id: ast::NodeId) -> Expansion {
     fn mac_placeholder() -> ast::Mac {
         dummy_spanned(ast::Mac_ {
             path: ast::Path { span: DUMMY_SP, segments: Vec::new() },
-            tts: Vec::new(),
+            tts: TokenStream::empty().into(),
         })
     }
 
@@ -35,7 +35,7 @@ pub fn placeholder(kind: ExpansionKind, id: ast::NodeId) -> Expansion {
     let vis = ast::Visibility::Inherited;
     let span = DUMMY_SP;
     let expr_placeholder = || P(ast::Expr {
-        id: id, span: span,
+        id, span,
         attrs: ast::ThinVec::new(),
         node: ast::ExprKind::Mac(mac_placeholder()),
     });
@@ -44,27 +44,30 @@ pub fn placeholder(kind: ExpansionKind, id: ast::NodeId) -> Expansion {
         ExpansionKind::Expr => Expansion::Expr(expr_placeholder()),
         ExpansionKind::OptExpr => Expansion::OptExpr(Some(expr_placeholder())),
         ExpansionKind::Items => Expansion::Items(SmallVector::one(P(ast::Item {
-            id: id, span: span, ident: ident, vis: vis, attrs: attrs,
+            id, span, ident, vis, attrs,
             node: ast::ItemKind::Mac(mac_placeholder()),
+            tokens: None,
         }))),
         ExpansionKind::TraitItems => Expansion::TraitItems(SmallVector::one(ast::TraitItem {
-            id: id, span: span, ident: ident, attrs: attrs,
+            id, span, ident, attrs,
             node: ast::TraitItemKind::Macro(mac_placeholder()),
+            tokens: None,
         })),
         ExpansionKind::ImplItems => Expansion::ImplItems(SmallVector::one(ast::ImplItem {
-            id: id, span: span, ident: ident, vis: vis, attrs: attrs,
+            id, span, ident, vis, attrs,
             node: ast::ImplItemKind::Macro(mac_placeholder()),
             defaultness: ast::Defaultness::Final,
+            tokens: None,
         })),
         ExpansionKind::Pat => Expansion::Pat(P(ast::Pat {
-            id: id, span: span, node: ast::PatKind::Mac(mac_placeholder()),
+            id, span, node: ast::PatKind::Mac(mac_placeholder()),
         })),
         ExpansionKind::Ty => Expansion::Ty(P(ast::Ty {
-            id: id, span: span, node: ast::TyKind::Mac(mac_placeholder()),
+            id, span, node: ast::TyKind::Mac(mac_placeholder()),
         })),
         ExpansionKind::Stmts => Expansion::Stmts(SmallVector::one({
             let mac = P((mac_placeholder(), ast::MacStmtStyle::Braces, ast::ThinVec::new()));
-            ast::Stmt { id: id, span: span, node: ast::StmtKind::Mac(mac) }
+            ast::Stmt { id, span, node: ast::StmtKind::Mac(mac) }
         })),
     }
 }
@@ -78,14 +81,23 @@ pub struct PlaceholderExpander<'a, 'b: 'a> {
 impl<'a, 'b> PlaceholderExpander<'a, 'b> {
     pub fn new(cx: &'a mut ExtCtxt<'b>, monotonic: bool) -> Self {
         PlaceholderExpander {
-            cx: cx,
+            cx,
             expansions: HashMap::new(),
-            monotonic: monotonic,
+            monotonic,
         }
     }
 
-    pub fn add(&mut self, id: ast::NodeId, expansion: Expansion) {
-        let expansion = expansion.fold_with(self);
+    pub fn add(&mut self, id: ast::NodeId, expansion: Expansion, derives: Vec<Mark>) {
+        let mut expansion = expansion.fold_with(self);
+        if let Expansion::Items(mut items) = expansion {
+            for derive in derives {
+                match self.remove(NodeId::placeholder_from_mark(derive)) {
+                    Expansion::Items(derived_items) => items.extend(derived_items),
+                    _ => unreachable!(),
+                }
+            }
+            expansion = Expansion::Items(items);
+        }
         self.expansions.insert(id, expansion);
     }
 
@@ -97,8 +109,8 @@ impl<'a, 'b> PlaceholderExpander<'a, 'b> {
 impl<'a, 'b> Folder for PlaceholderExpander<'a, 'b> {
     fn fold_item(&mut self, item: P<ast::Item>) -> SmallVector<P<ast::Item>> {
         match item.node {
-            ast::ItemKind::Mac(ref mac) if !mac.node.path.segments.is_empty() => {}
             ast::ItemKind::Mac(_) => return self.remove(item.id).make_items(),
+            ast::ItemKind::MacroDef(_) => return SmallVector::one(item),
             _ => {}
         }
 
@@ -164,36 +176,14 @@ impl<'a, 'b> Folder for PlaceholderExpander<'a, 'b> {
 
     fn fold_block(&mut self, block: P<ast::Block>) -> P<ast::Block> {
         noop_fold_block(block, self).map(|mut block| {
-            let mut macros = Vec::new();
             let mut remaining_stmts = block.stmts.len();
 
             block.stmts = block.stmts.move_flat_map(|mut stmt| {
                 remaining_stmts -= 1;
 
-                // `macro_rules!` macro definition
-                if let ast::StmtKind::Item(ref item) = stmt.node {
-                    if let ast::ItemKind::Mac(_) = item.node {
-                        macros.push(Mark::from_placeholder_id(item.id));
-                        return None;
-                    }
-                }
-
-                match stmt.node {
-                    // Avoid wasting a node id on a trailing expression statement,
-                    // which shares a HIR node with the expression itself.
-                    ast::StmtKind::Expr(ref expr) if remaining_stmts == 0 => stmt.id = expr.id,
-
-                    _ if self.monotonic => {
-                        assert_eq!(stmt.id, ast::DUMMY_NODE_ID);
-                        stmt.id = self.cx.resolver.next_node_id();
-                    }
-
-                    _ => {}
-                }
-
-                if self.monotonic && !macros.is_empty() {
-                    let macros = mem::replace(&mut macros, Vec::new());
-                    self.cx.resolver.add_expansions_at_stmt(stmt.id, macros);
+                if self.monotonic {
+                    assert_eq!(stmt.id, ast::DUMMY_NODE_ID);
+                    stmt.id = self.cx.resolver.next_node_id();
                 }
 
                 Some(stmt)

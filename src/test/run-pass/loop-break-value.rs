@@ -8,7 +8,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![feature(loop_break_value)]
 #![feature(never_type)]
 
 #[allow(unused)]
@@ -124,10 +123,24 @@ pub fn main() {
     assert_eq!(nested_break_value, "hello");
 
     let break_from_while_cond = loop {
-        while break {
+        'inner_loop: while break 'inner_loop {
             panic!();
         }
         break 123;
     };
     assert_eq!(break_from_while_cond, 123);
+
+    let break_from_while_to_outer = 'outer_loop: loop {
+        while break 'outer_loop 567 {
+            panic!("from_inner");
+        }
+        panic!("from outer");
+    };
+    assert_eq!(break_from_while_to_outer, 567);
+
+    let rust = true;
+    let value = loop {
+        break rust;
+    };
+    assert!(value);
 }

@@ -13,7 +13,7 @@
 // interface.
 //
 
-use syntax::ast;
+use syntax::ast::{self, Ident};
 use syntax::ext::base::*;
 use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
@@ -32,6 +32,7 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt,
         Some(v) => v,
     };
 
+    let sp = sp.with_ctxt(sp.ctxt().apply_mark(cx.current_expansion.mark));
     let e = match env::var(&*var.as_str()) {
         Err(..) => {
             cx.expr_path(cx.path_all(sp,
@@ -39,10 +40,9 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt,
                                      cx.std_path(&["option", "Option", "None"]),
                                      Vec::new(),
                                      vec![cx.ty_rptr(sp,
-                                                     cx.ty_ident(sp, cx.ident_of("str")),
+                                                     cx.ty_ident(sp, Ident::from_str("str")),
                                                      Some(cx.lifetime(sp,
-                                                                      cx.ident_of("'static")
-                                                                          .name)),
+                                                                      Ident::from_str("'static"))),
                                                      ast::Mutability::Immutable)],
                                      Vec::new()))
         }

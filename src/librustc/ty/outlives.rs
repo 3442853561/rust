@@ -16,7 +16,7 @@ use ty::{self, Ty, TyCtxt, TypeFoldable};
 
 #[derive(Debug)]
 pub enum Component<'tcx> {
-    Region(&'tcx ty::Region),
+    Region(ty::Region<'tcx>),
     Param(ty::ParamTy),
     UnresolvedInferenceVariable(ty::InferTy),
 
@@ -115,6 +115,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 }
             }
 
+            ty::TyGenerator(def_id, ref substs, ref interior) => {
+                // Same as the closure case
+                for upvar_ty in substs.upvar_tys(def_id, *self) {
+                    self.compute_components(upvar_ty, out);
+                }
+
+                // But generators can have additional interior types
+                self.compute_components(interior.witness, out);
+            }
+
             // OutlivesTypeParameterEnv -- the actual checking that `X:'a`
             // is implied by the environment is done in regionck.
             ty::TyParam(p) => {
@@ -167,7 +177,6 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             ty::TyFloat(..) |       // OutlivesScalar
             ty::TyNever |           // ...
             ty::TyAdt(..) |         // OutlivesNominalType
-            ty::TyBox(..) |         // OutlivesNominalType (ish)
             ty::TyAnon(..) |        // OutlivesNominalType (ish)
             ty::TyStr |             // OutlivesScalar (ish)
             ty::TyArray(..) |       // ...
@@ -203,9 +212,9 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 }
 
-fn push_region_constraints<'tcx>(out: &mut Vec<Component<'tcx>>, regions: Vec<&'tcx ty::Region>) {
+fn push_region_constraints<'tcx>(out: &mut Vec<Component<'tcx>>, regions: Vec<ty::Region<'tcx>>) {
     for r in regions {
-        if !r.is_bound() {
+        if !r.is_late_bound() {
             out.push(Component::Region(r));
         }
     }

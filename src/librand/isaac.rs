@@ -12,6 +12,7 @@
 
 #![allow(non_camel_case_types)]
 
+use core::fmt;
 use core::slice;
 use core::iter::repeat;
 use core::num::Wrapping as w;
@@ -44,6 +45,19 @@ pub struct IsaacRng {
     c: w32,
 }
 
+impl fmt::Debug for IsaacRng {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("IsaacRng")
+         .field("cnt", &self.cnt)
+         .field("rsl", &self.rsl.iter())
+         .field("mem", &self.mem.iter())
+         .field("a", &self.a)
+         .field("b", &self.b)
+         .field("c", &self.c)
+         .finish()
+    }
+}
+
 static EMPTY: IsaacRng = IsaacRng {
     cnt: 0,
     rsl: [w(0); RAND_SIZE_USIZE],
@@ -62,7 +76,7 @@ impl IsaacRng {
         rng
     }
 
-    /// Initialises `self`. If `use_rsl` is true, then use the current value
+    /// Initializes `self`. If `use_rsl` is true, then use the current value
     /// of `rsl` as a seed, otherwise construct one algorithmically (not
     /// randomly).
     fn init(&mut self, use_rsl: bool) {
@@ -322,6 +336,19 @@ pub struct Isaac64Rng {
     c: w64,
 }
 
+impl fmt::Debug for Isaac64Rng {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Isaac64Rng")
+         .field("cnt", &self.cnt)
+         .field("rsl", &self.rsl.iter())
+         .field("mem", &self.mem.iter())
+         .field("a", &self.a)
+         .field("b", &self.b)
+         .field("c", &self.c)
+         .finish()
+    }
+}
+
 static EMPTY_64: Isaac64Rng = Isaac64Rng {
     cnt: 0,
     rsl: [w(0); RAND_SIZE_64],
@@ -340,7 +367,7 @@ impl Isaac64Rng {
         rng
     }
 
-    /// Initialises `self`. If `use_rsl` is true, then use the current value
+    /// Initializes `self`. If `use_rsl` is true, then use the current value
     /// of `rsl` as a seed, otherwise construct one algorithmically (not
     /// randomly).
     fn init(&mut self, use_rsl: bool) {
@@ -516,7 +543,8 @@ impl Clone for Isaac64Rng {
 }
 
 impl Rng for Isaac64Rng {
-    // FIXME #7771: having next_u32 like this should be unnecessary
+    // FIXME(https://github.com/rust-lang/rfcs/issues/628)
+    // having next_u32 like this should be unnecessary
     #[inline]
     fn next_u32(&mut self) -> u32 {
         self.next_u64() as u32

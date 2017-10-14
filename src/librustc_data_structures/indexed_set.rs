@@ -9,11 +9,13 @@
 // except according to those terms.
 
 use std::fmt;
+use std::iter;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::{Deref, DerefMut, Range};
+use std::slice;
 use bitslice::{BitSlice, Word};
-use bitslice::{bitwise, Union, Subtract};
+use bitslice::{bitwise, Union, Subtract, Intersect};
 use indexed_vec::Idx;
 
 /// Represents a set (or packed family of sets), of some element type
@@ -21,6 +23,7 @@ use indexed_vec::Idx;
 ///
 /// In other words, `T` is the type used to index into the bitvector
 /// this type uses to represent the set of object it holds.
+#[derive(Eq, PartialEq)]
 pub struct IdxSetBuf<T: Idx> {
     _pd: PhantomData<fn(&T)>,
     bits: Vec<Word>,
@@ -91,13 +94,13 @@ impl<T: Idx> IdxSet<T> {
 impl<T: Idx> Deref for IdxSetBuf<T> {
     type Target = IdxSet<T>;
     fn deref(&self) -> &IdxSet<T> {
-        unsafe { IdxSet::from_slice(&self.bits[..]) }
+        unsafe { IdxSet::from_slice(&self.bits) }
     }
 }
 
 impl<T: Idx> DerefMut for IdxSetBuf<T> {
     fn deref_mut(&mut self) -> &mut IdxSet<T> {
-        unsafe { IdxSet::from_slice_mut(&mut self.bits[..]) }
+        unsafe { IdxSet::from_slice_mut(&mut self.bits) }
     }
 }
 
@@ -106,6 +109,13 @@ impl<T: Idx> IdxSet<T> {
         IdxSetBuf {
             _pd: Default::default(),
             bits: self.bits.to_owned(),
+        }
+    }
+
+    /// Removes all elements
+    pub fn clear(&mut self) {
+        for b in &mut self.bits {
+            *b = 0;
         }
     }
 
@@ -135,11 +145,11 @@ impl<T: Idx> IdxSet<T> {
     }
 
     pub fn words(&self) -> &[Word] {
-        &self.bits[..]
+        &self.bits
     }
 
     pub fn words_mut(&mut self) -> &mut [Word] {
-        &mut self.bits[..]
+        &mut self.bits
     }
 
     pub fn clone_from(&mut self, other: &IdxSet<T>) {
@@ -152,5 +162,110 @@ impl<T: Idx> IdxSet<T> {
 
     pub fn subtract(&mut self, other: &IdxSet<T>) -> bool {
         bitwise(self.words_mut(), other.words(), &Subtract)
+    }
+
+    pub fn intersect(&mut self, other: &IdxSet<T>) -> bool {
+        bitwise(self.words_mut(), other.words(), &Intersect)
+    }
+
+    pub fn iter(&self) -> Iter<T> {
+        Iter {
+            cur: None,
+            iter: self.words().iter().enumerate(),
+            _pd: PhantomData,
+        }
+    }
+
+    /// Calls `f` on each index value held in this set, up to the
+    /// bound `max_bits` on the size of universe of indexes.
+    pub fn each_bit<F>(&self, max_bits: usize, f: F) where F: FnMut(T) {
+        each_bit(self, max_bits, f)
+    }
+
+    /// Removes all elements from this set.
+    pub fn reset_to_empty(&mut self) {
+        for word in self.words_mut() { *word = 0; }
+    }
+
+    pub fn elems(&self, universe_size: usize) -> Elems<T> {
+        Elems { i: 0, set: self, universe_size: universe_size }
+    }
+}
+
+pub struct Elems<'a, T: Idx> { i: usize, set: &'a IdxSet<T>, universe_size: usize }
+
+impl<'a, T: Idx> Iterator for Elems<'a, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        if self.i >= self.universe_size { return None; }
+        let mut i = self.i;
+        loop {
+            if i >= self.universe_size {
+                self.i = i; // (mark iteration as complete.)
+                return None;
+            }
+            if self.set.contains(&T::new(i)) {
+                self.i = i + 1; // (next element to start at.)
+                return Some(T::new(i));
+            }
+            i = i + 1;
+        }
+    }
+}
+
+fn each_bit<T: Idx, F>(words: &IdxSet<T>, max_bits: usize, mut f: F) where F: FnMut(T) {
+    let usize_bits: usize = mem::size_of::<usize>() * 8;
+
+    for (word_index, &word) in words.words().iter().enumerate() {
+        if word != 0 {
+            let base_index = word_index * usize_bits;
+            for offset in 0..usize_bits {
+                let bit = 1 << offset;
+                if (word & bit) != 0 {
+                    // NB: we round up the total number of bits
+                    // that we store in any given bit set so that
+                    // it is an even multiple of usize::BITS. This
+                    // means that there may be some stray bits at
+                    // the end that do not correspond to any
+                    // actual value; that's why we first check
+                    // that we are in range of bits_per_block.
+                    let bit_index = base_index + offset as usize;
+                    if bit_index >= max_bits {
+                        return;
+                    } else {
+                        f(Idx::new(bit_index));
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct Iter<'a, T: Idx> {
+    cur: Option<(Word, usize)>,
+    iter: iter::Enumerate<slice::Iter<'a, Word>>,
+    _pd: PhantomData<fn(&T)>,
+}
+
+impl<'a, T: Idx> Iterator for Iter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        let word_bits = mem::size_of::<Word>() * 8;
+        loop {
+            if let Some((ref mut word, offset)) = self.cur {
+                let bit_pos = word.trailing_zeros() as usize;
+                if bit_pos != word_bits {
+                    let bit = 1 << bit_pos;
+                    *word ^= bit;
+                    return Some(T::new(bit_pos + offset))
+                }
+            }
+
+            match self.iter.next() {
+                Some((i, word)) => self.cur = Some((*word, word_bits * i)),
+                None => return None,
+            }
+        }
     }
 }

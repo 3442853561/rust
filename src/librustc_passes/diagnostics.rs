@@ -82,39 +82,6 @@ extern {
 ```
 "##,
 
-E0161: r##"
-A value was moved. However, its size was not known at compile time, and only
-values of a known size can be moved.
-
-Erroneous code example:
-
-```compile_fail
-#![feature(box_syntax)]
-
-fn main() {
-    let array: &[isize] = &[1, 2, 3];
-    let _x: Box<[isize]> = box *array;
-    // error: cannot move a value of type [isize]: the size of [isize] cannot
-    //        be statically determined
-}
-```
-
-In Rust, you can only move a value when its size is known at compile time.
-
-To work around this restriction, consider "hiding" the value behind a reference:
-either `&x` or `&mut x`. Since a reference has a fixed size, this lets you move
-it around as usual. Example:
-
-```
-#![feature(box_syntax)]
-
-fn main() {
-    let array: &[isize] = &[1, 2, 3];
-    let _x: Box<&[isize]> = box array; // ok!
-}
-```
-"##,
-
 E0265: r##"
 This error indicates that a static or constant references itself.
 All statics and constants need to resolve to a value in an acyclic manner.
@@ -187,7 +154,7 @@ E0449: r##"
 A visibility qualifier was used when it was unnecessary. Erroneous code
 examples:
 
-```compile_fail
+```compile_fail,E0449
 struct Bar;
 
 trait Foo {
@@ -204,7 +171,7 @@ pub impl Foo for Bar { // error: unnecessary visibility qualifier
 To fix this error, please remove the visibility qualifier when it is not
 required. Example:
 
-```ignore
+```
 struct Bar;
 
 trait Foo {
@@ -217,16 +184,84 @@ impl Bar {}
 
 // Trait methods share the visibility of the trait, so `pub` is
 // unnecessary in either case
-pub impl Foo for Bar {
-    pub fn foo() {}
+impl Foo for Bar {
+    fn foo() {}
 }
 ```
 "##,
 
+
+E0579: r##"
+When matching against an exclusive range, the compiler verifies that the range
+is non-empty. Exclusive range patterns include the start point but not the end
+point, so this is equivalent to requiring the start of the range to be less
+than the end of the range.
+
+For example:
+
+```compile_fail
+match 5u32 {
+    // This range is ok, albeit pointless.
+    1 .. 2 => {}
+    // This range is empty, and the compiler can tell.
+    5 .. 5 => {}
+}
+```
+"##,
+
+E0590: r##"
+`break` or `continue` must include a label when used in the condition of a
+`while` loop.
+
+Example of erroneous code:
+
+```compile_fail
+while break {}
+```
+
+To fix this, add a label specifying which loop is being broken out of:
+```
+'foo: while break 'foo {}
+```
+"##,
+
+E0571: r##"
+A `break` statement with an argument appeared in a non-`loop` loop.
+
+Example of erroneous code:
+
+```compile_fail,E0571
+# let mut i = 1;
+# fn satisfied(n: usize) -> bool { n % 23 == 0 }
+let result = while true {
+    if satisfied(i) {
+        break 2*i; // error: `break` with value from a `while` loop
+    }
+    i += 1;
+};
+```
+
+The `break` statement can take an argument (which will be the value of the loop
+expression if the `break` statement is executed) in `loop` loops, but not
+`for`, `while`, or `while let` loops.
+
+Make sure `break value;` statements only occur in `loop` loops:
+
+```
+# let mut i = 1;
+# fn satisfied(n: usize) -> bool { n % 23 == 0 }
+let result = loop { // ok!
+    if satisfied(i) {
+        break 2*i;
+    }
+    i += 1;
+};
+```
+"##
 }
 
 register_diagnostics! {
+    E0226, // only a single explicit lifetime bound is permitted
     E0472, // asm! is unsupported on this target
     E0561, // patterns aren't allowed in function pointer types
-    E0571, // `break` with a value in a non-`loop`-loop
 }

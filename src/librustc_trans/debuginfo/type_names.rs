@@ -36,6 +36,10 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                                           t: Ty<'tcx>,
                                           qualified: bool,
                                           output: &mut String) {
+    // When targeting MSVC, emit C++ style type names for compatibility with
+    // .natvis visualizers (and perhaps other existing native debuggers?)
+    let cpp_like_names = cx.sess().target.target.options.is_like_msvc;
+
     match t.sty {
         ty::TyBool => output.push_str("bool"),
         ty::TyChar => output.push_str("char"),
@@ -48,7 +52,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             push_item_name(cx, def.did, qualified, output);
             push_type_params(cx, substs, output);
         },
-        ty::TyTuple(component_types) => {
+        ty::TyTuple(component_types, _) => {
             output.push('(');
             for &component_type in component_types {
                 push_debuginfo_type_name(cx, component_type, true, output);
@@ -60,38 +64,55 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
             }
             output.push(')');
         },
-        ty::TyBox(inner_type) => {
-            output.push_str("Box<");
-            push_debuginfo_type_name(cx, inner_type, true, output);
-            output.push('>');
-        },
         ty::TyRawPtr(ty::TypeAndMut { ty: inner_type, mutbl } ) => {
-            output.push('*');
+            if !cpp_like_names {
+                output.push('*');
+            }
             match mutbl {
                 hir::MutImmutable => output.push_str("const "),
                 hir::MutMutable => output.push_str("mut "),
             }
 
             push_debuginfo_type_name(cx, inner_type, true, output);
+
+            if cpp_like_names {
+                output.push('*');
+            }
         },
         ty::TyRef(_, ty::TypeAndMut { ty: inner_type, mutbl }) => {
-            output.push('&');
+            if !cpp_like_names {
+                output.push('&');
+            }
             if mutbl == hir::MutMutable {
                 output.push_str("mut ");
             }
 
             push_debuginfo_type_name(cx, inner_type, true, output);
+
+            if cpp_like_names {
+                output.push('*');
+            }
         },
         ty::TyArray(inner_type, len) => {
             output.push('[');
             push_debuginfo_type_name(cx, inner_type, true, output);
-            output.push_str(&format!("; {}", len));
+            output.push_str(&format!("; {}", len.val.to_const_int().unwrap().to_u64().unwrap()));
             output.push(']');
         },
         ty::TySlice(inner_type) => {
-            output.push('[');
+            if cpp_like_names {
+                output.push_str("slice<");
+            } else {
+                output.push('[');
+            }
+
             push_debuginfo_type_name(cx, inner_type, true, output);
-            output.push(']');
+
+            if cpp_like_names {
+                output.push('>');
+            } else {
+                output.push(']');
+            }
         },
         ty::TyDynamic(ref trait_data, ..) => {
             if let Some(principal) = trait_data.principal() {
@@ -101,12 +122,13 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 push_type_params(cx, principal.substs, output);
             }
         },
-        ty::TyFnDef(.., &ty::BareFnTy{ unsafety, abi, ref sig } ) |
-        ty::TyFnPtr(&ty::BareFnTy{ unsafety, abi, ref sig } ) => {
-            if unsafety == hir::Unsafety::Unsafe {
+        ty::TyFnDef(..) | ty::TyFnPtr(_) => {
+            let sig = t.fn_sig(cx.tcx());
+            if sig.unsafety() == hir::Unsafety::Unsafe {
                 output.push_str("unsafe ");
             }
 
+            let abi = sig.abi();
             if abi != ::abi::Abi::Rust {
                 output.push_str("extern \"");
                 output.push_str(abi.name());
@@ -115,7 +137,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
 
             output.push_str("fn(");
 
-            let sig = cx.tcx().erase_late_bound_regions_and_normalize(sig);
+            let sig = cx.tcx().erase_late_bound_regions_and_normalize(&sig);
             if !sig.inputs().is_empty() {
                 for &parameter_type in sig.inputs() {
                     push_debuginfo_type_name(cx, parameter_type, true, output);
@@ -143,6 +165,9 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
         ty::TyClosure(..) => {
             output.push_str("closure");
         }
+        ty::TyGenerator(..) => {
+            output.push_str("generator");
+        }
         ty::TyError |
         ty::TyInfer(_) |
         ty::TyProjection(..) |
@@ -164,7 +189,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CrateContext<'a, 'tcx>,
                 output.push_str(&path_element.data.as_interned_str());
             }
         } else {
-            output.push_str(&cx.tcx().item_name(def_id).as_str());
+            output.push_str(&cx.tcx().item_name(def_id));
         }
     }
 

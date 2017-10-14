@@ -8,14 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! Implementations of serialization for structures found in libcollections
+//! Implementations of serialization for structures found in liballoc
 
 use std::hash::{Hash, BuildHasher};
-use std::mem;
 
 use {Decodable, Encodable, Decoder, Encoder};
 use std::collections::{LinkedList, VecDeque, BTreeMap, BTreeSet, HashMap, HashSet};
-use collections::enum_set::{EnumSet, CLike};
 
 impl<
     T: Encodable
@@ -125,33 +123,6 @@ impl<
             }
             Ok(set)
         })
-    }
-}
-
-impl<
-    T: Encodable + CLike
-> Encodable for EnumSet<T> {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        let mut bits = 0;
-        for item in self {
-            bits |= 1 << item.to_usize();
-        }
-        s.emit_usize(bits)
-    }
-}
-
-impl<
-    T: Decodable + CLike
-> Decodable for EnumSet<T> {
-    fn decode<D: Decoder>(d: &mut D) -> Result<EnumSet<T>, D::Error> {
-        let bits = d.read_usize()?;
-        let mut set = EnumSet::new();
-        for bit in 0..(mem::size_of::<usize>()*8) {
-            if bits & (1 << bit) != 0 {
-                set.insert(CLike::from_usize(bit));
-            }
-        }
-        Ok(set)
     }
 }
 

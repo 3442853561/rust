@@ -16,6 +16,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use cell::UnsafeCell;
 use cmp;
 use hash::Hash;
 use hash::Hasher;
@@ -36,7 +37,7 @@ use hash::Hasher;
 ///
 /// [`Rc`]: ../../std/rc/struct.Rc.html
 /// [arc]: ../../std/sync/struct.Arc.html
-/// [ub]: ../../reference.html#behavior-considered-undefined
+/// [ub]: ../../reference/behavior-considered-undefined.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[lang = "send"]
 #[rustc_on_unimplemented = "`{Self}` cannot be sent between threads safely"]
@@ -84,7 +85,7 @@ impl<T: ?Sized> !Send for *mut T { }
 ///                         // be made into an object
 /// ```
 ///
-/// [trait object]: ../../book/trait-objects.html
+/// [trait object]: ../../book/first-edition/trait-objects.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[lang = "sized"]
 #[rustc_on_unimplemented = "`{Self}` does not have a constant size known at compile-time"]
@@ -119,9 +120,9 @@ pub trait Sized {
 /// [coerceunsized]: ../ops/trait.CoerceUnsized.html
 /// [rc]: ../../std/rc/struct.Rc.html
 /// [RFC982]: https://github.com/rust-lang/rfcs/blob/master/text/0982-dst-coercion.md
-
+/// [nomicon-coerce]: ../../nomicon/coercions.html
 #[unstable(feature = "unsize", issue = "27732")]
-#[lang="unsize"]
+#[lang = "unsize"]
 pub trait Unsize<T: ?Sized> {
     // Empty.
 }
@@ -204,7 +205,7 @@ pub trait Unsize<T: ?Sized> {
 /// but not `Copy`.
 ///
 /// [`Clone`] is a supertrait of `Copy`, so everything which is `Copy` must also implement
-/// [`Clone`]. If a type is `Copy` then its [`Clone`] implementation need only return `*self`
+/// [`Clone`]. If a type is `Copy` then its [`Clone`] implementation only needs to return `*self`
 /// (see the example above).
 ///
 /// ## When can my type be `Copy`?
@@ -245,7 +246,7 @@ pub trait Unsize<T: ?Sized> {
 /// [`String`]'s buffer, leading to a double free.
 ///
 /// Generalizing the latter case, any type implementing [`Drop`] can't be `Copy`, because it's
-/// managing some resource besides its own [`size_of::<T>()`] bytes.
+/// managing some resource besides its own [`size_of::<T>`] bytes.
 ///
 /// If you try to implement `Copy` on a struct or enum containing non-`Copy` data, you will get
 /// the error [E0204].
@@ -262,7 +263,7 @@ pub trait Unsize<T: ?Sized> {
 /// [`Vec<T>`]: ../../std/vec/struct.Vec.html
 /// [`String`]: ../../std/string/struct.String.html
 /// [`Drop`]: ../../std/ops/trait.Drop.html
-/// [`size_of::<T>()`]: ../../std/mem/fn.size_of.html
+/// [`size_of::<T>`]: ../../std/mem/fn.size_of.html
 /// [`Clone`]: ../clone/trait.Clone.html
 /// [`String`]: ../../std/string/struct.String.html
 /// [`i32`]: ../../std/primitive.i32.html
@@ -338,7 +339,7 @@ pub trait Copy : Clone {
 /// [mutex]: ../../std/sync/struct.Mutex.html
 /// [rwlock]: ../../std/sync/struct.RwLock.html
 /// [unsafecell]: ../cell/struct.UnsafeCell.html
-/// [ub]: ../../reference.html#behavior-considered-undefined
+/// [ub]: ../../reference/behavior-considered-undefined.html
 /// [transmute]: ../../std/mem/fn.transmute.html
 #[stable(feature = "rust1", since = "1.0.0")]
 #[lang = "sync"]
@@ -433,7 +434,7 @@ macro_rules! impls{
 /// example, here is a struct `Slice` that has two pointers of type `*const T`,
 /// presumably pointing into an array somewhere:
 ///
-/// ```ignore
+/// ```compile_fail,E0392
 /// struct Slice<'a, T> {
 ///     start: *const T,
 ///     end: *const T,
@@ -492,7 +493,7 @@ macro_rules! impls{
 /// types. We track the Rust type using a phantom type parameter on
 /// the struct `ExternalResource` which wraps a handle.
 ///
-/// [FFI]: ../../book/ffi.html
+/// [FFI]: ../../book/first-edition/ffi.html
 ///
 /// ```
 /// # #![allow(dead_code)]
@@ -554,58 +555,18 @@ mod impls {
     unsafe impl<'a, T: Send + ?Sized> Send for &'a mut T {}
 }
 
-/// Types that can be reflected over.
-///
-/// By "reflection" we mean use of the [`Any`][any] trait, or related
-/// machinery such as [`TypeId`][typeid].
-///
-/// `Reflect` is implemented for all types. Its purpose is to ensure
-/// that when you write a generic function that will employ reflection,
-/// that must be reflected (no pun intended) in the generic bounds of
-/// that function.
-///
-/// ```
-/// #![feature(reflect_marker)]
-/// use std::marker::Reflect;
-/// use std::any::Any;
-///
-/// # #[allow(dead_code)]
-/// fn foo<T: Reflect + 'static>(x: &T) {
-///     let any: &Any = x;
-///     if any.is::<u32>() { println!("u32"); }
-/// }
-/// ```
-///
-/// Without the bound `T: Reflect`, `foo` would not typecheck. (As
-/// a matter of style, it would be preferable to write `T: Any`,
-/// because `T: Any` implies `T: Reflect` and `T: 'static`, but we
-/// use `Reflect` here for illustrative purposes.)
-///
-/// The `Reflect` bound serves to alert `foo`'s caller to the
-/// fact that `foo` may behave differently depending on whether
-/// `T` is `u32` or not. The ability for a caller to reason about what
-/// a function may do based solely on what generic bounds are declared
-/// is often called the "[parametricity property][param]". Despite the
-/// use of `Reflect`, Rust lacks true parametricity because a generic
-/// function can, at the very least, call [`mem::size_of`][size_of]
-/// without employing any trait bounds whatsoever.
-///
-/// [any]: ../any/trait.Any.html
-/// [typeid]: ../any/struct.TypeId.html
-/// [param]: http://en.wikipedia.org/wiki/Parametricity
-/// [size_of]: ../mem/fn.size_of.html
-#[rustc_reflect_like]
-#[unstable(feature = "reflect_marker",
-           reason = "requires RFC and more experience",
-           issue = "27749")]
-#[rustc_deprecated(since = "1.14.0", reason = "Specialization makes parametricity impossible")]
-#[rustc_on_unimplemented = "`{Self}` does not implement `Any`; \
-                            ensure all type parameters are bounded by `Any`"]
-pub trait Reflect {}
+/// Compiler-internal trait used to determine whether a type contains
+/// any `UnsafeCell` internally, but not through an indirection.
+/// This affects, for example, whether a `static` of that type is
+/// placed in read-only static memory or writable static memory.
+#[lang = "freeze"]
+unsafe trait Freeze {}
 
-#[unstable(feature = "reflect_marker",
-           reason = "requires RFC and more experience",
-           issue = "27749")]
-#[rustc_deprecated(since = "1.14.0", reason = "Specialization makes parametricity impossible")]
-#[allow(deprecated)]
-impl Reflect for .. { }
+unsafe impl Freeze for .. {}
+
+impl<T: ?Sized> !Freeze for UnsafeCell<T> {}
+unsafe impl<T: ?Sized> Freeze for PhantomData<T> {}
+unsafe impl<T: ?Sized> Freeze for *const T {}
+unsafe impl<T: ?Sized> Freeze for *mut T {}
+unsafe impl<'a, T: ?Sized> Freeze for &'a T {}
+unsafe impl<'a, T: ?Sized> Freeze for &'a mut T {}

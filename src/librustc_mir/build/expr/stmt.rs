@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use build::{BlockAnd, BlockAndExtension, Builder};
-use build::scope::LoopScope;
+use build::scope::BreakableScope;
 use hair::*;
 use rustc::mir::*;
 
@@ -22,9 +22,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // Handle a number of expressions that don't need a destination at all. This
         // avoids needing a mountain of temporary `()` variables.
         match expr.kind {
-            ExprKind::Scope { extent, value } => {
+            ExprKind::Scope { region_scope, lint_level, value } => {
                 let value = this.hir.mirror(value);
-                this.in_scope(extent, block, |this| this.stmt_expr(block, value))
+                this.in_scope((region_scope, source_info), lint_level, block, |this| {
+                    this.stmt_expr(block, value)
+                })
             }
             ExprKind::Assign { lhs, rhs } => {
                 let lhs = this.hir.mirror(lhs);
@@ -38,14 +40,14 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 // Generate better code for things that don't need to be
                 // dropped.
                 if this.hir.needs_drop(lhs.ty) {
-                    let rhs = unpack!(block = this.as_operand(block, rhs));
+                    let rhs = unpack!(block = this.as_local_operand(block, rhs));
                     let lhs = unpack!(block = this.as_lvalue(block, lhs));
                     unpack!(block = this.build_drop_and_replace(
                         block, lhs_span, lhs, rhs
                     ));
                     block.unit()
                 } else {
-                    let rhs = unpack!(block = this.as_rvalue(block, rhs));
+                    let rhs = unpack!(block = this.as_local_rvalue(block, rhs));
                     let lhs = unpack!(block = this.as_lvalue(block, lhs));
                     this.cfg.push_assign(block, source_info, &lhs, rhs);
                     block.unit()
@@ -64,7 +66,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let lhs_ty = lhs.ty;
 
                 // As above, RTL.
-                let rhs = unpack!(block = this.as_operand(block, rhs));
+                let rhs = unpack!(block = this.as_local_operand(block, rhs));
                 let lhs = unpack!(block = this.as_lvalue(block, lhs));
 
                 // we don't have to drop prior contents or anything
@@ -77,27 +79,29 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 block.unit()
             }
             ExprKind::Continue { label } => {
-                let LoopScope { continue_block, extent, .. } =
-                    *this.find_loop_scope(expr_span, label);
-                this.exit_scope(expr_span, extent, block, continue_block);
+                let BreakableScope { continue_block, region_scope, .. } =
+                    *this.find_breakable_scope(expr_span, label);
+                let continue_block = continue_block.expect(
+                    "Attempted to continue in non-continuable breakable block");
+                this.exit_scope(expr_span, (region_scope, source_info), block, continue_block);
                 this.cfg.start_new_block().unit()
             }
             ExprKind::Break { label, value } => {
-                let (break_block, extent, destination) = {
-                    let LoopScope {
+                let (break_block, region_scope, destination) = {
+                    let BreakableScope {
                         break_block,
-                        extent,
+                        region_scope,
                         ref break_destination,
                         ..
-                    } = *this.find_loop_scope(expr_span, label);
-                    (break_block, extent, break_destination.clone())
+                    } = *this.find_breakable_scope(expr_span, label);
+                    (break_block, region_scope, break_destination.clone())
                 };
                 if let Some(value) = value {
                     unpack!(block = this.into(&destination, block, value))
                 } else {
                     this.cfg.push_assign_unit(block, source_info, &destination)
                 }
-                this.exit_scope(expr_span, extent, block, break_block);
+                this.exit_scope(expr_span, (region_scope, source_info), block, break_block);
                 this.cfg.start_new_block().unit()
             }
             ExprKind::Return { value } => {
@@ -112,14 +116,31 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         block
                     }
                 };
-                let extent = this.extent_of_return_scope();
+                let region_scope = this.region_scope_of_return_scope();
                 let return_block = this.return_block();
-                this.exit_scope(expr_span, extent, block, return_block);
+                this.exit_scope(expr_span, (region_scope, source_info), block, return_block);
                 this.cfg.start_new_block().unit()
+            }
+            ExprKind::InlineAsm { asm, outputs, inputs } => {
+                let outputs = outputs.into_iter().map(|output| {
+                    unpack!(block = this.as_lvalue(block, output))
+                }).collect();
+                let inputs = inputs.into_iter().map(|input| {
+                    unpack!(block = this.as_local_operand(block, input))
+                }).collect();
+                this.cfg.push(block, Statement {
+                    source_info,
+                    kind: StatementKind::InlineAsm {
+                        asm: box asm.clone(),
+                        outputs,
+                        inputs,
+                    },
+                });
+                block.unit()
             }
             _ => {
                 let expr_ty = expr.ty;
-                let temp = this.temp(expr.ty.clone());
+                let temp = this.temp(expr.ty.clone(), expr_span);
                 unpack!(block = this.into(&temp, block, expr));
                 unpack!(block = this.build_drop(block, expr_span, temp, expr_ty));
                 block.unit()

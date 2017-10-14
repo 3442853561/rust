@@ -9,8 +9,8 @@
 // except according to those terms.
 
 use hir::def_id::DefId;
+use middle::const_val::{ConstVal, ConstAggregate};
 use infer::InferCtxt;
-use ty::outlives::Component;
 use ty::subst::Substs;
 use traits;
 use ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable};
@@ -26,14 +26,16 @@ use middle::lang_items;
 /// make any progress at all. This is to prevent "livelock" where we
 /// say "$0 is WF if $0 is WF".
 pub fn obligations<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
+                                   param_env: ty::ParamEnv<'tcx>,
                                    body_id: ast::NodeId,
                                    ty: Ty<'tcx>,
                                    span: Span)
                                    -> Option<Vec<traits::PredicateObligation<'tcx>>>
 {
-    let mut wf = WfPredicates { infcx: infcx,
-                                body_id: body_id,
-                                span: span,
+    let mut wf = WfPredicates { infcx,
+                                param_env,
+                                body_id,
+                                span,
                                 out: vec![] };
     if wf.compute(ty) {
         debug!("wf::obligations({:?}, body_id={:?}) = {:?}", ty, body_id, wf.out);
@@ -50,28 +52,30 @@ pub fn obligations<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
 /// `trait Set<K:Eq>`, then the trait reference `Foo: Set<Bar>` is WF
 /// if `Bar: Eq`.
 pub fn trait_obligations<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
+                                         param_env: ty::ParamEnv<'tcx>,
                                          body_id: ast::NodeId,
                                          trait_ref: &ty::TraitRef<'tcx>,
                                          span: Span)
                                          -> Vec<traits::PredicateObligation<'tcx>>
 {
-    let mut wf = WfPredicates { infcx: infcx, body_id: body_id, span: span, out: vec![] };
-    wf.compute_trait_ref(trait_ref);
+    let mut wf = WfPredicates { infcx, param_env, body_id, span, out: vec![] };
+    wf.compute_trait_ref(trait_ref, Elaborate::All);
     wf.normalize()
 }
 
 pub fn predicate_obligations<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
+                                             param_env: ty::ParamEnv<'tcx>,
                                              body_id: ast::NodeId,
                                              predicate: &ty::Predicate<'tcx>,
                                              span: Span)
                                              -> Vec<traits::PredicateObligation<'tcx>>
 {
-    let mut wf = WfPredicates { infcx: infcx, body_id: body_id, span: span, out: vec![] };
+    let mut wf = WfPredicates { infcx, param_env, body_id, span, out: vec![] };
 
     // (*) ok to skip binders, because wf code is prepared for it
     match *predicate {
         ty::Predicate::Trait(ref t) => {
-            wf.compute_trait_ref(&t.skip_binder().trait_ref); // (*)
+            wf.compute_trait_ref(&t.skip_binder().trait_ref, Elaborate::None); // (*)
         }
         ty::Predicate::Equate(ref t) => {
             wf.compute(t.skip_binder().0);
@@ -94,141 +98,58 @@ pub fn predicate_obligations<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
         }
         ty::Predicate::ClosureKind(..) => {
         }
+        ty::Predicate::Subtype(ref data) => {
+            wf.compute(data.skip_binder().a); // (*)
+            wf.compute(data.skip_binder().b); // (*)
+        }
+        ty::Predicate::ConstEvaluatable(def_id, substs) => {
+            let obligations = wf.nominal_obligations(def_id, substs);
+            wf.out.extend(obligations);
+
+            for ty in substs.types() {
+                wf.compute(ty);
+            }
+        }
     }
 
     wf.normalize()
 }
 
-/// Implied bounds are region relationships that we deduce
-/// automatically.  The idea is that (e.g.) a caller must check that a
-/// function's argument types are well-formed immediately before
-/// calling that fn, and hence the *callee* can assume that its
-/// argument types are well-formed. This may imply certain relationships
-/// between generic parameters. For example:
-///
-///     fn foo<'a,T>(x: &'a T)
-///
-/// can only be called with a `'a` and `T` such that `&'a T` is WF.
-/// For `&'a T` to be WF, `T: 'a` must hold. So we can assume `T: 'a`.
-#[derive(Debug)]
-pub enum ImpliedBound<'tcx> {
-    RegionSubRegion(&'tcx ty::Region, &'tcx ty::Region),
-    RegionSubParam(&'tcx ty::Region, ty::ParamTy),
-    RegionSubProjection(&'tcx ty::Region, ty::ProjectionTy<'tcx>),
-}
-
-/// Compute the implied bounds that a callee/impl can assume based on
-/// the fact that caller/projector has ensured that `ty` is WF.  See
-/// the `ImpliedBound` type for more details.
-pub fn implied_bounds<'a, 'gcx, 'tcx>(
-    infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
-    body_id: ast::NodeId,
-    ty: Ty<'tcx>,
-    span: Span)
-    -> Vec<ImpliedBound<'tcx>>
-{
-    // Sometimes when we ask what it takes for T: WF, we get back that
-    // U: WF is required; in that case, we push U onto this stack and
-    // process it next. Currently (at least) these resulting
-    // predicates are always guaranteed to be a subset of the original
-    // type, so we need not fear non-termination.
-    let mut wf_types = vec![ty];
-
-    let mut implied_bounds = vec![];
-
-    while let Some(ty) = wf_types.pop() {
-        // Compute the obligations for `ty` to be well-formed. If `ty` is
-        // an unresolved inference variable, just substituted an empty set
-        // -- because the return type here is going to be things we *add*
-        // to the environment, it's always ok for this set to be smaller
-        // than the ultimate set. (Note: normally there won't be
-        // unresolved inference variables here anyway, but there might be
-        // during typeck under some circumstances.)
-        let obligations = obligations(infcx, body_id, ty, span).unwrap_or(vec![]);
-
-        // From the full set of obligations, just filter down to the
-        // region relationships.
-        implied_bounds.extend(
-            obligations
-            .into_iter()
-            .flat_map(|obligation| {
-                assert!(!obligation.has_escaping_regions());
-                match obligation.predicate {
-                    ty::Predicate::Trait(..) |
-                    ty::Predicate::Equate(..) |
-                    ty::Predicate::Projection(..) |
-                    ty::Predicate::ClosureKind(..) |
-                    ty::Predicate::ObjectSafe(..) =>
-                        vec![],
-
-                    ty::Predicate::WellFormed(subty) => {
-                        wf_types.push(subty);
-                        vec![]
-                    }
-
-                    ty::Predicate::RegionOutlives(ref data) =>
-                        match infcx.tcx.no_late_bound_regions(data) {
-                            None =>
-                                vec![],
-                            Some(ty::OutlivesPredicate(r_a, r_b)) =>
-                                vec![ImpliedBound::RegionSubRegion(r_b, r_a)],
-                        },
-
-                    ty::Predicate::TypeOutlives(ref data) =>
-                        match infcx.tcx.no_late_bound_regions(data) {
-                            None => vec![],
-                            Some(ty::OutlivesPredicate(ty_a, r_b)) => {
-                                let ty_a = infcx.resolve_type_vars_if_possible(&ty_a);
-                                let components = infcx.tcx.outlives_components(ty_a);
-                                implied_bounds_from_components(r_b, components)
-                            }
-                        },
-                }}));
-    }
-
-    implied_bounds
-}
-
-/// When we have an implied bound that `T: 'a`, we can further break
-/// this down to determine what relationships would have to hold for
-/// `T: 'a` to hold. We get to assume that the caller has validated
-/// those relationships.
-fn implied_bounds_from_components<'tcx>(sub_region: &'tcx ty::Region,
-                                        sup_components: Vec<Component<'tcx>>)
-                                        -> Vec<ImpliedBound<'tcx>>
-{
-    sup_components
-        .into_iter()
-        .flat_map(|component| {
-            match component {
-                Component::Region(r) =>
-                    vec![ImpliedBound::RegionSubRegion(sub_region, r)],
-                Component::Param(p) =>
-                    vec![ImpliedBound::RegionSubParam(sub_region, p)],
-                Component::Projection(p) =>
-                    vec![ImpliedBound::RegionSubProjection(sub_region, p)],
-                Component::EscapingProjection(_) =>
-                    // If the projection has escaping regions, don't
-                    // try to infer any implied bounds even for its
-                    // free components. This is conservative, because
-                    // the caller will still have to prove that those
-                    // free components outlive `sub_region`. But the
-                    // idea is that the WAY that the caller proves
-                    // that may change in the future and we want to
-                    // give ourselves room to get smarter here.
-                    vec![],
-                Component::UnresolvedInferenceVariable(..) =>
-                    vec![],
-            }
-        })
-        .collect()
-}
-
 struct WfPredicates<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     body_id: ast::NodeId,
     span: Span,
     out: Vec<traits::PredicateObligation<'tcx>>,
+}
+
+/// Controls whether we "elaborate" supertraits and so forth on the WF
+/// predicates. This is a kind of hack to address #43784. The
+/// underlying problem in that issue was a trait structure like:
+///
+/// ```
+/// trait Foo: Copy { }
+/// trait Bar: Foo { }
+/// impl<T: Bar> Foo for T { }
+/// impl<T> Bar for T { }
+/// ```
+///
+/// Here, in the `Foo` impl, we will check that `T: Copy` holds -- but
+/// we decide that this is true because `T: Bar` is in the
+/// where-clauses (and we can elaborate that to include `T:
+/// Copy`). This wouldn't be a problem, except that when we check the
+/// `Bar` impl, we decide that `T: Foo` must hold because of the `Foo`
+/// impl. And so nowhere did we check that `T: Copy` holds!
+///
+/// To resolve this, we elaborate the WF requirements that must be
+/// proven when checking impls. This means that (e.g.) the `impl Bar
+/// for T` will be forced to prove not only that `T: Foo` but also `T:
+/// Copy` (which it won't be able to do, because there is no `Copy`
+/// impl for `T`).
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+enum Elaborate {
+    All,
+    None,
 }
 
 impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
@@ -239,11 +160,12 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
     fn normalize(&mut self) -> Vec<traits::PredicateObligation<'tcx>> {
         let cause = self.cause(traits::MiscObligation);
         let infcx = &mut self.infcx;
+        let param_env = self.param_env;
         self.out.iter()
                 .inspect(|pred| assert!(!pred.has_escaping_regions()))
                 .flat_map(|pred| {
                     let mut selcx = traits::SelectionContext::new(infcx);
-                    let pred = traits::normalize(&mut selcx, cause.clone(), pred);
+                    let pred = traits::normalize(&mut selcx, param_env, cause.clone(), pred);
                     once(pred.value).chain(pred.obligations)
                 })
                 .collect()
@@ -251,15 +173,30 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
 
     /// Pushes the obligations required for `trait_ref` to be WF into
     /// `self.out`.
-    fn compute_trait_ref(&mut self, trait_ref: &ty::TraitRef<'tcx>) {
+    fn compute_trait_ref(&mut self, trait_ref: &ty::TraitRef<'tcx>, elaborate: Elaborate) {
         let obligations = self.nominal_obligations(trait_ref.def_id, trait_ref.substs);
-        self.out.extend(obligations);
 
         let cause = self.cause(traits::MiscObligation);
+        let param_env = self.param_env;
+
+        if let Elaborate::All = elaborate {
+            let predicates = obligations.iter()
+                                        .map(|obligation| obligation.predicate.clone())
+                                        .collect();
+            let implied_obligations = traits::elaborate_predicates(self.infcx.tcx, predicates);
+            let implied_obligations = implied_obligations.map(|pred| {
+                traits::Obligation::new(cause.clone(), param_env, pred)
+            });
+            self.out.extend(implied_obligations);
+        }
+
+        self.out.extend(obligations);
+
         self.out.extend(
             trait_ref.substs.types()
                             .filter(|ty| !ty.has_escaping_regions())
                             .map(|ty| traits::Obligation::new(cause.clone(),
+                                                              param_env,
                                                               ty::Predicate::WellFormed(ty))));
     }
 
@@ -269,13 +206,53 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
         // A projection is well-formed if (a) the trait ref itself is
         // WF and (b) the trait-ref holds.  (It may also be
         // normalizable and be WF that way.)
-
-        self.compute_trait_ref(&data.trait_ref);
+        let trait_ref = data.trait_ref(self.infcx.tcx);
+        self.compute_trait_ref(&trait_ref, Elaborate::None);
 
         if !data.has_escaping_regions() {
-            let predicate = data.trait_ref.to_predicate();
+            let predicate = trait_ref.to_predicate();
             let cause = self.cause(traits::ProjectionWf(data));
-            self.out.push(traits::Obligation::new(cause, predicate));
+            self.out.push(traits::Obligation::new(cause, self.param_env, predicate));
+        }
+    }
+
+    /// Pushes the obligations required for a constant value to be WF
+    /// into `self.out`.
+    fn compute_const(&mut self, constant: &'tcx ty::Const<'tcx>) {
+        self.require_sized(constant.ty, traits::ConstSized);
+        match constant.val {
+            ConstVal::Integral(_) |
+            ConstVal::Float(_) |
+            ConstVal::Str(_) |
+            ConstVal::ByteStr(_) |
+            ConstVal::Bool(_) |
+            ConstVal::Char(_) |
+            ConstVal::Variant(_) |
+            ConstVal::Function(..) => {}
+            ConstVal::Aggregate(ConstAggregate::Struct(fields)) => {
+                for &(_, v) in fields {
+                    self.compute_const(v);
+                }
+            }
+            ConstVal::Aggregate(ConstAggregate::Tuple(fields)) |
+            ConstVal::Aggregate(ConstAggregate::Array(fields)) => {
+                for v in fields {
+                    self.compute_const(v);
+                }
+            }
+            ConstVal::Aggregate(ConstAggregate::Repeat(v, _)) => {
+                self.compute_const(v);
+            }
+            ConstVal::Unevaluated(def_id, substs) => {
+                let obligations = self.nominal_obligations(def_id, substs);
+                self.out.extend(obligations);
+
+                let predicate = ty::Predicate::ConstEvaluatable(def_id, substs);
+                let cause = self.cause(traits::MiscObligation);
+                self.out.push(traits::Obligation::new(cause,
+                                                      self.param_env,
+                                                      predicate));
+            }
         }
     }
 
@@ -286,7 +263,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                 def_id: self.infcx.tcx.require_lang_item(lang_items::SizedTraitLangItem),
                 substs: self.infcx.tcx.mk_substs_trait(subty, &[]),
             };
-            self.out.push(traits::Obligation::new(cause, trait_ref.to_predicate()));
+            self.out.push(traits::Obligation::new(cause, self.param_env, trait_ref.to_predicate()));
         }
     }
 
@@ -296,6 +273,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
     /// in which case we are not able to simplify at all.
     fn compute(&mut self, ty0: Ty<'tcx>) -> bool {
         let mut subtys = ty0.walk();
+        let param_env = self.param_env;
         while let Some(ty) = subtys.next() {
             match ty.sty {
                 ty::TyBool |
@@ -310,12 +288,17 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                     // WfScalar, WfParameter, etc
                 }
 
-                ty::TySlice(subty) |
-                ty::TyArray(subty, _) => {
+                ty::TySlice(subty) => {
                     self.require_sized(subty, traits::SliceOrArrayElem);
                 }
 
-                ty::TyTuple(ref tys) => {
+                ty::TyArray(subty, len) => {
+                    self.require_sized(subty, traits::SliceOrArrayElem);
+                    assert_eq!(len.ty, self.infcx.tcx.types.usize);
+                    self.compute_const(len);
+                }
+
+                ty::TyTuple(ref tys, _) => {
                     if let Some((_last, rest)) = tys.split_last() {
                         for elem in rest {
                             self.require_sized(elem, traits::TupleElem);
@@ -323,7 +306,6 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                     }
                 }
 
-                ty::TyBox(_) |
                 ty::TyRawPtr(_) => {
                     // simple cases that are WF if their type args are WF
                 }
@@ -346,14 +328,15 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                         self.out.push(
                             traits::Obligation::new(
                                 cause,
+                                param_env,
                                 ty::Predicate::TypeOutlives(
                                     ty::Binder(
                                         ty::OutlivesPredicate(mt.ty, r)))));
                     }
                 }
 
-                ty::TyClosure(..) => {
-                    // the types in a closure are always the types of
+                ty::TyGenerator(..) | ty::TyClosure(..) => {
+                    // the types in a closure or generator are always the types of
                     // local variables (or possibly references to local
                     // variables), we'll walk those.
                     //
@@ -385,12 +368,12 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                     // checking those
 
                     let cause = self.cause(traits::MiscObligation);
-
                     let component_traits =
                         data.auto_traits().chain(data.principal().map(|p| p.def_id()));
                     self.out.extend(
                         component_traits.map(|did| traits::Obligation::new(
                             cause.clone(),
+                            param_env,
                             ty::Predicate::ObjectSafe(did)
                         ))
                     );
@@ -418,7 +401,9 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
 
                         let cause = self.cause(traits::MiscObligation);
                         self.out.push( // ...not the type we started from, so we made progress.
-                            traits::Obligation::new(cause, ty::Predicate::WellFormed(ty)));
+                            traits::Obligation::new(cause,
+                                                    self.param_env,
+                                                    ty::Predicate::WellFormed(ty)));
                     } else {
                         // Yes, resolved, proceed with the
                         // result. Should never return false because
@@ -439,19 +424,21 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                            -> Vec<traits::PredicateObligation<'tcx>>
     {
         let predicates =
-            self.infcx.tcx.item_predicates(def_id)
+            self.infcx.tcx.predicates_of(def_id)
                           .instantiate(self.infcx.tcx, substs);
         let cause = self.cause(traits::ItemObligation(def_id));
         predicates.predicates
                   .into_iter()
-                  .map(|pred| traits::Obligation::new(cause.clone(), pred))
+                  .map(|pred| traits::Obligation::new(cause.clone(),
+                                                      self.param_env,
+                                                      pred))
                   .filter(|pred| !pred.has_escaping_regions())
                   .collect()
     }
 
     fn from_object_ty(&mut self, ty: Ty<'tcx>,
                       data: ty::Binder<&'tcx ty::Slice<ty::ExistentialPredicate<'tcx>>>,
-                      region: &'tcx ty::Region) {
+                      region: ty::Region<'tcx>) {
         // Imagine a type like this:
         //
         //     trait Foo { }
@@ -493,7 +480,9 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
             for implicit_bound in implicit_bounds {
                 let cause = self.cause(traits::ObjectTypeBound(ty, explicit_bound));
                 let outlives = ty::Binder(ty::OutlivesPredicate(explicit_bound, implicit_bound));
-                self.out.push(traits::Obligation::new(cause, outlives.to_predicate()));
+                self.out.push(traits::Obligation::new(cause,
+                                                      self.param_env,
+                                                      outlives.to_predicate()));
             }
         }
     }
@@ -508,7 +497,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
 pub fn object_region_bounds<'a, 'gcx, 'tcx>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     existential_predicates: ty::Binder<&'tcx ty::Slice<ty::ExistentialPredicate<'tcx>>>)
-    -> Vec<&'tcx ty::Region>
+    -> Vec<ty::Region<'tcx>>
 {
     // Since we don't actually *know* the self type for an object,
     // this "open(err)" serves as a kind of dummy standin -- basically

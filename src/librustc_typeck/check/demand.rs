@@ -10,16 +10,16 @@
 
 
 use check::FnCtxt;
-use rustc::ty::Ty;
-use rustc::infer::{InferOk};
+use rustc::infer::InferOk;
 use rustc::traits::ObligationCause;
 
 use syntax::ast;
 use syntax_pos::{self, Span};
 use rustc::hir;
+use rustc::hir::print;
 use rustc::hir::def::Def;
-use rustc::ty::{self, AssociatedItem};
-use errors::DiagnosticBuilder;
+use rustc::ty::{self, Ty, AssociatedItem};
+use errors::{DiagnosticBuilder, CodeMapper};
 
 use super::method::probe;
 
@@ -27,13 +27,21 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     // Requires that the two types unify, and prints an error message if
     // they don't.
     pub fn demand_suptype(&self, sp: Span, expected: Ty<'tcx>, actual: Ty<'tcx>) {
-        let cause = self.misc(sp);
-        match self.sub_types(false, &cause, actual, expected) {
+        self.demand_suptype_diag(sp, expected, actual).map(|mut e| e.emit());
+    }
+
+    pub fn demand_suptype_diag(&self,
+                               sp: Span,
+                               expected: Ty<'tcx>,
+                               actual: Ty<'tcx>) -> Option<DiagnosticBuilder<'tcx>> {
+        let cause = &self.misc(sp);
+        match self.at(cause, self.param_env).sup(expected, actual) {
             Ok(InferOk { obligations, value: () }) => {
                 self.register_predicates(obligations);
+                None
             },
             Err(e) => {
-                self.report_mismatched_types(&cause, expected, actual, e).emit();
+                Some(self.report_mismatched_types(&cause, expected, actual, e))
             }
         }
     }
@@ -55,37 +63,86 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                      cause: &ObligationCause<'tcx>,
                                      expected: Ty<'tcx>,
                                      actual: Ty<'tcx>) -> Option<DiagnosticBuilder<'tcx>> {
-        match self.eq_types(false, cause, actual, expected) {
+        match self.at(cause, self.param_env).eq(expected, actual) {
             Ok(InferOk { obligations, value: () }) => {
                 self.register_predicates(obligations);
                 None
-            },
+            }
             Err(e) => {
                 Some(self.report_mismatched_types(cause, expected, actual, e))
             }
         }
     }
 
-    // Checks that the type of `expr` can be coerced to `expected`.
     pub fn demand_coerce(&self, expr: &hir::Expr, checked_ty: Ty<'tcx>, expected: Ty<'tcx>) {
-        let expected = self.resolve_type_vars_with_obligations(expected);
-        if let Err(e) = self.try_coerce(expr, checked_ty, expected) {
-            let cause = self.misc(expr.span);
-            let expr_ty = self.resolve_type_vars_with_obligations(checked_ty);
-            let mode = probe::Mode::MethodCall;
-            let suggestions = self.probe_for_return_type(syntax_pos::DUMMY_SP,
-                                                         mode,
-                                                         expected,
-                                                         checked_ty,
-                                                         ast::DUMMY_NODE_ID);
-            let mut err = self.report_mismatched_types(&cause, expected, expr_ty, e);
-            if suggestions.len() > 0 {
-                err.help(&format!("here are some functions which \
-                                   might fulfill your needs:\n{}",
-                                  self.get_best_match(&suggestions).join("\n")));
-            };
+        if let Some(mut err) = self.demand_coerce_diag(expr, checked_ty, expected) {
             err.emit();
         }
+    }
+
+    // Checks that the type of `expr` can be coerced to `expected`.
+    //
+    // NB: This code relies on `self.diverges` to be accurate. In
+    // particular, assignments to `!` will be permitted if the
+    // diverges flag is currently "always".
+    pub fn demand_coerce_diag(&self,
+                              expr: &hir::Expr,
+                              checked_ty: Ty<'tcx>,
+                              expected: Ty<'tcx>) -> Option<DiagnosticBuilder<'tcx>> {
+        let expected = self.resolve_type_vars_with_obligations(expected);
+
+        if let Err(e) = self.try_coerce(expr, checked_ty, self.diverges.get(), expected) {
+            let cause = self.misc(expr.span);
+            let expr_ty = self.resolve_type_vars_with_obligations(checked_ty);
+            let mut err = self.report_mismatched_types(&cause, expected, expr_ty, e);
+
+            // If the expected type is an enum with any variants whose sole
+            // field is of the found type, suggest such variants. See Issue
+            // #42764.
+            if let ty::TyAdt(expected_adt, substs) = expected.sty {
+                let mut compatible_variants = vec![];
+                for variant in &expected_adt.variants {
+                    if variant.fields.len() == 1 {
+                        let sole_field = &variant.fields[0];
+                        let sole_field_ty = sole_field.ty(self.tcx, substs);
+                        if self.can_coerce(expr_ty, sole_field_ty) {
+                            let mut variant_path = self.tcx.item_path_str(variant.did);
+                            variant_path = variant_path.trim_left_matches("std::prelude::v1::")
+                                .to_string();
+                            compatible_variants.push(variant_path);
+                        }
+                    }
+                }
+                if !compatible_variants.is_empty() {
+                    let expr_text = print::to_string(print::NO_ANN, |s| s.print_expr(expr));
+                    let suggestions = compatible_variants.iter()
+                        .map(|v| format!("{}({})", v, expr_text)).collect::<Vec<_>>();
+                    err.span_suggestions(expr.span,
+                                         "try using a variant of the expected type",
+                                         suggestions);
+                }
+            }
+
+            if let Some(suggestion) = self.check_ref(expr,
+                                                     checked_ty,
+                                                     expected) {
+                err.help(&suggestion);
+            } else {
+                let mode = probe::Mode::MethodCall;
+                let suggestions = self.probe_for_return_type(syntax_pos::DUMMY_SP,
+                                                             mode,
+                                                             expected,
+                                                             checked_ty,
+                                                             ast::DUMMY_NODE_ID);
+                if suggestions.len() > 0 {
+                    err.help(&format!("here are some functions which \
+                                       might fulfill your needs:\n{}",
+                                      self.get_best_match(&suggestions).join("\n")));
+                }
+            }
+            return Some(err);
+        }
+        None
     }
 
     fn format_method_suggestion(&self, method: &AssociatedItem) -> String {
@@ -122,14 +179,122 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     fn has_no_input_arg(&self, method: &AssociatedItem) -> bool {
         match method.def() {
             Def::Method(def_id) => {
-                match self.tcx.item_type(def_id).sty {
-                    ty::TypeVariants::TyFnDef(_, _, fty) => {
-                        fty.sig.skip_binder().inputs().len() == 1
-                    }
-                    _ => false,
-                }
+                self.tcx.fn_sig(def_id).inputs().skip_binder().len() == 1
             }
             _ => false,
+        }
+    }
+
+    /// This function is used to determine potential "simple" improvements or users' errors and
+    /// provide them useful help. For example:
+    ///
+    /// ```
+    /// fn some_fn(s: &str) {}
+    ///
+    /// let x = "hey!".to_owned();
+    /// some_fn(x); // error
+    /// ```
+    ///
+    /// No need to find every potential function which could make a coercion to transform a
+    /// `String` into a `&str` since a `&` would do the trick!
+    ///
+    /// In addition of this check, it also checks between references mutability state. If the
+    /// expected is mutable but the provided isn't, maybe we could just say "Hey, try with
+    /// `&mut`!".
+    fn check_ref(&self,
+                 expr: &hir::Expr,
+                 checked_ty: Ty<'tcx>,
+                 expected: Ty<'tcx>)
+                 -> Option<String> {
+        match (&expected.sty, &checked_ty.sty) {
+            (&ty::TyRef(_, exp), &ty::TyRef(_, check)) => match (&exp.ty.sty, &check.ty.sty) {
+                (&ty::TyStr, &ty::TyArray(arr, _)) |
+                (&ty::TyStr, &ty::TySlice(arr)) if arr == self.tcx.types.u8 => {
+                    if let hir::ExprLit(_) = expr.node {
+                        let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                        if let Ok(src) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                            return Some(format!("try `{}`", &src[1..]));
+                        }
+                    }
+                    None
+                },
+                (&ty::TyArray(arr, _), &ty::TyStr) |
+                (&ty::TySlice(arr), &ty::TyStr) if arr == self.tcx.types.u8 => {
+                    if let hir::ExprLit(_) = expr.node {
+                        let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                        if let Ok(src) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                            return Some(format!("try `b{}`", src));
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            },
+            (&ty::TyRef(_, mutability), _) => {
+                // Check if it can work when put into a ref. For example:
+                //
+                // ```
+                // fn bar(x: &mut i32) {}
+                //
+                // let x = 0u32;
+                // bar(&x); // error, expected &mut
+                // ```
+                let ref_ty = match mutability.mutbl {
+                    hir::Mutability::MutMutable => self.tcx.mk_mut_ref(
+                                                       self.tcx.mk_region(ty::ReStatic),
+                                                       checked_ty),
+                    hir::Mutability::MutImmutable => self.tcx.mk_imm_ref(
+                                                       self.tcx.mk_region(ty::ReStatic),
+                                                       checked_ty),
+                };
+                if self.can_coerce(ref_ty, expected) {
+                    // Use the callsite's span if this is a macro call. #41858
+                    let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                    if let Ok(src) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                        return Some(format!("try with `{}{}`",
+                                            match mutability.mutbl {
+                                                hir::Mutability::MutMutable => "&mut ",
+                                                hir::Mutability::MutImmutable => "&",
+                                            },
+                                            &src));
+                    }
+                }
+                None
+            }
+            (_, &ty::TyRef(_, checked)) => {
+                // We have `&T`, check if what was expected was `T`. If so,
+                // we may want to suggest adding a `*`, or removing
+                // a `&`.
+                //
+                // (But, also check check the `expn_info()` to see if this is
+                // a macro; if so, it's hard to extract the text and make a good
+                // suggestion, so don't bother.)
+                if self.infcx.can_sub(self.param_env, checked.ty, &expected).is_ok() &&
+                   expr.span.ctxt().outer().expn_info().is_none() {
+                    match expr.node {
+                        // Maybe remove `&`?
+                        hir::ExprAddrOf(_, ref expr) => {
+                            if let Ok(code) = self.tcx.sess.codemap().span_to_snippet(expr.span) {
+                                return Some(format!("try with `{}`", code));
+                            }
+                        }
+
+                        // Maybe add `*`? Only if `T: Copy`.
+                        _ => {
+                            if !self.infcx.type_moves_by_default(self.param_env,
+                                                                checked.ty,
+                                                                expr.span) {
+                                let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                                if let Ok(code) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                                    return Some(format!("try with `*{}`", code));
+                                }
+                            }
+                        },
+                    }
+                }
+                None
+            }
+            _ => None,
         }
     }
 }

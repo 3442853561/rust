@@ -12,13 +12,13 @@ pub use self::imp::OsRng;
 
 use mem;
 
-fn next_u32(mut fill_buf: &mut FnMut(&mut [u8])) -> u32 {
+fn next_u32(fill_buf: &mut FnMut(&mut [u8])) -> u32 {
     let mut buf: [u8; 4] = [0; 4];
     fill_buf(&mut buf);
     unsafe { mem::transmute::<[u8; 4], u32>(buf) }
 }
 
-fn next_u64(mut fill_buf: &mut FnMut(&mut [u8])) -> u64 {
+fn next_u64(fill_buf: &mut FnMut(&mut [u8])) -> u64 {
     let mut buf: [u8; 8] = [0; 8];
     fill_buf(&mut buf);
     unsafe { mem::transmute::<[u8; 8], u64>(buf) }
@@ -257,10 +257,6 @@ mod imp {
     #[allow(non_upper_case_globals)]
     const kSecRandomDefault: *const SecRandom = ptr::null();
 
-    #[link(name = "Security", kind = "framework")]
-    #[cfg(not(cargobuild))]
-    extern {}
-
     extern {
         fn SecRandomCopyBytes(rnd: *const SecRandom,
                               count: size_t, bytes: *mut u8) -> c_int;
@@ -348,15 +344,15 @@ mod imp {
     use io;
     use rand::Rng;
 
-    #[link(name = "magenta")]
+    #[link(name = "zircon")]
     extern {
-        fn mx_cprng_draw(buffer: *mut u8, len: usize, actual: *mut usize) -> i32;
+        fn zx_cprng_draw(buffer: *mut u8, len: usize, actual: *mut usize) -> i32;
     }
 
     fn getrandom(buf: &mut [u8]) -> Result<usize, i32> {
         unsafe {
             let mut actual = 0;
-            let status = mx_cprng_draw(buf.as_mut_ptr(), buf.len(), &mut actual);
+            let status = zx_cprng_draw(buf.as_mut_ptr(), buf.len(), &mut actual);
             if status == 0 {
                 Ok(actual)
             } else {
@@ -391,7 +387,7 @@ mod imp {
                 let ret = getrandom(buf);
                 match ret {
                     Err(err) => {
-                        panic!("kernel mx_cprng_draw call failed! (returned {}, buf.len() {})",
+                        panic!("kernel zx_cprng_draw call failed! (returned {}, buf.len() {})",
                             err, buf.len())
                     }
                     Ok(actual) => {

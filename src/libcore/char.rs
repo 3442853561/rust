@@ -19,6 +19,7 @@ use char_private::is_printable;
 use convert::TryFrom;
 use fmt::{self, Write};
 use slice;
+use str::{from_utf8_unchecked_mut, FromStr};
 use iter::FusedIterator;
 use mem::transmute;
 
@@ -94,12 +95,12 @@ pub const MAX: char = '\u{10ffff}';
 ///
 /// [`char`]: ../../std/primitive.char.html
 /// [`u32`]: ../../std/primitive.u32.html
-/// [`as`]: ../../book/casting-between-types.html#as
+/// [`as`]: ../../book/first-edition/casting-between-types.html#as
 ///
 /// For an unsafe version of this function which ignores these checks, see
-/// [`from_u32_unchecked()`].
+/// [`from_u32_unchecked`].
 ///
-/// [`from_u32_unchecked()`]: fn.from_u32_unchecked.html
+/// [`from_u32_unchecked`]: fn.from_u32_unchecked.html
 ///
 /// # Examples
 ///
@@ -146,15 +147,15 @@ pub fn from_u32(i: u32) -> Option<char> {
 ///
 /// [`char`]: ../../std/primitive.char.html
 /// [`u32`]: ../../std/primitive.u32.html
-/// [`as`]: ../../book/casting-between-types.html#as
+/// [`as`]: ../../book/first-edition/casting-between-types.html#as
 ///
 /// # Safety
 ///
 /// This function is unsafe, as it may construct invalid `char` values.
 ///
-/// For a safe version of this function, see the [`from_u32()`] function.
+/// For a safe version of this function, see the [`from_u32`] function.
 ///
-/// [`from_u32()`]: fn.from_u32.html
+/// [`from_u32`]: fn.from_u32.html
 ///
 /// # Examples
 ///
@@ -187,7 +188,7 @@ impl From<char> for u32 {
 /// with the character encoding that IANA calls ISO-8859-1.
 /// This encoding is compatible with ASCII.
 ///
-/// Note that this is different from ISO/IEC 8859-1 a.k.a. ISO 8859-1 (with one less hypen),
+/// Note that this is different from ISO/IEC 8859-1 a.k.a. ISO 8859-1 (with one less hyphen),
 /// which leaves some "blanks", byte values that are not assigned to any character.
 /// ISO-8859-1 (the IANA one) assigns them to the C0 and C1 control codes.
 ///
@@ -207,12 +208,69 @@ impl From<u8> for char {
     }
 }
 
-#[unstable(feature = "try_from", issue = "33417")]
-impl TryFrom<u32> for char {
-    type Err = CharTryFromError;
+
+/// An error which can be returned when parsing a char.
+#[stable(feature = "char_from_str", since = "1.20.0")]
+#[derive(Clone, Debug)]
+pub struct ParseCharError {
+    kind: CharErrorKind,
+}
+
+impl ParseCharError {
+    #[unstable(feature = "char_error_internals",
+               reason = "this method should not be available publicly",
+               issue = "0")]
+    #[doc(hidden)]
+    pub fn __description(&self) -> &str {
+        match self.kind {
+            CharErrorKind::EmptyString => {
+                "cannot parse char from empty string"
+            },
+            CharErrorKind::TooManyChars => "too many characters in string"
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CharErrorKind {
+    EmptyString,
+    TooManyChars,
+}
+
+#[stable(feature = "char_from_str", since = "1.20.0")]
+impl fmt::Display for ParseCharError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.__description().fmt(f)
+    }
+}
+
+
+#[stable(feature = "char_from_str", since = "1.20.0")]
+impl FromStr for char {
+    type Err = ParseCharError;
 
     #[inline]
-    fn try_from(i: u32) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (None, _) => {
+                Err(ParseCharError { kind: CharErrorKind::EmptyString })
+            },
+            (Some(c), None) => Ok(c),
+            _ => {
+                Err(ParseCharError { kind: CharErrorKind::TooManyChars })
+            }
+        }
+    }
+}
+
+
+#[unstable(feature = "try_from", issue = "33417")]
+impl TryFrom<u32> for char {
+    type Error = CharTryFromError;
+
+    #[inline]
+    fn try_from(i: u32) -> Result<Self, Self::Error> {
         if (i > MAX as u32) || (i >= 0xD800 && i <= 0xDFFF) {
             Err(CharTryFromError(()))
         } else {
@@ -321,7 +379,7 @@ pub trait CharExt {
     fn escape_unicode(self) -> EscapeUnicode;
     #[stable(feature = "core", since = "1.6.0")]
     fn escape_default(self) -> EscapeDefault;
-    #[unstable(feature = "char_escape_debug", issue = "35068")]
+    #[stable(feature = "char_escape_debug", since = "1.20.0")]
     fn escape_debug(self) -> EscapeDebug;
     #[stable(feature = "core", since = "1.6.0")]
     fn len_utf8(self) -> usize;
@@ -448,7 +506,7 @@ impl CharExt for char {
                     code,
                     dst.len())
             };
-            transmute(slice::from_raw_parts_mut(dst.as_mut_ptr(), len))
+            from_utf8_unchecked_mut(dst.get_unchecked_mut(..len))
         }
     }
 
@@ -479,10 +537,10 @@ impl CharExt for char {
 /// Returns an iterator that yields the hexadecimal Unicode escape of a
 /// character, as `char`s.
 ///
-/// This `struct` is created by the [`escape_unicode()`] method on [`char`]. See
+/// This `struct` is created by the [`escape_unicode`] method on [`char`]. See
 /// its documentation for more.
 ///
-/// [`escape_unicode()`]: ../../std/primitive.char.html#method.escape_unicode
+/// [`escape_unicode`]: ../../std/primitive.char.html#method.escape_unicode
 /// [`char`]: ../../std/primitive.char.html
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -588,7 +646,7 @@ impl ExactSizeIterator for EscapeUnicode {
 #[unstable(feature = "fused", issue = "35602")]
 impl FusedIterator for EscapeUnicode {}
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
+#[stable(feature = "char_struct_display", since = "1.16.0")]
 impl fmt::Display for EscapeUnicode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for c in self.clone() {
@@ -600,10 +658,10 @@ impl fmt::Display for EscapeUnicode {
 
 /// An iterator that yields the literal escape code of a `char`.
 ///
-/// This `struct` is created by the [`escape_default()`] method on [`char`]. See
+/// This `struct` is created by the [`escape_default`] method on [`char`]. See
 /// its documentation for more.
 ///
-/// [`escape_default()`]: ../../std/primitive.char.html#method.escape_default
+/// [`escape_default`]: ../../std/primitive.char.html#method.escape_default
 /// [`char`]: ../../std/primitive.char.html
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -701,7 +759,7 @@ impl ExactSizeIterator for EscapeDefault {
 #[unstable(feature = "fused", issue = "35602")]
 impl FusedIterator for EscapeDefault {}
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
+#[stable(feature = "char_struct_display", since = "1.16.0")]
 impl fmt::Display for EscapeDefault {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for c in self.clone() {
@@ -713,29 +771,29 @@ impl fmt::Display for EscapeDefault {
 
 /// An iterator that yields the literal escape code of a `char`.
 ///
-/// This `struct` is created by the [`escape_debug()`] method on [`char`]. See its
+/// This `struct` is created by the [`escape_debug`] method on [`char`]. See its
 /// documentation for more.
 ///
-/// [`escape_debug()`]: ../../std/primitive.char.html#method.escape_debug
+/// [`escape_debug`]: ../../std/primitive.char.html#method.escape_debug
 /// [`char`]: ../../std/primitive.char.html
-#[unstable(feature = "char_escape_debug", issue = "35068")]
+#[stable(feature = "char_escape_debug", since = "1.20.0")]
 #[derive(Clone, Debug)]
 pub struct EscapeDebug(EscapeDefault);
 
-#[unstable(feature = "char_escape_debug", issue = "35068")]
+#[stable(feature = "char_escape_debug", since = "1.20.0")]
 impl Iterator for EscapeDebug {
     type Item = char;
     fn next(&mut self) -> Option<char> { self.0.next() }
     fn size_hint(&self) -> (usize, Option<usize>) { self.0.size_hint() }
 }
 
-#[unstable(feature = "char_escape_debug", issue = "35068")]
+#[stable(feature = "char_escape_debug", since = "1.20.0")]
 impl ExactSizeIterator for EscapeDebug { }
 
 #[unstable(feature = "fused", issue = "35602")]
 impl FusedIterator for EscapeDebug {}
 
-#[stable(feature = "char_struct_display", since = "1.17.0")]
+#[stable(feature = "char_escape_debug", since = "1.20.0")]
 impl fmt::Display for EscapeDebug {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)

@@ -19,7 +19,7 @@ use syntax::ext::base;
 use syntax::ext::build::AstBuilder;
 use syntax::parse::token;
 use syntax::ptr::P;
-use syntax::symbol::{Symbol, keywords};
+use syntax::symbol::Symbol;
 use syntax_pos::{Span, DUMMY_SP};
 use syntax::tokenstream;
 
@@ -117,7 +117,8 @@ struct Context<'a, 'b: 'a> {
 /// expressions.
 ///
 /// If parsing succeeds, the return value is:
-/// ```ignore
+///
+/// ```text
 /// Some((fmtstr, parsed arguments, index map for named arguments))
 /// ```
 fn parse_args(ecx: &mut ExtCtxt,
@@ -500,35 +501,9 @@ impl<'a, 'b> Context<'a, 'b> {
         }
     }
 
-    fn static_array(ecx: &mut ExtCtxt,
-                    name: &str,
-                    piece_ty: P<ast::Ty>,
-                    pieces: Vec<P<ast::Expr>>)
-                    -> P<ast::Expr> {
-        let sp = piece_ty.span;
-        let ty = ecx.ty_rptr(sp,
-                             ecx.ty(sp, ast::TyKind::Slice(piece_ty)),
-                             Some(ecx.lifetime(sp, keywords::StaticLifetime.name())),
-                             ast::Mutability::Immutable);
-        let slice = ecx.expr_vec_slice(sp, pieces);
-        // static instead of const to speed up codegen by not requiring this to be inlined
-        let st = ast::ItemKind::Static(ty, ast::Mutability::Immutable, slice);
-
-        let name = ecx.ident_of(name);
-        let item = ecx.item(sp, name, vec![], st);
-        let stmt = ast::Stmt {
-            id: ast::DUMMY_NODE_ID,
-            node: ast::StmtKind::Item(item),
-            span: sp,
-        };
-
-        // Wrap the declaration in a block so that it forms a single expression.
-        ecx.expr_block(ecx.block(sp, vec![stmt, ecx.stmt_expr(ecx.expr_ident(sp, name))]))
-    }
-
     /// Actually builds the expression which the format_args! block will be
     /// expanded to
-    fn into_expr(mut self) -> P<ast::Expr> {
+    fn into_expr(self) -> P<ast::Expr> {
         let mut locals = Vec::new();
         let mut counts = Vec::new();
         let mut pats = Vec::new();
@@ -536,12 +511,7 @@ impl<'a, 'b> Context<'a, 'b> {
 
         // First, build up the static array which will become our precompiled
         // format "string"
-        let static_lifetime = self.ecx.lifetime(self.fmtsp, keywords::StaticLifetime.name());
-        let piece_ty = self.ecx.ty_rptr(self.fmtsp,
-                                        self.ecx.ty_ident(self.fmtsp, self.ecx.ident_of("str")),
-                                        Some(static_lifetime),
-                                        ast::Mutability::Immutable);
-        let pieces = Context::static_array(self.ecx, "__STATIC_FMTSTR", piece_ty, self.str_pieces);
+        let pieces = self.ecx.expr_vec_slice(self.fmtsp, self.str_pieces);
 
         // Before consuming the expressions, we have to remember spans for
         // count arguments as they are now generated separate from other
@@ -557,13 +527,11 @@ impl<'a, 'b> Context<'a, 'b> {
         // passed to this function.
         for (i, e) in self.args.into_iter().enumerate() {
             let name = self.ecx.ident_of(&format!("__arg{}", i));
-            pats.push(self.ecx.pat_ident(DUMMY_SP, name));
+            let span =
+                DUMMY_SP.with_ctxt(e.span.ctxt().apply_mark(self.ecx.current_expansion.mark));
+            pats.push(self.ecx.pat_ident(span, name));
             for ref arg_ty in self.arg_unique_types[i].iter() {
-                locals.push(Context::format_arg(self.ecx,
-                                                self.macsp,
-                                                e.span,
-                                                arg_ty,
-                                                self.ecx.expr_ident(e.span, name)));
+                locals.push(Context::format_arg(self.ecx, self.macsp, e.span, arg_ty, name));
             }
             heads.push(self.ecx.expr_addr_of(e.span, e));
         }
@@ -576,11 +544,7 @@ impl<'a, 'b> Context<'a, 'b> {
                 Exact(i) => spans_pos[i],
                 _ => panic!("should never happen"),
             };
-            counts.push(Context::format_arg(self.ecx,
-                                            self.macsp,
-                                            span,
-                                            &Count,
-                                            self.ecx.expr_ident(span, name)));
+            counts.push(Context::format_arg(self.ecx, self.macsp, span, &Count, name));
         }
 
         // Now create a vector containing all the arguments
@@ -628,9 +592,7 @@ impl<'a, 'b> Context<'a, 'b> {
         } else {
             // Build up the static array which will store our precompiled
             // nonstandard placeholders, if there are any.
-            let piece_ty = self.ecx
-                .ty_path(self.ecx.path_global(self.macsp, Context::rtpath(self.ecx, "Argument")));
-            let fmt = Context::static_array(self.ecx, "__STATIC_FMTARGS", piece_ty, self.pieces);
+            let fmt = self.ecx.expr_vec_slice(self.macsp, self.pieces);
 
             ("new_v1_formatted", vec![pieces, args_slice, fmt])
         };
@@ -641,10 +603,12 @@ impl<'a, 'b> Context<'a, 'b> {
 
     fn format_arg(ecx: &ExtCtxt,
                   macsp: Span,
-                  sp: Span,
+                  mut sp: Span,
                   ty: &ArgumentType,
-                  arg: P<ast::Expr>)
+                  arg: ast::Ident)
                   -> P<ast::Expr> {
+        sp = sp.with_ctxt(sp.ctxt().apply_mark(ecx.current_expansion.mark));
+        let arg = ecx.expr_ident(sp, arg);
         let trait_ = match *ty {
             Placeholder(ref tyname) => {
                 match &tyname[..] {
@@ -677,10 +641,10 @@ impl<'a, 'b> Context<'a, 'b> {
 }
 
 pub fn expand_format_args<'cx>(ecx: &'cx mut ExtCtxt,
-                               sp: Span,
+                               mut sp: Span,
                                tts: &[tokenstream::TokenTree])
                                -> Box<base::MacResult + 'cx> {
-
+    sp = sp.with_ctxt(sp.ctxt().apply_mark(ecx.current_expansion.mark));
     match parse_args(ecx, sp, tts) {
         Some((efmt, args, names)) => {
             MacEager::expr(expand_preparsed_format_args(ecx, sp, efmt, args, names))
@@ -701,7 +665,8 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
     // `ArgumentType` does not derive `Clone`.
     let arg_types: Vec<_> = (0..args.len()).map(|_| Vec::new()).collect();
     let arg_unique_types: Vec<_> = (0..args.len()).map(|_| Vec::new()).collect();
-    let macsp = ecx.call_site();
+    let mut macsp = ecx.call_site();
+    macsp = macsp.with_ctxt(macsp.ctxt().apply_mark(ecx.current_expansion.mark));
     let msg = "format argument must be a string literal.";
     let fmt = match expr_to_spanned_string(ecx, efmt, msg) {
         Some(fmt) => fmt,
@@ -709,11 +674,11 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
     };
 
     let mut cx = Context {
-        ecx: ecx,
-        args: args,
-        arg_types: arg_types,
-        arg_unique_types: arg_unique_types,
-        names: names,
+        ecx,
+        args,
+        arg_types,
+        arg_unique_types,
+        names,
         curarg: 0,
         arg_index_map: Vec::new(),
         count_args: Vec::new(),
@@ -724,7 +689,7 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
         pieces: Vec::new(),
         str_pieces: Vec::new(),
         all_pieces_simple: true,
-        macsp: macsp,
+        macsp,
         fmtsp: fmt.span,
     };
 
@@ -800,9 +765,13 @@ pub fn expand_preparsed_format_args(ecx: &mut ExtCtxt,
             } else {
                 let mut diag = cx.ecx.struct_span_err(cx.fmtsp,
                     "multiple unused formatting arguments");
-                for (sp, msg) in errs {
-                    diag.span_note(sp, msg);
+
+                // Ignoring message, as it gets repetitive
+                // Then use MultiSpan to not clutter up errors
+                for (sp, _) in errs {
+                    diag.span_label(sp, "unused");
                 }
+
                 diag
             }
         };

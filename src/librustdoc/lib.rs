@@ -8,38 +8,38 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#![crate_name = "rustdoc"]
-#![unstable(feature = "rustdoc", issue = "27812")]
-#![crate_type = "dylib"]
-#![crate_type = "rlib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/")]
 #![deny(warnings)]
 
+#![feature(rustc_private)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(libc)]
-#![feature(rustc_private)]
 #![feature(set_stdio)]
 #![feature(slice_patterns)]
-#![feature(staged_api)]
 #![feature(test)]
 #![feature(unicode)]
+#![feature(vec_remove_item)]
+#![feature(ascii_ctype)]
 
 extern crate arena;
 extern crate getopts;
+extern crate env_logger;
+extern crate html_diff;
 extern crate libc;
 extern crate rustc;
-extern crate rustc_const_eval;
 extern crate rustc_data_structures;
+extern crate rustc_const_math;
 extern crate rustc_trans;
 extern crate rustc_driver;
 extern crate rustc_resolve;
 extern crate rustc_lint;
 extern crate rustc_back;
 extern crate rustc_metadata;
+extern crate rustc_typeck;
 extern crate serialize;
 #[macro_use] extern crate syntax;
 extern crate syntax_pos;
@@ -47,6 +47,7 @@ extern crate test as testing;
 extern crate std_unicode;
 #[macro_use] extern crate log;
 extern crate rustc_errors as errors;
+extern crate pulldown_cmark;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
@@ -91,6 +92,8 @@ pub mod test;
 
 use clean::AttributesExt;
 
+use html::markdown::RenderType;
+
 struct Output {
     krate: clean::Crate,
     renderinfo: html::render::RenderInfo,
@@ -99,90 +102,167 @@ struct Output {
 
 pub fn main() {
     const STACK_SIZE: usize = 32_000_000; // 32MB
+    env_logger::init().unwrap();
     let res = std::thread::Builder::new().stack_size(STACK_SIZE).spawn(move || {
-        let s = env::args().collect::<Vec<_>>();
-        main_args(&s)
+        get_args().map(|args| main_args(&args)).unwrap_or(1)
     }).unwrap().join().unwrap_or(101);
     process::exit(res as i32);
 }
 
-fn stable(g: getopts::OptGroup) -> RustcOptGroup { RustcOptGroup::stable(g) }
-fn unstable(g: getopts::OptGroup) -> RustcOptGroup { RustcOptGroup::unstable(g) }
+fn get_args() -> Option<Vec<String>> {
+    env::args_os().enumerate()
+        .map(|(i, arg)| arg.into_string().map_err(|arg| {
+             print_error(format!("Argument {} is not valid Unicode: {:?}", i, arg));
+        }).ok())
+        .collect()
+}
+
+fn stable<F>(name: &'static str, f: F) -> RustcOptGroup
+    where F: Fn(&mut getopts::Options) -> &mut getopts::Options + 'static
+{
+    RustcOptGroup::stable(name, f)
+}
+
+fn unstable<F>(name: &'static str, f: F) -> RustcOptGroup
+    where F: Fn(&mut getopts::Options) -> &mut getopts::Options + 'static
+{
+    RustcOptGroup::unstable(name, f)
+}
 
 pub fn opts() -> Vec<RustcOptGroup> {
-    use getopts::*;
     vec![
-        stable(optflag("h", "help", "show this help message")),
-        stable(optflag("V", "version", "print rustdoc's version")),
-        stable(optflag("v", "verbose", "use verbose output")),
-        stable(optopt("r", "input-format", "the input type of the specified file",
-                      "[rust]")),
-        stable(optopt("w", "output-format", "the output type to write",
-                      "[html]")),
-        stable(optopt("o", "output", "where to place the output", "PATH")),
-        stable(optopt("", "crate-name", "specify the name of this crate", "NAME")),
-        stable(optmulti("L", "library-path", "directory to add to crate search path",
-                        "DIR")),
-        stable(optmulti("", "cfg", "pass a --cfg to rustc", "")),
-        stable(optmulti("", "extern", "pass an --extern to rustc", "NAME=PATH")),
-        stable(optmulti("", "plugin-path", "directory to load plugins from", "DIR")),
-        stable(optmulti("", "passes",
-                        "list of passes to also run, you might want \
-                         to pass it multiple times; a value of `list` \
-                         will print available passes",
-                        "PASSES")),
-        stable(optmulti("", "plugins", "space separated list of plugins to also load",
-                        "PLUGINS")),
-        stable(optflag("", "no-defaults", "don't run the default passes")),
-        stable(optflag("", "test", "run code examples as tests")),
-        stable(optmulti("", "test-args", "arguments to pass to the test runner",
-                        "ARGS")),
-        stable(optopt("", "target", "target triple to document", "TRIPLE")),
-        stable(optmulti("", "markdown-css",
-                        "CSS files to include via <link> in a rendered Markdown file",
-                        "FILES")),
-        stable(optmulti("", "html-in-header",
-                        "files to include inline in the <head> section of a rendered Markdown file \
-                         or generated documentation",
-                        "FILES")),
-        stable(optmulti("", "html-before-content",
-                        "files to include inline between <body> and the content of a rendered \
-                         Markdown file or generated documentation",
-                        "FILES")),
-        stable(optmulti("", "html-after-content",
-                        "files to include inline between the content and </body> of a rendered \
-                         Markdown file or generated documentation",
-                        "FILES")),
-        stable(optopt("", "markdown-playground-url",
-                      "URL to send code snippets to", "URL")),
-        stable(optflag("", "markdown-no-toc", "don't include table of contents")),
-        unstable(optopt("e", "extend-css",
-                        "to redefine some css rules with a given file to generate doc with your \
-                         own theme", "PATH")),
-        unstable(optmulti("Z", "",
-                          "internal and debugging options (only on nightly build)", "FLAG")),
-        stable(optopt("", "sysroot", "Override the system root", "PATH")),
-        unstable(optopt("", "playground-url",
-                        "URL to send code snippets to, may be reset by --markdown-playground-url \
-                         or `#![doc(html_playground_url=...)]`",
-                        "URL")),
+        stable("h", |o| o.optflag("h", "help", "show this help message")),
+        stable("V", |o| o.optflag("V", "version", "print rustdoc's version")),
+        stable("v", |o| o.optflag("v", "verbose", "use verbose output")),
+        stable("r", |o| {
+            o.optopt("r", "input-format", "the input type of the specified file",
+                     "[rust]")
+        }),
+        stable("w", |o| {
+            o.optopt("w", "output-format", "the output type to write", "[html]")
+        }),
+        stable("o", |o| o.optopt("o", "output", "where to place the output", "PATH")),
+        stable("crate-name", |o| {
+            o.optopt("", "crate-name", "specify the name of this crate", "NAME")
+        }),
+        stable("L", |o| {
+            o.optmulti("L", "library-path", "directory to add to crate search path",
+                       "DIR")
+        }),
+        stable("cfg", |o| o.optmulti("", "cfg", "pass a --cfg to rustc", "")),
+        stable("extern", |o| {
+            o.optmulti("", "extern", "pass an --extern to rustc", "NAME=PATH")
+        }),
+        stable("plugin-path", |o| {
+            o.optmulti("", "plugin-path", "directory to load plugins from", "DIR")
+        }),
+        stable("passes", |o| {
+            o.optmulti("", "passes",
+                       "list of passes to also run, you might want \
+                        to pass it multiple times; a value of `list` \
+                        will print available passes",
+                       "PASSES")
+        }),
+        stable("plugins", |o| {
+            o.optmulti("", "plugins", "space separated list of plugins to also load",
+                       "PLUGINS")
+        }),
+        stable("no-default", |o| {
+            o.optflag("", "no-defaults", "don't run the default passes")
+        }),
+        stable("test", |o| o.optflag("", "test", "run code examples as tests")),
+        stable("test-args", |o| {
+            o.optmulti("", "test-args", "arguments to pass to the test runner",
+                       "ARGS")
+        }),
+        stable("target", |o| o.optopt("", "target", "target triple to document", "TRIPLE")),
+        stable("markdown-css", |o| {
+            o.optmulti("", "markdown-css",
+                       "CSS files to include via <link> in a rendered Markdown file",
+                       "FILES")
+        }),
+        stable("html-in-header", |o|  {
+            o.optmulti("", "html-in-header",
+                       "files to include inline in the <head> section of a rendered Markdown file \
+                        or generated documentation",
+                       "FILES")
+        }),
+        stable("html-before-content", |o| {
+            o.optmulti("", "html-before-content",
+                       "files to include inline between <body> and the content of a rendered \
+                        Markdown file or generated documentation",
+                       "FILES")
+        }),
+        stable("html-after-content", |o| {
+            o.optmulti("", "html-after-content",
+                       "files to include inline between the content and </body> of a rendered \
+                        Markdown file or generated documentation",
+                       "FILES")
+        }),
+        unstable("markdown-before-content", |o| {
+            o.optmulti("", "markdown-before-content",
+                       "files to include inline between <body> and the content of a rendered \
+                        Markdown file or generated documentation",
+                       "FILES")
+        }),
+        unstable("markdown-after-content", |o| {
+            o.optmulti("", "markdown-after-content",
+                       "files to include inline between the content and </body> of a rendered \
+                        Markdown file or generated documentation",
+                       "FILES")
+        }),
+        stable("markdown-playground-url", |o| {
+            o.optopt("", "markdown-playground-url",
+                     "URL to send code snippets to", "URL")
+        }),
+        stable("markdown-no-toc", |o| {
+            o.optflag("", "markdown-no-toc", "don't include table of contents")
+        }),
+        stable("e", |o| {
+            o.optopt("e", "extend-css",
+                     "To add some CSS rules with a given file to generate doc with your \
+                      own theme. However, your theme might break if the rustdoc's generated HTML \
+                      changes, so be careful!", "PATH")
+        }),
+        unstable("Z", |o| {
+            o.optmulti("Z", "",
+                       "internal and debugging options (only on nightly build)", "FLAG")
+        }),
+        stable("sysroot", |o| {
+            o.optopt("", "sysroot", "Override the system root", "PATH")
+        }),
+        unstable("playground-url", |o| {
+            o.optopt("", "playground-url",
+                     "URL to send code snippets to, may be reset by --markdown-playground-url \
+                      or `#![doc(html_playground_url=...)]`",
+                     "URL")
+        }),
+        unstable("enable-commonmark", |o| {
+            o.optflag("", "enable-commonmark", "to enable commonmark doc rendering/testing")
+        }),
+        unstable("display-warnings", |o| {
+            o.optflag("", "display-warnings", "to print code warnings when testing doc")
+        }),
+        unstable("crate-version", |o| {
+            o.optopt("", "crate-version", "crate version to print into documentation", "VERSION")
+        }),
     ]
 }
 
 pub fn usage(argv0: &str) {
-    println!("{}",
-             getopts::usage(&format!("{} [options] <input>", argv0),
-                            &opts().into_iter()
-                                   .map(|x| x.opt_group)
-                                   .collect::<Vec<getopts::OptGroup>>()));
+    let mut options = getopts::Options::new();
+    for option in opts() {
+        (option.apply)(&mut options);
+    }
+    println!("{}", options.usage(&format!("{} [options] <input>", argv0)));
 }
 
 pub fn main_args(args: &[String]) -> isize {
-    let all_groups: Vec<getopts::OptGroup> = opts()
-                                             .into_iter()
-                                             .map(|x| x.opt_group)
-                                             .collect();
-    let matches = match getopts::getopts(&args[1..], &all_groups) {
+    let mut options = getopts::Options::new();
+    for option in opts() {
+        (option.apply)(&mut options);
+    }
+    let matches = match options.parse(&args[1..]) {
         Ok(m) => m,
         Err(err) => {
             print_error(err);
@@ -193,7 +273,7 @@ pub fn main_args(args: &[String]) -> isize {
     nightly_options::check_nightly_options(&matches, &opts());
 
     if matches.opt_present("h") || matches.opt_present("help") {
-        usage(&args[0]);
+        usage("rustdoc");
         return 0;
     } else if matches.opt_present("version") {
         rustc_driver::version("rustdoc", &matches);
@@ -247,6 +327,12 @@ pub fn main_args(args: &[String]) -> isize {
     let css_file_extension = matches.opt_str("e").map(|s| PathBuf::from(&s));
     let cfgs = matches.opt_strs("cfg");
 
+    let render_type = if matches.opt_present("enable-commonmark") {
+        RenderType::Pulldown
+    } else {
+        RenderType::Hoedown
+    };
+
     if let Some(ref p) = css_file_extension {
         if !p.is_file() {
             writeln!(
@@ -260,25 +346,32 @@ pub fn main_args(args: &[String]) -> isize {
     let external_html = match ExternalHtml::load(
             &matches.opt_strs("html-in-header"),
             &matches.opt_strs("html-before-content"),
-            &matches.opt_strs("html-after-content")) {
+            &matches.opt_strs("html-after-content"),
+            &matches.opt_strs("markdown-before-content"),
+            &matches.opt_strs("markdown-after-content"),
+            render_type) {
         Some(eh) => eh,
         None => return 3,
     };
     let crate_name = matches.opt_str("crate-name");
     let playground_url = matches.opt_str("playground-url");
     let maybe_sysroot = matches.opt_str("sysroot").map(PathBuf::from);
+    let display_warnings = matches.opt_present("display-warnings");
 
     match (should_test, markdown_input) {
         (true, true) => {
-            return markdown::test(input, cfgs, libs, externs, test_args, maybe_sysroot)
+            return markdown::test(input, cfgs, libs, externs, test_args, maybe_sysroot, render_type,
+                                  display_warnings)
         }
         (true, false) => {
-            return test::run(input, cfgs, libs, externs, test_args, crate_name, maybe_sysroot)
+            return test::run(input, cfgs, libs, externs, test_args, crate_name, maybe_sysroot,
+                             render_type, display_warnings)
         }
         (false, true) => return markdown::render(input,
                                                  output.unwrap_or(PathBuf::from("doc")),
                                                  &matches, &external_html,
-                                                 !matches.opt_present("markdown-no-toc")),
+                                                 !matches.opt_present("markdown-no-toc"),
+                                                 render_type),
         (false, false) => {}
     }
 
@@ -292,7 +385,8 @@ pub fn main_args(args: &[String]) -> isize {
                                   output.unwrap_or(PathBuf::from("doc")),
                                   passes.into_iter().collect(),
                                   css_file_extension,
-                                  renderinfo)
+                                  renderinfo,
+                                  render_type)
                     .expect("failed to generate documentation");
                 0
             }
@@ -308,7 +402,7 @@ pub fn main_args(args: &[String]) -> isize {
     })
 }
 
-/// Prints an uniformised error message on the standard error output
+/// Prints an uniformized error message on the standard error output
 fn print_error<T>(error_message: T) where T: Display {
     writeln!(
         &mut io::stderr(),
@@ -369,23 +463,32 @@ where R: 'static + Send, F: 'static + Send + FnOnce(Output) -> R {
     let triple = matches.opt_str("target");
     let maybe_sysroot = matches.opt_str("sysroot").map(PathBuf::from);
     let crate_name = matches.opt_str("crate-name");
+    let crate_version = matches.opt_str("crate-version");
     let plugin_path = matches.opt_str("plugin-path");
 
     let cr = PathBuf::from(cratefile);
     info!("starting to run rustc");
+    let display_warnings = matches.opt_present("display-warnings");
+
+    let force_unstable_if_unmarked = matches.opt_strs("Z").iter().any(|x| {
+        *x == "force-unstable-if-unmarked"
+    });
 
     let (tx, rx) = channel();
     rustc_driver::monitor(move || {
         use rustc::session::config::Input;
 
         let (mut krate, renderinfo) =
-            core::run_core(paths, cfgs, externs, Input::File(cr), triple, maybe_sysroot);
+            core::run_core(paths, cfgs, externs, Input::File(cr), triple, maybe_sysroot,
+                           display_warnings, force_unstable_if_unmarked);
 
         info!("finished with rustc");
 
         if let Some(name) = crate_name {
             krate.name = name
         }
+
+        krate.version = crate_version;
 
         // Process all of the crate attributes, extracting plugin metadata along
         // with the passes which we are supposed to run.

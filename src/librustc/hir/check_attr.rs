@@ -8,6 +8,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! This module implements some validity checks for attributes.
+//! In particular it verifies that `#[inline]` and `#[repr]` attributes are
+//! attached to items that actually support them and if there are
+//! conflicts between multiple such attributes attached to the same
+//! item.
+
 use session::Session;
 
 use syntax::ast;
@@ -40,14 +46,27 @@ struct CheckAttrVisitor<'a> {
 }
 
 impl<'a> CheckAttrVisitor<'a> {
+    /// Check any attribute.
+    fn check_attribute(&self, attr: &ast::Attribute, target: Target) {
+        if let Some(name) = attr.name() {
+            match &*name.as_str() {
+                "inline" => self.check_inline(attr, target),
+                "repr" => self.check_repr(attr, target),
+                _ => (),
+            }
+        }
+    }
+
+    /// Check if an `#[inline]` is applied to a function.
     fn check_inline(&self, attr: &ast::Attribute, target: Target) {
         if target != Target::Fn {
             struct_span_err!(self.sess, attr.span, E0518, "attribute should be applied to function")
-                .span_label(attr.span, &format!("requires a function"))
+                .span_label(attr.span, "requires a function")
                 .emit();
         }
     }
 
+    /// Check if an `#[repr]` attr is valid.
     fn check_repr(&self, attr: &ast::Attribute, target: Target) {
         let words = match attr.meta_item_list() {
             Some(words) => words,
@@ -57,6 +76,7 @@ impl<'a> CheckAttrVisitor<'a> {
         };
 
         let mut conflicting_reprs = 0;
+
         for word in words {
 
             let name = match word.name() {
@@ -96,6 +116,15 @@ impl<'a> CheckAttrVisitor<'a> {
                         continue
                     }
                 }
+                "align" => {
+                    if target != Target::Struct &&
+                            target != Target::Union {
+                        ("attribute should be applied to struct or union",
+                         "a struct or union")
+                    } else {
+                        continue
+                    }
+                }
                 "i8" | "u8" | "i16" | "u16" |
                 "i32" | "u32" | "i64" | "u64" |
                 "isize" | "usize" => {
@@ -110,21 +139,12 @@ impl<'a> CheckAttrVisitor<'a> {
                 _ => continue,
             };
             struct_span_err!(self.sess, attr.span, E0517, "{}", message)
-                .span_label(attr.span, &format!("requires {}", label))
+                .span_label(attr.span, format!("requires {}", label))
                 .emit();
         }
         if conflicting_reprs > 1 {
             span_warn!(self.sess, attr.span, E0566,
                        "conflicting representation hints");
-        }
-    }
-
-    fn check_attribute(&self, attr: &ast::Attribute, target: Target) {
-        let name: &str = &attr.name().as_str();
-        match name {
-            "inline" => self.check_inline(attr, target),
-            "repr" => self.check_repr(attr, target),
-            _ => (),
         }
     }
 }

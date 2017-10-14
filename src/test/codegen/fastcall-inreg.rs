@@ -37,7 +37,7 @@
 // ignore-tce
 // ignore-thumb
 // ignore-thumbeb
-// ignore-x86_64 no-ignore-x86
+// ignore-x86_64
 // ignore-xcore
 // ignore-nvptx
 // ignore-nvptx64
@@ -53,6 +53,7 @@
 // ignore-shave
 // ignore-wasm32
 // ignore-wasm64
+// ignore-emscripten
 
 // compile-flags: -C no-prepopulate-passes
 

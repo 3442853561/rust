@@ -77,6 +77,12 @@ declare_lint! {
 }
 
 declare_lint! {
+    pub UNUSED_MACROS,
+    Warn,
+    "detects macros that were not used"
+}
+
+declare_lint! {
     pub WARNINGS,
     Warn,
     "mass-change the level for lints which produce warnings"
@@ -125,9 +131,9 @@ declare_lint! {
 }
 
 declare_lint! {
-    pub INACCESSIBLE_EXTERN_CRATE,
+    pub PUB_USE_OF_PRIVATE_EXTERN_CRATE,
     Deny,
-    "use of inaccessible extern crate erroneously allowed"
+    "detect public reexports of private extern crates"
 }
 
 declare_lint! {
@@ -137,64 +143,21 @@ declare_lint! {
 }
 
 declare_lint! {
-    pub ILLEGAL_FLOATING_POINT_CONSTANT_PATTERN,
-    Deny,
-    "floating-point constants cannot be used in patterns"
-}
-
-declare_lint! {
-    pub ILLEGAL_STRUCT_OR_ENUM_CONSTANT_PATTERN,
-    Deny,
-    "constants of struct or enum type can only be used in a pattern if \
-     the struct or enum has `#[derive(PartialEq, Eq)]`"
-}
-
-declare_lint! {
-    pub RAW_POINTER_DERIVE,
-    Warn,
-    "uses of #[derive] with raw pointers are rarely correct"
-}
-
-declare_lint! {
-    pub TRANSMUTE_FROM_FN_ITEM_TYPES,
-    Deny,
-    "transmute from function item type to pointer-sized type erroneously allowed"
-}
-
-declare_lint! {
-    pub HR_LIFETIME_IN_ASSOC_TYPE,
-    Deny,
-    "binding for associated type references higher-ranked lifetime \
-     that does not appear in the trait input types"
-}
-
-declare_lint! {
-    pub OVERLAPPING_INHERENT_IMPLS,
-    Deny,
-    "two overlapping inherent impls define an item with the same name were erroneously allowed"
-}
-
-declare_lint! {
     pub RENAMED_AND_REMOVED_LINTS,
     Warn,
     "lints that have been renamed or removed"
 }
 
 declare_lint! {
-    pub SUPER_OR_SELF_IN_GLOBAL_PATH,
+    pub RESOLVE_TRAIT_ON_DEFAULTED_UNIT,
     Deny,
-    "detects super or self keywords at the beginning of global path"
-}
-
-declare_lint! {
-    pub LIFETIME_UNDERSCORE,
-    Deny,
-    "lifetimes or labels named `'_` were erroneously allowed"
+    "attempt to resolve a trait on an expression whose type cannot be inferred but which \
+     currently defaults to ()"
 }
 
 declare_lint! {
     pub SAFE_EXTERN_STATICS,
-    Warn,
+    Deny,
     "safe access to extern statics was erroneously allowed"
 }
 
@@ -206,27 +169,57 @@ declare_lint! {
 
 declare_lint! {
     pub EXTRA_REQUIREMENT_IN_IMPL,
-    Warn,
+    Deny,
     "detects extra requirements in impls that were erroneously allowed"
 }
 
 declare_lint! {
     pub LEGACY_DIRECTORY_OWNERSHIP,
-    Warn,
+    Deny,
     "non-inline, non-`#[path]` modules (e.g. `mod foo;`) were erroneously allowed in some files \
      not named `mod.rs`"
 }
 
 declare_lint! {
     pub LEGACY_IMPORTS,
-    Warn,
+    Deny,
     "detects names that resolve to ambiguous glob imports with RFC 1560"
+}
+
+declare_lint! {
+    pub LEGACY_CONSTRUCTOR_VISIBILITY,
+    Deny,
+    "detects use of struct constructors that would be invisible with new visibility rules"
+}
+
+declare_lint! {
+    pub MISSING_FRAGMENT_SPECIFIER,
+    Deny,
+    "detects missing fragment specifiers in unused `macro_rules!` patterns"
+}
+
+declare_lint! {
+    pub PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES,
+    Deny,
+    "detects parenthesized generic parameters in type and module names"
+}
+
+declare_lint! {
+    pub LATE_BOUND_LIFETIME_ARGUMENTS,
+    Warn,
+    "detects generic lifetime arguments in path segments with late bound lifetime parameters"
 }
 
 declare_lint! {
     pub DEPRECATED,
     Warn,
     "detects use of deprecated items"
+}
+
+declare_lint! {
+    pub UNUSED_UNSAFE,
+    Warn,
+    "unnecessary use of an `unsafe` block"
 }
 
 /// Does nothing as a lint pass, but registers some `Lint`s
@@ -246,6 +239,7 @@ impl LintPass for HardwiredLints {
             DEAD_CODE,
             UNREACHABLE_CODE,
             UNREACHABLE_PATTERNS,
+            UNUSED_MACROS,
             WARNINGS,
             UNUSED_FEATURES,
             STABLE_FEATURES,
@@ -254,24 +248,22 @@ impl LintPass for HardwiredLints {
             TRIVIAL_CASTS,
             TRIVIAL_NUMERIC_CASTS,
             PRIVATE_IN_PUBLIC,
-            INACCESSIBLE_EXTERN_CRATE,
+            PUB_USE_OF_PRIVATE_EXTERN_CRATE,
             INVALID_TYPE_PARAM_DEFAULT,
-            ILLEGAL_FLOATING_POINT_CONSTANT_PATTERN,
-            ILLEGAL_STRUCT_OR_ENUM_CONSTANT_PATTERN,
             CONST_ERR,
-            RAW_POINTER_DERIVE,
-            TRANSMUTE_FROM_FN_ITEM_TYPES,
-            OVERLAPPING_INHERENT_IMPLS,
             RENAMED_AND_REMOVED_LINTS,
-            SUPER_OR_SELF_IN_GLOBAL_PATH,
-            HR_LIFETIME_IN_ASSOC_TYPE,
-            LIFETIME_UNDERSCORE,
+            RESOLVE_TRAIT_ON_DEFAULTED_UNIT,
             SAFE_EXTERN_STATICS,
             PATTERNS_IN_FNS_WITHOUT_BODY,
             EXTRA_REQUIREMENT_IN_IMPL,
             LEGACY_DIRECTORY_OWNERSHIP,
             LEGACY_IMPORTS,
-            DEPRECATED
+            LEGACY_CONSTRUCTOR_VISIBILITY,
+            MISSING_FRAGMENT_SPECIFIER,
+            PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES,
+            LATE_BOUND_LIFETIME_ARGUMENTS,
+            DEPRECATED,
+            UNUSED_UNSAFE
         )
     }
 }

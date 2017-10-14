@@ -10,7 +10,6 @@
 
 use syntax::ast;
 use super::err::*;
-use rustc_i128::u128;
 
 /// Depending on the target only one variant is ever used in a compilation.
 /// Anything else is an error. This invariant is checked at several locations
@@ -22,18 +21,22 @@ pub enum ConstUsize {
 }
 pub use self::ConstUsize::*;
 
+impl ::std::fmt::Display for ConstUsize {
+    fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> Result<(), ::std::fmt::Error> {
+        write!(fmt, "{}", self.as_u64())
+    }
+}
+
 impl ConstUsize {
-    pub fn as_u64(self, target_uint_ty: ast::UintTy) -> u64 {
-        match (self, target_uint_ty) {
-            (Us16(i), ast::UintTy::U16) => i as u64,
-            (Us32(i), ast::UintTy::U32) => i as u64,
-            (Us64(i), ast::UintTy::U64) => i,
-            _ => panic!("unable to convert self ({:?}) to target usize ({:?})",
-                        self, target_uint_ty),
+    pub fn as_u64(self) -> u64 {
+        match self {
+            Us16(i) => i as u64,
+            Us32(i) => i as u64,
+            Us64(i) => i,
         }
     }
-    pub fn new(i: u64, target_uint_ty: ast::UintTy) -> Result<Self, ConstMathErr> {
-        match target_uint_ty {
+    pub fn new(i: u64, usize_ty: ast::UintTy) -> Result<Self, ConstMathErr> {
+        match usize_ty {
             ast::UintTy::U16 if i as u16 as u64 == i => Ok(Us16(i as u16)),
             ast::UintTy::U16 => Err(ULitOutOfRange(ast::UintTy::Us)),
             ast::UintTy::U32 if i as u32 as u64 == i => Ok(Us32(i as u32)),
@@ -42,8 +45,8 @@ impl ConstUsize {
             _ => unreachable!(),
         }
     }
-    pub fn new_truncating(i: u128, target_uint_ty: ast::UintTy) -> Self {
-        match target_uint_ty {
+    pub fn new_truncating(i: u128, usize_ty: ast::UintTy) -> Self {
+        match usize_ty {
             ast::UintTy::U16 => Us16(i as u16),
             ast::UintTy::U32 => Us32(i as u32),
             ast::UintTy::U64 => Us64(i as u64),

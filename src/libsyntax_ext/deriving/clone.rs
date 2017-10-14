@@ -77,7 +77,7 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt,
     let inline = cx.meta_word(span, Symbol::intern("inline"));
     let attrs = vec![cx.attribute(span, inline)];
     let trait_def = TraitDef {
-        span: span,
+        span,
         attributes: Vec::new(),
         path: path_std!(cx, core::clone::Clone),
         additional_bounds: bounds,
@@ -111,7 +111,7 @@ fn cs_clone_shallow(name: &str,
                         ty: P<ast::Ty>, span: Span, helper_name: &str) {
         // Generate statement `let _: helper_name<ty>;`,
         // set the expn ID so we can use the unstable struct.
-        let span = super::allow_unstable(cx, span, "derive(Clone)");
+        let span = span.with_ctxt(cx.backtrace());
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&["clone", helper_name]),
                                         vec![], vec![ty], vec![]);
@@ -167,7 +167,7 @@ fn cs_clone(name: &str,
             all_fields = af;
             vdata = vdata_;
         }
-        EnumMatching(_, variant, ref af) => {
+        EnumMatching(.., variant, ref af) => {
             ctor_path = cx.path(trait_span, vec![substr.type_ident, variant.node.name]);
             all_fields = af;
             vdata = &variant.node.data;

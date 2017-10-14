@@ -17,7 +17,6 @@ use sys::fs::{File, OpenOptions};
 use sys::syscall::TimeSpec;
 use sys_common::{AsInner, FromInner, IntoInner};
 use time::Duration;
-use vec::Vec;
 
 use super::{path_to_peer_addr, path_to_local_addr};
 
@@ -30,7 +29,11 @@ impl TcpStream {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
-        Ok(TcpStream(File::open(&Path::new(path.as_str()), &options)?))
+        Ok(TcpStream(File::open(Path::new(path.as_str()), &options)?))
+    }
+
+    pub fn connect_timeout(_addr: &SocketAddr, _timeout: Duration) -> Result<TcpStream> {
+        Err(Error::new(ErrorKind::Other, "TcpStream::connect_timeout not implemented"))
     }
 
     pub fn duplicate(&self) -> Result<TcpStream> {
@@ -39,10 +42,6 @@ impl TcpStream {
 
     pub fn read(&self, buf: &mut [u8]) -> Result<usize> {
         self.0.read(buf)
-    }
-
-    pub fn read_to_end(&self, buf: &mut Vec<u8>) -> Result<usize> {
-        self.0.read_to_end(buf)
     }
 
     pub fn write(&self, buf: &[u8]) -> Result<usize> {
@@ -61,6 +60,10 @@ impl TcpStream {
     pub fn socket_addr(&self) -> Result<SocketAddr> {
         let path = self.0.path()?;
         Ok(path_to_local_addr(path.to_str().unwrap_or("")))
+    }
+
+    pub fn peek(&self, _buf: &mut [u8]) -> Result<usize> {
+        Err(Error::new(ErrorKind::Other, "TcpStream::peek not implemented"))
     }
 
     pub fn shutdown(&self, _how: Shutdown) -> Result<()> {
@@ -174,7 +177,7 @@ impl TcpListener {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
-        Ok(TcpListener(File::open(&Path::new(path.as_str()), &options)?))
+        Ok(TcpListener(File::open(Path::new(path.as_str()), &options)?))
     }
 
     pub fn accept(&self) -> Result<(TcpStream, SocketAddr)> {

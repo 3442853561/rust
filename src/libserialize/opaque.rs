@@ -13,8 +13,6 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 use serialize;
 
-use rustc_i128::{i128, u128};
-
 // -----------------------------------------------------------------------------
 // Encoder
 // -----------------------------------------------------------------------------
@@ -155,8 +153,8 @@ pub struct Decoder<'a> {
 impl<'a> Decoder<'a> {
     pub fn new(data: &'a [u8], position: usize) -> Decoder<'a> {
         Decoder {
-            data: data,
-            position: position,
+            data,
+            position,
         }
     }
 

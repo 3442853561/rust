@@ -13,6 +13,7 @@
 #![allow(unused_features)]
 #![feature(box_syntax)]
 
+use std::cell::RefCell;
 use std::fmt::{self, Write};
 use std::usize;
 
@@ -160,6 +161,34 @@ pub fn main() {
     t!(format!("{:?}", -0.0), "-0");
     t!(format!("{:?}", 0.0), "0");
 
+    // sign aware zero padding
+    t!(format!("{:<3}", 1), "1  ");
+    t!(format!("{:>3}", 1), "  1");
+    t!(format!("{:^3}", 1), " 1 ");
+    t!(format!("{:03}", 1), "001");
+    t!(format!("{:<03}", 1), "001");
+    t!(format!("{:>03}", 1), "001");
+    t!(format!("{:^03}", 1), "001");
+    t!(format!("{:+03}", 1), "+01");
+    t!(format!("{:<+03}", 1), "+01");
+    t!(format!("{:>+03}", 1), "+01");
+    t!(format!("{:^+03}", 1), "+01");
+    t!(format!("{:#05x}", 1), "0x001");
+    t!(format!("{:<#05x}", 1), "0x001");
+    t!(format!("{:>#05x}", 1), "0x001");
+    t!(format!("{:^#05x}", 1), "0x001");
+    t!(format!("{:05}", 1.2), "001.2");
+    t!(format!("{:<05}", 1.2), "001.2");
+    t!(format!("{:>05}", 1.2), "001.2");
+    t!(format!("{:^05}", 1.2), "001.2");
+    t!(format!("{:05}", -1.2), "-01.2");
+    t!(format!("{:<05}", -1.2), "-01.2");
+    t!(format!("{:>05}", -1.2), "-01.2");
+    t!(format!("{:^05}", -1.2), "-01.2");
+    t!(format!("{:+05}", 1.2), "+01.2");
+    t!(format!("{:<+05}", 1.2), "+01.2");
+    t!(format!("{:>+05}", 1.2), "+01.2");
+    t!(format!("{:^+05}", 1.2), "+01.2");
 
     // Ergonomic format_args!
     t!(format!("{0:x} {0:X}", 15), "f F");
@@ -212,6 +241,8 @@ pub fn main() {
     // test that trailing commas are acceptable
     format!("{}", "test",);
     format!("{foo}", foo="test",);
+
+    test_refcell();
 }
 
 // Basic test to make sure that we can invoke the `write!` macro with an
@@ -290,4 +321,13 @@ fn test_once() {
     }
     assert_eq!(format!("{0} {0} {0} {a} {a} {a}", foo(), a=foo()),
                "1 1 1 2 2 2".to_string());
+}
+
+fn test_refcell() {
+    let refcell = RefCell::new(5);
+    assert_eq!(format!("{:?}", refcell), "RefCell { value: 5 }");
+    let borrow = refcell.borrow_mut();
+    assert_eq!(format!("{:?}", refcell), "RefCell { value: <borrowed> }");
+    drop(borrow);
+    assert_eq!(format!("{:?}", refcell), "RefCell { value: 5 }");
 }

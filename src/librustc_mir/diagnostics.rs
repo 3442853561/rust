@@ -122,10 +122,8 @@ On the other hand, static and constant pointers can point either to
 a known numeric address or to the address of a symbol.
 
 ```
+static MY_STATIC: u32 = 42;
 static MY_STATIC_ADDR: &'static u32 = &MY_STATIC;
-// ... and also
-static MY_STATIC_ADDR2: *const u32 = &MY_STATIC;
-
 const CONST_ADDR: *const u8 = 0x5f3759df as *const u8;
 ```
 
@@ -160,6 +158,16 @@ Remember: you can't use a function call inside a const's initialization
 expression! However, you can totally use it anywhere else:
 
 ```
+enum Test {
+    V1
+}
+
+impl Test {
+    fn func(&self) -> i32 {
+        12
+    }
+}
+
 fn main() {
     const FOO: Test = Test::V1;
 
@@ -186,6 +194,84 @@ you need to mutate the argument, try lazily initializing a global variable
 instead of using a `const fn`, or refactoring the code to a functional style to
 avoid mutation if possible.
 "##,
+
+E0133: r##"
+Unsafe code was used outside of an unsafe function or block.
+
+Erroneous code example:
+
+```compile_fail,E0133
+unsafe fn f() { return; } // This is the unsafe code
+
+fn main() {
+    f(); // error: call to unsafe function requires unsafe function or block
+}
+```
+
+Using unsafe functionality is potentially dangerous and disallowed by safety
+checks. Examples:
+
+* Dereferencing raw pointers
+* Calling functions via FFI
+* Calling functions marked unsafe
+
+These safety checks can be relaxed for a section of the code by wrapping the
+unsafe instructions with an `unsafe` block. For instance:
+
+```
+unsafe fn f() { return; }
+
+fn main() {
+    unsafe { f(); } // ok!
+}
+```
+
+See also https://doc.rust-lang.org/book/first-edition/unsafe.html
+"##,
+
+E0381: r##"
+It is not allowed to use or capture an uninitialized variable. For example:
+
+```compile_fail,E0381
+fn main() {
+    let x: i32;
+    let y = x; // error, use of possibly uninitialized variable
+}
+```
+
+To fix this, ensure that any declared variables are initialized before being
+used. Example:
+
+```
+fn main() {
+    let x: i32 = 0;
+    let y = x; // ok!
+}
+```
+"##,
+
+E0384: r##"
+This error occurs when an attempt is made to reassign an immutable variable.
+For example:
+
+```compile_fail,E0384
+fn main() {
+    let x = 3;
+    x = 5; // error, reassignment of immutable variable
+}
+```
+
+By default, variables in Rust are immutable. To fix this error, add the keyword
+`mut` after the keyword `let` when declaring the variable. For example:
+
+```
+fn main() {
+    let mut x = 3;
+    x = 5;
+}
+```
+"##,
+
 
 E0394: r##"
 A static was referred to by value by another static.
@@ -244,6 +330,39 @@ let baz: bool = { (&FOO as *const i32) == (&BAR as *const i32) };
 ```
 "##,
 
+E0161: r##"
+A value was moved. However, its size was not known at compile time, and only
+values of a known size can be moved.
+
+Erroneous code example:
+
+```compile_fail
+#![feature(box_syntax)]
+
+fn main() {
+    let array: &[isize] = &[1, 2, 3];
+    let _x: Box<[isize]> = box *array;
+    // error: cannot move a value of type [isize]: the size of [isize] cannot
+    //        be statically determined
+}
+```
+
+In Rust, you can only move a value when its size is known at compile time.
+
+To work around this restriction, consider "hiding" the value behind a reference:
+either `&x` or `&mut x`. Since a reference has a fixed size, this lets you move
+it around as usual. Example:
+
+```
+#![feature(box_syntax)]
+
+fn main() {
+    let array: &[isize] = &[1, 2, 3];
+    let _x: Box<&[isize]> = box array; // ok!
+}
+```
+"##,
+
 E0396: r##"
 The value behind a raw pointer can't be determined at compile-time
 (or even link-time), which means it can't be used in a constant
@@ -276,8 +395,8 @@ use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT};
 
 const A: AtomicUsize = ATOMIC_USIZE_INIT;
 static B: &'static AtomicUsize = &A;
-// error: cannot borrow a constant which contains interior mutability, create a
-//        static instead
+// error: cannot borrow a constant which may contain interior mutability,
+//        create a static instead
 ```
 
 A `const` represents a constant value that should never change. If one takes
@@ -299,14 +418,14 @@ static B: &'static AtomicUsize = &A; // ok!
 You can also have this error while using a cell type:
 
 ```compile_fail,E0492
-#![feature(const_fn)]
+#![feature(const_cell_new)]
 
 use std::cell::Cell;
 
 const A: Cell<usize> = Cell::new(1);
 const B: &'static Cell<usize> = &A;
-// error: cannot borrow a constant which contains interior mutability, create
-//        a static instead
+// error: cannot borrow a constant which may contain interior mutability,
+//        create a static instead
 
 // or:
 struct C { a: Cell<usize> }
@@ -327,7 +446,7 @@ However, if you still wish to use these types, you can achieve this by an unsafe
 wrapper:
 
 ```
-#![feature(const_fn)]
+#![feature(const_cell_new)]
 
 use std::cell::Cell;
 use std::marker::Sync;
@@ -344,29 +463,6 @@ static B: &'static NotThreadSafe<usize> = &A; // ok!
 
 Remember this solution is unsafe! You will have to ensure that accesses to the
 cell are synchronized.
-"##,
-
-E0493: r##"
-A type with a destructor was assigned to an invalid type of variable. Erroneous
-code example:
-
-```compile_fail,E0493
-struct Foo {
-    a: u32
-}
-
-impl Drop for Foo {
-    fn drop(&mut self) {}
-}
-
-const F : Foo = Foo { a : 0 };
-// error: constants are not allowed to have destructors
-static S : Foo = Foo { a : 0 };
-// error: destructors in statics are an unstable feature
-```
-
-To solve this issue, please use a type which does allow the usage of type with
-destructors.
 "##,
 
 E0494: r##"
@@ -397,8 +493,784 @@ static A : &'static u32 = &S.a; // ok!
 ```
 "##,
 
+E0499: r##"
+A variable was borrowed as mutable more than once. Erroneous code example:
+
+```compile_fail,E0499
+let mut i = 0;
+let mut x = &mut i;
+let mut a = &mut i;
+// error: cannot borrow `i` as mutable more than once at a time
+```
+
+Please note that in rust, you can either have many immutable references, or one
+mutable reference. Take a look at
+https://doc.rust-lang.org/stable/book/references-and-borrowing.html for more
+information. Example:
+
+
+```
+let mut i = 0;
+let mut x = &mut i; // ok!
+
+// or:
+let mut i = 0;
+let a = &i; // ok!
+let b = &i; // still ok!
+let c = &i; // still ok!
+```
+"##,
+
+E0500: r##"
+A borrowed variable was used in another closure. Example of erroneous code:
+
+```compile_fail
+fn you_know_nothing(jon_snow: &mut i32) {
+    let nights_watch = || {
+        *jon_snow = 2;
+    };
+    let starks = || {
+        *jon_snow = 3; // error: closure requires unique access to `jon_snow`
+                       //        but it is already borrowed
+    };
+}
+```
+
+In here, `jon_snow` is already borrowed by the `nights_watch` closure, so it
+cannot be borrowed by the `starks` closure at the same time. To fix this issue,
+you can put the closure in its own scope:
+
+```
+fn you_know_nothing(jon_snow: &mut i32) {
+    {
+        let nights_watch = || {
+            *jon_snow = 2;
+        };
+    } // At this point, `jon_snow` is free.
+    let starks = || {
+        *jon_snow = 3;
+    };
+}
+```
+
+Or, if the type implements the `Clone` trait, you can clone it between
+closures:
+
+```
+fn you_know_nothing(jon_snow: &mut i32) {
+    let mut jon_copy = jon_snow.clone();
+    let nights_watch = || {
+        jon_copy = 2;
+    };
+    let starks = || {
+        *jon_snow = 3;
+    };
+}
+```
+"##,
+
+E0501: r##"
+This error indicates that a mutable variable is being used while it is still
+captured by a closure. Because the closure has borrowed the variable, it is not
+available for use until the closure goes out of scope.
+
+Note that a capture will either move or borrow a variable, but in this
+situation, the closure is borrowing the variable. Take a look at
+http://rustbyexample.com/fn/closures/capture.html for more information about
+capturing.
+
+Example of erroneous code:
+
+```compile_fail,E0501
+fn inside_closure(x: &mut i32) {
+    // Actions which require unique access
+}
+
+fn outside_closure(x: &mut i32) {
+    // Actions which require unique access
+}
+
+fn foo(a: &mut i32) {
+    let bar = || {
+        inside_closure(a)
+    };
+    outside_closure(a); // error: cannot borrow `*a` as mutable because previous
+                        //        closure requires unique access.
+}
+```
+
+To fix this error, you can place the closure in its own scope:
+
+```
+fn inside_closure(x: &mut i32) {}
+fn outside_closure(x: &mut i32) {}
+
+fn foo(a: &mut i32) {
+    {
+        let bar = || {
+            inside_closure(a)
+        };
+    } // borrow on `a` ends.
+    outside_closure(a); // ok!
+}
+```
+
+Or you can pass the variable as a parameter to the closure:
+
+```
+fn inside_closure(x: &mut i32) {}
+fn outside_closure(x: &mut i32) {}
+
+fn foo(a: &mut i32) {
+    let bar = |s: &mut i32| {
+        inside_closure(s)
+    };
+    outside_closure(a);
+    bar(a);
+}
+```
+
+It may be possible to define the closure later:
+
+```
+fn inside_closure(x: &mut i32) {}
+fn outside_closure(x: &mut i32) {}
+
+fn foo(a: &mut i32) {
+    outside_closure(a);
+    let bar = || {
+        inside_closure(a)
+    };
+}
+```
+"##,
+
+E0502: r##"
+This error indicates that you are trying to borrow a variable as mutable when it
+has already been borrowed as immutable.
+
+Example of erroneous code:
+
+```compile_fail,E0502
+fn bar(x: &mut i32) {}
+fn foo(a: &mut i32) {
+    let ref y = a; // a is borrowed as immutable.
+    bar(a); // error: cannot borrow `*a` as mutable because `a` is also borrowed
+            //        as immutable
+}
+```
+
+To fix this error, ensure that you don't have any other references to the
+variable before trying to access it mutably:
+
+```
+fn bar(x: &mut i32) {}
+fn foo(a: &mut i32) {
+    bar(a);
+    let ref y = a; // ok!
+}
+```
+
+For more information on the rust ownership system, take a look at
+https://doc.rust-lang.org/stable/book/references-and-borrowing.html.
+"##,
+
+E0503: r##"
+A value was used after it was mutably borrowed.
+
+Example of erroneous code:
+
+```compile_fail,E0503
+fn main() {
+    let mut value = 3;
+    // Create a mutable borrow of `value`. This borrow
+    // lives until the end of this function.
+    let _borrow = &mut value;
+    let _sum = value + 1; // error: cannot use `value` because
+                          //        it was mutably borrowed
+}
+```
+
+In this example, `value` is mutably borrowed by `borrow` and cannot be
+used to calculate `sum`. This is not possible because this would violate
+Rust's mutability rules.
+
+You can fix this error by limiting the scope of the borrow:
+
+```
+fn main() {
+    let mut value = 3;
+    // By creating a new block, you can limit the scope
+    // of the reference.
+    {
+        let _borrow = &mut value; // Use `_borrow` inside this block.
+    }
+    // The block has ended and with it the borrow.
+    // You can now use `value` again.
+    let _sum = value + 1;
+}
+```
+
+Or by cloning `value` before borrowing it:
+
+```
+fn main() {
+    let mut value = 3;
+    // We clone `value`, creating a copy.
+    let value_cloned = value.clone();
+    // The mutable borrow is a reference to `value` and
+    // not to `value_cloned`...
+    let _borrow = &mut value;
+    // ... which means we can still use `value_cloned`,
+    let _sum = value_cloned + 1;
+    // even though the borrow only ends here.
+}
+```
+
+You can find more information about borrowing in the rust-book:
+http://doc.rust-lang.org/stable/book/references-and-borrowing.html
+"##,
+
+E0504: r##"
+This error occurs when an attempt is made to move a borrowed variable into a
+closure.
+
+Example of erroneous code:
+
+```compile_fail,E0504
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let fancy_num = FancyNum { num: 5 };
+    let fancy_ref = &fancy_num;
+
+    let x = move || {
+        println!("child function: {}", fancy_num.num);
+        // error: cannot move `fancy_num` into closure because it is borrowed
+    };
+
+    x();
+    println!("main function: {}", fancy_ref.num);
+}
+```
+
+Here, `fancy_num` is borrowed by `fancy_ref` and so cannot be moved into
+the closure `x`. There is no way to move a value into a closure while it is
+borrowed, as that would invalidate the borrow.
+
+If the closure can't outlive the value being moved, try using a reference
+rather than moving:
+
+```
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let fancy_num = FancyNum { num: 5 };
+    let fancy_ref = &fancy_num;
+
+    let x = move || {
+        // fancy_ref is usable here because it doesn't move `fancy_num`
+        println!("child function: {}", fancy_ref.num);
+    };
+
+    x();
+
+    println!("main function: {}", fancy_num.num);
+}
+```
+
+If the value has to be borrowed and then moved, try limiting the lifetime of
+the borrow using a scoped block:
+
+```
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let fancy_num = FancyNum { num: 5 };
+
+    {
+        let fancy_ref = &fancy_num;
+        println!("main function: {}", fancy_ref.num);
+        // `fancy_ref` goes out of scope here
+    }
+
+    let x = move || {
+        // `fancy_num` can be moved now (no more references exist)
+        println!("child function: {}", fancy_num.num);
+    };
+
+    x();
+}
+```
+
+If the lifetime of a reference isn't enough, such as in the case of threading,
+consider using an `Arc` to create a reference-counted value:
+
+```
+use std::sync::Arc;
+use std::thread;
+
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let fancy_ref1 = Arc::new(FancyNum { num: 5 });
+    let fancy_ref2 = fancy_ref1.clone();
+
+    let x = thread::spawn(move || {
+        // `fancy_ref1` can be moved and has a `'static` lifetime
+        println!("child thread: {}", fancy_ref1.num);
+    });
+
+    x.join().expect("child thread should finish");
+    println!("main thread: {}", fancy_ref2.num);
+}
+```
+"##,
+
+E0505: r##"
+A value was moved out while it was still borrowed.
+
+Erroneous code example:
+
+```compile_fail,E0505
+struct Value {}
+
+fn eat(val: Value) {}
+
+fn main() {
+    let x = Value{};
+    {
+        let _ref_to_val: &Value = &x;
+        eat(x);
+    }
+}
+```
+
+Here, the function `eat` takes the ownership of `x`. However,
+`x` cannot be moved because it was borrowed to `_ref_to_val`.
+To fix that you can do few different things:
+
+* Try to avoid moving the variable.
+* Release borrow before move.
+* Implement the `Copy` trait on the type.
+
+Examples:
+
+```
+struct Value {}
+
+fn eat(val: &Value) {}
+
+fn main() {
+    let x = Value{};
+    {
+        let _ref_to_val: &Value = &x;
+        eat(&x); // pass by reference, if it's possible
+    }
+}
+```
+
+Or:
+
+```
+struct Value {}
+
+fn eat(val: Value) {}
+
+fn main() {
+    let x = Value{};
+    {
+        let _ref_to_val: &Value = &x;
+    }
+    eat(x); // release borrow and then move it.
+}
+```
+
+Or:
+
+```
+#[derive(Clone, Copy)] // implement Copy trait
+struct Value {}
+
+fn eat(val: Value) {}
+
+fn main() {
+    let x = Value{};
+    {
+        let _ref_to_val: &Value = &x;
+        eat(x); // it will be copied here.
+    }
+}
+```
+
+You can find more information about borrowing in the rust-book:
+http://doc.rust-lang.org/stable/book/references-and-borrowing.html
+"##,
+
+E0506: r##"
+This error occurs when an attempt is made to assign to a borrowed value.
+
+Example of erroneous code:
+
+```compile_fail,E0506
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let mut fancy_num = FancyNum { num: 5 };
+    let fancy_ref = &fancy_num;
+    fancy_num = FancyNum { num: 6 };
+    // error: cannot assign to `fancy_num` because it is borrowed
+
+    println!("Num: {}, Ref: {}", fancy_num.num, fancy_ref.num);
+}
+```
+
+Because `fancy_ref` still holds a reference to `fancy_num`, `fancy_num` can't
+be assigned to a new value as it would invalidate the reference.
+
+Alternatively, we can move out of `fancy_num` into a second `fancy_num`:
+
+```
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let mut fancy_num = FancyNum { num: 5 };
+    let moved_num = fancy_num;
+    fancy_num = FancyNum { num: 6 };
+
+    println!("Num: {}, Moved num: {}", fancy_num.num, moved_num.num);
+}
+```
+
+If the value has to be borrowed, try limiting the lifetime of the borrow using
+a scoped block:
+
+```
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let mut fancy_num = FancyNum { num: 5 };
+
+    {
+        let fancy_ref = &fancy_num;
+        println!("Ref: {}", fancy_ref.num);
+    }
+
+    // Works because `fancy_ref` is no longer in scope
+    fancy_num = FancyNum { num: 6 };
+    println!("Num: {}", fancy_num.num);
+}
+```
+
+Or by moving the reference into a function:
+
+```
+struct FancyNum {
+    num: u8,
+}
+
+fn main() {
+    let mut fancy_num = FancyNum { num: 5 };
+
+    print_fancy_ref(&fancy_num);
+
+    // Works because function borrow has ended
+    fancy_num = FancyNum { num: 6 };
+    println!("Num: {}", fancy_num.num);
+}
+
+fn print_fancy_ref(fancy_ref: &FancyNum){
+    println!("Ref: {}", fancy_ref.num);
+}
+```
+"##,
+
+E0507: r##"
+You tried to move out of a value which was borrowed. Erroneous code example:
+
+```compile_fail,E0507
+use std::cell::RefCell;
+
+struct TheDarkKnight;
+
+impl TheDarkKnight {
+    fn nothing_is_true(self) {}
+}
+
+fn main() {
+    let x = RefCell::new(TheDarkKnight);
+
+    x.borrow().nothing_is_true(); // error: cannot move out of borrowed content
+}
+```
+
+Here, the `nothing_is_true` method takes the ownership of `self`. However,
+`self` cannot be moved because `.borrow()` only provides an `&TheDarkKnight`,
+which is a borrow of the content owned by the `RefCell`. To fix this error,
+you have three choices:
+
+* Try to avoid moving the variable.
+* Somehow reclaim the ownership.
+* Implement the `Copy` trait on the type.
+
+Examples:
+
+```
+use std::cell::RefCell;
+
+struct TheDarkKnight;
+
+impl TheDarkKnight {
+    fn nothing_is_true(&self) {} // First case, we don't take ownership
+}
+
+fn main() {
+    let x = RefCell::new(TheDarkKnight);
+
+    x.borrow().nothing_is_true(); // ok!
+}
+```
+
+Or:
+
+```
+use std::cell::RefCell;
+
+struct TheDarkKnight;
+
+impl TheDarkKnight {
+    fn nothing_is_true(self) {}
+}
+
+fn main() {
+    let x = RefCell::new(TheDarkKnight);
+    let x = x.into_inner(); // we get back ownership
+
+    x.nothing_is_true(); // ok!
+}
+```
+
+Or:
+
+```
+use std::cell::RefCell;
+
+#[derive(Clone, Copy)] // we implement the Copy trait
+struct TheDarkKnight;
+
+impl TheDarkKnight {
+    fn nothing_is_true(self) {}
+}
+
+fn main() {
+    let x = RefCell::new(TheDarkKnight);
+
+    x.borrow().nothing_is_true(); // ok!
+}
+```
+
+Moving a member out of a mutably borrowed struct will also cause E0507 error:
+
+```compile_fail,E0507
+struct TheDarkKnight;
+
+impl TheDarkKnight {
+    fn nothing_is_true(self) {}
+}
+
+struct Batcave {
+    knight: TheDarkKnight
+}
+
+fn main() {
+    let mut cave = Batcave {
+        knight: TheDarkKnight
+    };
+    let borrowed = &mut cave;
+
+    borrowed.knight.nothing_is_true(); // E0507
+}
+```
+
+It is fine only if you put something back. `mem::replace` can be used for that:
+
+```
+# struct TheDarkKnight;
+# impl TheDarkKnight { fn nothing_is_true(self) {} }
+# struct Batcave { knight: TheDarkKnight }
+use std::mem;
+
+let mut cave = Batcave {
+    knight: TheDarkKnight
+};
+let borrowed = &mut cave;
+
+mem::replace(&mut borrowed.knight, TheDarkKnight).nothing_is_true(); // ok!
+```
+
+You can find more information about borrowing in the rust-book:
+http://doc.rust-lang.org/book/first-edition/references-and-borrowing.html
+"##,
+
+E0508: r##"
+A value was moved out of a non-copy fixed-size array.
+
+Example of erroneous code:
+
+```compile_fail,E0508
+struct NonCopy;
+
+fn main() {
+    let array = [NonCopy; 1];
+    let _value = array[0]; // error: cannot move out of type `[NonCopy; 1]`,
+                           //        a non-copy fixed-size array
+}
+```
+
+The first element was moved out of the array, but this is not
+possible because `NonCopy` does not implement the `Copy` trait.
+
+Consider borrowing the element instead of moving it:
+
+```
+struct NonCopy;
+
+fn main() {
+    let array = [NonCopy; 1];
+    let _value = &array[0]; // Borrowing is allowed, unlike moving.
+}
+```
+
+Alternatively, if your type implements `Clone` and you need to own the value,
+consider borrowing and then cloning:
+
+```
+#[derive(Clone)]
+struct NonCopy;
+
+fn main() {
+    let array = [NonCopy; 1];
+    // Now you can clone the array element.
+    let _value = array[0].clone();
+}
+```
+"##,
+
+E0509: r##"
+This error occurs when an attempt is made to move out of a value whose type
+implements the `Drop` trait.
+
+Example of erroneous code:
+
+```compile_fail,E0509
+struct FancyNum {
+    num: usize
+}
+
+struct DropStruct {
+    fancy: FancyNum
+}
+
+impl Drop for DropStruct {
+    fn drop(&mut self) {
+        // Destruct DropStruct, possibly using FancyNum
+    }
+}
+
+fn main() {
+    let drop_struct = DropStruct{fancy: FancyNum{num: 5}};
+    let fancy_field = drop_struct.fancy; // Error E0509
+    println!("Fancy: {}", fancy_field.num);
+    // implicit call to `drop_struct.drop()` as drop_struct goes out of scope
+}
+```
+
+Here, we tried to move a field out of a struct of type `DropStruct` which
+implements the `Drop` trait. However, a struct cannot be dropped if one or
+more of its fields have been moved.
+
+Structs implementing the `Drop` trait have an implicit destructor that gets
+called when they go out of scope. This destructor may use the fields of the
+struct, so moving out of the struct could make it impossible to run the
+destructor. Therefore, we must think of all values whose type implements the
+`Drop` trait as single units whose fields cannot be moved.
+
+This error can be fixed by creating a reference to the fields of a struct,
+enum, or tuple using the `ref` keyword:
+
+```
+struct FancyNum {
+    num: usize
+}
+
+struct DropStruct {
+    fancy: FancyNum
+}
+
+impl Drop for DropStruct {
+    fn drop(&mut self) {
+        // Destruct DropStruct, possibly using FancyNum
+    }
+}
+
+fn main() {
+    let drop_struct = DropStruct{fancy: FancyNum{num: 5}};
+    let ref fancy_field = drop_struct.fancy; // No more errors!
+    println!("Fancy: {}", fancy_field.num);
+    // implicit call to `drop_struct.drop()` as drop_struct goes out of scope
+}
+```
+
+Note that this technique can also be used in the arms of a match expression:
+
+```
+struct FancyNum {
+    num: usize
+}
+
+enum DropEnum {
+    Fancy(FancyNum)
+}
+
+impl Drop for DropEnum {
+    fn drop(&mut self) {
+        // Destruct DropEnum, possibly using FancyNum
+    }
+}
+
+fn main() {
+    // Creates and enum of type `DropEnum`, which implements `Drop`
+    let drop_enum = DropEnum::Fancy(FancyNum{num: 10});
+    match drop_enum {
+        // Creates a reference to the inside of `DropEnum::Fancy`
+        DropEnum::Fancy(ref fancy_field) => // No error!
+            println!("It was fancy-- {}!", fancy_field.num),
+    }
+    // implicit call to `drop_enum.drop()` as drop_enum goes out of scope
+}
+```
+"##,
+
 }
 
 register_diagnostics! {
+    E0493, // destructors cannot be evaluated at compile-time
+    E0524, // two closures require unique access to `..` at the same time
     E0526, // shuffle indices are not constant
+    E0594, // cannot assign to {}
+    E0625, // thread-local statics cannot be accessed at compile-time
 }

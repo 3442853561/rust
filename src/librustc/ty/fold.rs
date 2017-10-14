@@ -39,9 +39,7 @@
 //! These methods return true to indicate that the visitor has found what it is looking for
 //! and does not need to visit anything else.
 
-use middle::region;
-use ty::subst::Substs;
-use ty::adjustment;
+use middle::const_val::ConstVal;
 use ty::{self, Binder, Ty, TyCtxt, TypeFlags};
 
 use std::fmt;
@@ -70,7 +68,7 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
     fn has_type_flags(&self, flags: TypeFlags) -> bool {
         self.visit_with(&mut HasTypeFlagsVisitor { flags: flags })
     }
-    fn has_projection_types(&self) -> bool {
+    fn has_projections(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_PROJECTION)
     }
     fn references_error(&self) -> bool {
@@ -139,46 +137,12 @@ pub trait TypeFolder<'gcx: 'tcx, 'tcx> : Sized {
         t.super_fold_with(self)
     }
 
-    fn fold_mt(&mut self, t: &ty::TypeAndMut<'tcx>) -> ty::TypeAndMut<'tcx> {
-        t.super_fold_with(self)
-    }
-
-    fn fold_impl_header(&mut self, imp: &ty::ImplHeader<'tcx>) -> ty::ImplHeader<'tcx> {
-        imp.super_fold_with(self)
-    }
-
-    fn fold_substs(&mut self,
-                   substs: &'tcx Substs<'tcx>)
-                   -> &'tcx Substs<'tcx> {
-        substs.super_fold_with(self)
-    }
-
-    fn fold_fn_sig(&mut self,
-                   sig: &ty::FnSig<'tcx>)
-                   -> ty::FnSig<'tcx> {
-        sig.super_fold_with(self)
-    }
-
-    fn fold_bare_fn_ty(&mut self,
-                       fty: &'tcx ty::BareFnTy<'tcx>)
-                       -> &'tcx ty::BareFnTy<'tcx>
-    {
-        fty.super_fold_with(self)
-    }
-
-    fn fold_closure_ty(&mut self,
-                       fty: &ty::ClosureTy<'tcx>)
-                       -> ty::ClosureTy<'tcx> {
-        fty.super_fold_with(self)
-    }
-
-    fn fold_region(&mut self, r: &'tcx ty::Region) -> &'tcx ty::Region {
+    fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
         r.super_fold_with(self)
     }
 
-    fn fold_autoref(&mut self, ar: &adjustment::AutoBorrow<'tcx>)
-                    -> adjustment::AutoBorrow<'tcx> {
-        ar.super_fold_with(self)
+    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+        c.super_fold_with(self)
     }
 }
 
@@ -191,12 +155,12 @@ pub trait TypeVisitor<'tcx> : Sized {
         t.super_visit_with(self)
     }
 
-    fn visit_trait_ref(&mut self, trait_ref: ty::TraitRef<'tcx>) -> bool {
-        trait_ref.super_visit_with(self)
+    fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
+        r.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: &'tcx ty::Region) -> bool {
-        r.super_visit_with(self)
+    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
+        c.super_visit_with(self)
     }
 }
 
@@ -229,7 +193,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// whether any late-bound regions were skipped
     pub fn collect_regions<T>(self,
         value: &T,
-        region_set: &mut FxHashSet<&'tcx ty::Region>)
+        region_set: &mut FxHashSet<ty::Region<'tcx>>)
         -> bool
         where T : TypeFoldable<'tcx>
     {
@@ -249,7 +213,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         skipped_regions: &mut bool,
         mut f: F)
         -> T
-        where F : FnMut(&'tcx ty::Region, u32) -> &'tcx ty::Region,
+        where F : FnMut(ty::Region<'tcx>, u32) -> ty::Region<'tcx>,
               T : TypeFoldable<'tcx>,
     {
         value.fold_with(&mut RegionFolder::new(self, skipped_regions, &mut f))
@@ -269,20 +233,20 @@ pub struct RegionFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     skipped_regions: &'a mut bool,
     current_depth: u32,
-    fld_r: &'a mut (FnMut(&'tcx ty::Region, u32) -> &'tcx ty::Region + 'a),
+    fld_r: &'a mut (FnMut(ty::Region<'tcx>, u32) -> ty::Region<'tcx> + 'a),
 }
 
 impl<'a, 'gcx, 'tcx> RegionFolder<'a, 'gcx, 'tcx> {
     pub fn new<F>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                   skipped_regions: &'a mut bool,
                   fld_r: &'a mut F) -> RegionFolder<'a, 'gcx, 'tcx>
-        where F : FnMut(&'tcx ty::Region, u32) -> &'tcx ty::Region
+        where F : FnMut(ty::Region<'tcx>, u32) -> ty::Region<'tcx>
     {
         RegionFolder {
-            tcx: tcx,
-            skipped_regions: skipped_regions,
+            tcx,
+            skipped_regions,
             current_depth: 1,
-            fld_r: fld_r,
+            fld_r,
         }
     }
 }
@@ -297,7 +261,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionFolder<'a, 'gcx, 'tcx> {
         t
     }
 
-    fn fold_region(&mut self, r: &'tcx ty::Region) -> &'tcx ty::Region {
+    fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
         match *r {
             ty::ReLateBound(debruijn, _) if debruijn.depth < self.current_depth => {
                 debug!("RegionFolder.fold_region({:?}) skipped bound region (current depth={})",
@@ -322,38 +286,21 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionFolder<'a, 'gcx, 'tcx> {
 struct RegionReplacer<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     current_depth: u32,
-    fld_r: &'a mut (FnMut(ty::BoundRegion) -> &'tcx ty::Region + 'a),
-    map: FxHashMap<ty::BoundRegion, &'tcx ty::Region>
+    fld_r: &'a mut (FnMut(ty::BoundRegion) -> ty::Region<'tcx> + 'a),
+    map: FxHashMap<ty::BoundRegion, ty::Region<'tcx>>
 }
 
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn replace_late_bound_regions<T,F>(self,
         value: &Binder<T>,
         mut f: F)
-        -> (T, FxHashMap<ty::BoundRegion, &'tcx ty::Region>)
-        where F : FnMut(ty::BoundRegion) -> &'tcx ty::Region,
+        -> (T, FxHashMap<ty::BoundRegion, ty::Region<'tcx>>)
+        where F : FnMut(ty::BoundRegion) -> ty::Region<'tcx>,
               T : TypeFoldable<'tcx>,
     {
         let mut replacer = RegionReplacer::new(self, &mut f);
         let result = value.skip_binder().fold_with(&mut replacer);
         (result, replacer.map)
-    }
-
-
-    /// Replace any late-bound regions bound in `value` with free variants attached to scope-id
-    /// `scope_id`.
-    pub fn liberate_late_bound_regions<T>(self,
-        all_outlive_scope: region::CodeExtent,
-        value: &Binder<T>)
-        -> T
-        where T : TypeFoldable<'tcx>
-    {
-        self.replace_late_bound_regions(value, |br| {
-            self.mk_region(ty::ReFree(ty::FreeRegion {
-                scope: all_outlive_scope,
-                bound_region: br
-            }))
-        }).0
     }
 
     /// Flattens two binding levels into one. So `for<'a> for<'b> Foo`
@@ -423,7 +370,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn erase_late_bound_regions<T>(self, value: &Binder<T>) -> T
         where T : TypeFoldable<'tcx>
     {
-        self.replace_late_bound_regions(value, |_| self.mk_region(ty::ReErased)).0
+        self.replace_late_bound_regions(value, |_| self.types.re_erased).0
     }
 
     /// Rewrite any late-bound regions so that they are anonymous.  Region numbers are
@@ -448,12 +395,12 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 impl<'a, 'gcx, 'tcx> RegionReplacer<'a, 'gcx, 'tcx> {
     fn new<F>(tcx: TyCtxt<'a, 'gcx, 'tcx>, fld_r: &'a mut F)
               -> RegionReplacer<'a, 'gcx, 'tcx>
-        where F : FnMut(ty::BoundRegion) -> &'tcx ty::Region
+        where F : FnMut(ty::BoundRegion) -> ty::Region<'tcx>
     {
         RegionReplacer {
-            tcx: tcx,
+            tcx,
             current_depth: 1,
-            fld_r: fld_r,
+            fld_r,
             map: FxHashMap()
         }
     }
@@ -477,7 +424,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionReplacer<'a, 'gcx, 'tcx> {
         t.super_fold_with(self)
     }
 
-    fn fold_region(&mut self, r:&'tcx  ty::Region) -> &'tcx ty::Region {
+    fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
         match *r {
             ty::ReLateBound(debruijn, br) if debruijn.depth == self.current_depth => {
                 let fld_r = &mut self.fld_r;
@@ -540,7 +487,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 u.super_fold_with(self)
             }
 
-            fn fold_region(&mut self, r: &'tcx ty::Region) -> &'tcx ty::Region {
+            fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
                 // because late-bound regions affect subtyping, we can't
                 // erase the bound/free distinction, but we can replace
                 // all free regions with 'erased.
@@ -551,7 +498,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 // whenever a substitution occurs.
                 match *r {
                     ty::ReLateBound(..) => r,
-                    _ => self.tcx().mk_region(ty::ReErased)
+                    _ => self.tcx().types.re_erased
                 }
             }
         }
@@ -567,7 +514,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 // regions. See comment on `shift_regions_through_binders` method in
 // `subst.rs` for more details.
 
-pub fn shift_region(region: ty::Region, amount: u32) -> ty::Region {
+pub fn shift_region(region: ty::RegionKind, amount: u32) -> ty::RegionKind {
     match region {
         ty::ReLateBound(debruijn, br) => {
             ty::ReLateBound(debruijn.shifted(amount), br)
@@ -578,15 +525,32 @@ pub fn shift_region(region: ty::Region, amount: u32) -> ty::Region {
     }
 }
 
+pub fn shift_region_ref<'a, 'gcx, 'tcx>(
+    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    region: ty::Region<'tcx>,
+    amount: u32)
+    -> ty::Region<'tcx>
+{
+    match region {
+        &ty::ReLateBound(debruijn, br) if amount > 0 => {
+            tcx.mk_region(ty::ReLateBound(debruijn.shifted(amount), br))
+        }
+        _ => {
+            region
+        }
+    }
+}
+
 pub fn shift_regions<'a, 'gcx, 'tcx, T>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                                        amount: u32, value: &T) -> T
+                                        amount: u32,
+                                        value: &T) -> T
     where T: TypeFoldable<'tcx>
 {
     debug!("shift_regions(value={:?}, amount={})",
            value, amount);
 
     value.fold_with(&mut RegionFolder::new(tcx, &mut false, &mut |region, _current_depth| {
-        tcx.mk_region(shift_region(*region, amount))
+        shift_region_ref(tcx, region, amount)
     }))
 }
 
@@ -628,7 +592,7 @@ impl<'tcx> TypeVisitor<'tcx> for HasEscapingRegionsVisitor {
         t.region_depth > self.depth
     }
 
-    fn visit_region(&mut self, r: &'tcx ty::Region) -> bool {
+    fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
         r.escapes_depth(self.depth)
     }
 }
@@ -639,15 +603,25 @@ struct HasTypeFlagsVisitor {
 
 impl<'tcx> TypeVisitor<'tcx> for HasTypeFlagsVisitor {
     fn visit_ty(&mut self, t: Ty) -> bool {
-        let flags = t.flags.get();
-        debug!("HasTypeFlagsVisitor: t={:?} t.flags={:?} self.flags={:?}", t, flags, self.flags);
-        flags.intersects(self.flags)
+        debug!("HasTypeFlagsVisitor: t={:?} t.flags={:?} self.flags={:?}", t, t.flags, self.flags);
+        t.flags.intersects(self.flags)
     }
 
-    fn visit_region(&mut self, r: &'tcx ty::Region) -> bool {
+    fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
         let flags = r.type_flags();
         debug!("HasTypeFlagsVisitor: r={:?} r.flags={:?} self.flags={:?}", r, flags, self.flags);
         flags.intersects(self.flags)
+    }
+
+    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
+        if let ConstVal::Unevaluated(..) = c.val {
+            let projection_flags = TypeFlags::HAS_NORMALIZABLE_PROJECTION |
+                TypeFlags::HAS_PROJECTION;
+            if projection_flags.intersects(self.flags) {
+                return true;
+            }
+        }
+        c.super_visit_with(self)
     }
 }
 
@@ -663,7 +637,7 @@ impl LateBoundRegionsCollector {
         LateBoundRegionsCollector {
             current_depth: 1,
             regions: FxHashSet(),
-            just_constrained: just_constrained,
+            just_constrained,
         }
     }
 }
@@ -690,7 +664,7 @@ impl<'tcx> TypeVisitor<'tcx> for LateBoundRegionsCollector {
         t.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: &'tcx ty::Region) -> bool {
+    fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
         match *r {
             ty::ReLateBound(debruijn, br) if debruijn.depth == self.current_depth => {
                 self.regions.insert(br);

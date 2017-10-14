@@ -21,7 +21,7 @@
 //! contained an `extern crate std;` import at the [crate root]. Therefore the
 //! standard library can be accessed in [`use`] statements through the path
 //! `std`, as in [`use std::env`], or in expressions through the absolute path
-//! `::std`, as in [`::std::env::args()`].
+//! `::std`, as in [`::std::env::args`].
 //!
 //! # How to read this documentation
 //!
@@ -81,7 +81,7 @@
 //! Note the documentation for the primitives [`str`] and [`[T]`][slice] (also
 //! called 'slice'). Many method calls on [`String`] and [`Vec<T>`] are actually
 //! calls to methods on [`str`] and [`[T]`][slice] respectively, via [deref
-//! coercions].
+//! coercions][deref-coercions].
 //!
 //! Third, the standard library defines [The Rust Prelude], a small collection
 //! of items - mostly traits - that are imported into every module of every
@@ -93,6 +93,17 @@
 //! macros are defined by the standard library - some are defined by the
 //! compiler - but they are documented here the same). Like the prelude, the
 //! standard macros are imported by default into all crates.
+//!
+//! # Contributing changes to the documentation
+//!
+//! Check out the rust contribution guidelines [here](
+//! https://github.com/rust-lang/rust/blob/master/CONTRIBUTING.md).
+//! The source for this documentation can be found on [Github](https://github.com/rust-lang).
+//! To contribute changes, make sure you read the guidelines first, then submit
+//! pull-requests for your suggested changes.
+//!
+//! Contributions are appreciated! If you see a part of the docs that can be
+//! improved, submit a PR, or chat with us first on irc.mozilla.org #rust-docs.
 //!
 //! # A Tour of The Rust Standard Library
 //!
@@ -156,7 +167,7 @@
 //! [TCP]: net/struct.TcpStream.html
 //! [The Rust Prelude]: prelude/index.html
 //! [UDP]: net/struct.UdpSocket.html
-//! [`::std::env::args()`]: env/fn.args.html
+//! [`::std::env::args`]: env/fn.args.html
 //! [`Arc`]: sync/struct.Arc.html
 //! [owned slice]: boxed/index.html
 //! [`Cell`]: cell/struct.Cell.html
@@ -174,7 +185,7 @@
 //! [slice]: primitive.slice.html
 //! [`atomic`]: sync/atomic/index.html
 //! [`collections`]: collections/index.html
-//! [`for`]: ../book/loops.html#for
+//! [`for`]: ../book/first-edition/loops.html#for
 //! [`format!`]: macro.format.html
 //! [`fs`]: fs/index.html
 //! [`io`]: io/index.html
@@ -189,19 +200,16 @@
 //! [`sync`]: sync/index.html
 //! [`thread`]: thread/index.html
 //! [`use std::env`]: env/index.html
-//! [`use`]: ../book/crates-and-modules.html#importing-modules-with-use
-//! [crate root]: ../book/crates-and-modules.html#basic-terminology-crates-and-modules
+//! [`use`]: ../book/first-edition/crates-and-modules.html#importing-modules-with-use
+//! [crate root]: ../book/first-edition/crates-and-modules.html#basic-terminology-crates-and-modules
 //! [crates.io]: https://crates.io
-//! [deref coercions]: ../book/deref-coercions.html
+//! [deref-coercions]: ../book/second-edition/ch15-02-deref.html#implicit-deref-coercions-with-functions-and-methods
 //! [files]: fs/struct.File.html
 //! [multithreading]: thread/index.html
 //! [other]: #what-is-in-the-standard-library-documentation
-//! [primitive types]: ../book/primitive-types.html
+//! [primitive types]: ../book/first-edition/primitive-types.html
 
-#![crate_name = "std"]
 #![stable(feature = "rust1", since = "1.0.0")]
-#![crate_type = "rlib"]
-#![crate_type = "dylib"]
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/",
@@ -219,10 +227,6 @@
 // Tell the compiler to link to either panic_abort or panic_unwind
 #![needs_panic_runtime]
 
-// Always use alloc_system during stage0 since jemalloc might be unavailable or
-// disabled (Issue #30592)
-#![cfg_attr(stage0, feature(alloc_system))]
-
 // Turn warnings into errors, but only after stage0, where it can be useful for
 // code to emit warnings during language transitions
 #![deny(warnings)]
@@ -233,18 +237,20 @@
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
 #![feature(alloc)]
+#![feature(allocator_api)]
+#![feature(alloc_system)]
+#![feature(allocator_internals)]
+#![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
+#![feature(align_offset)]
 #![feature(asm)]
-#![feature(associated_consts)]
-#![feature(borrow_state)]
+#![feature(attr_literals)]
 #![feature(box_syntax)]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_thread_local)]
 #![feature(cfg_target_vendor)]
-#![feature(char_escape_debug)]
+#![feature(char_error_internals)]
 #![feature(char_internals)]
-#![feature(collections)]
-#![feature(collections_bound)]
 #![feature(collections_range)]
 #![feature(compiler_builtins_lib)]
 #![feature(const_fn)]
@@ -252,7 +258,6 @@
 #![feature(core_intrinsics)]
 #![feature(dropck_eyepatch)]
 #![feature(exact_size_is_empty)]
-#![feature(float_extras)]
 #![feature(float_from_str_radix)]
 #![feature(fn_traits)]
 #![feature(fnbox)]
@@ -260,6 +265,8 @@
 #![feature(generic_param_attrs)]
 #![feature(hashmap_hasher)]
 #![feature(heap_api)]
+#![feature(i128)]
+#![feature(i128_type)]
 #![feature(inclusive_range)]
 #![feature(int_error_internals)]
 #![feature(integer_atomics)]
@@ -269,20 +276,25 @@
 #![feature(link_args)]
 #![feature(linkage)]
 #![feature(macro_reexport)]
+#![feature(macro_vis_matcher)]
 #![feature(needs_panic_runtime)]
+#![feature(never_type)]
 #![feature(num_bits_bytes)]
 #![feature(old_wrapping)]
 #![feature(on_unimplemented)]
 #![feature(oom)]
 #![feature(optin_builtin_traits)]
 #![feature(panic_unwind)]
+#![feature(peek)]
 #![feature(placement_in_syntax)]
+#![feature(placement_new_protocol)]
 #![feature(prelude_import)]
-#![feature(pub_restricted)]
 #![feature(rand)]
 #![feature(raw)]
+#![feature(repr_align)]
 #![feature(repr_simd)]
 #![feature(rustc_attrs)]
+#![cfg_attr(not(stage0), feature(rustc_const_unstable))]
 #![feature(shared)]
 #![feature(sip_hash_13)]
 #![feature(slice_bytes)]
@@ -295,15 +307,44 @@
 #![feature(str_utf16)]
 #![feature(test, rustc_private)]
 #![feature(thread_local)]
+#![feature(toowned_clone_into)]
 #![feature(try_from)]
 #![feature(unboxed_closures)]
 #![feature(unicode)]
 #![feature(unique)]
+#![feature(untagged_unions)]
 #![feature(unwind_attributes)]
 #![feature(vec_push_all)]
-#![feature(zero_one)]
-#![feature(i128)]
+#![feature(doc_cfg)]
+#![feature(doc_masked)]
 #![cfg_attr(test, feature(update_panic_count))]
+
+#![cfg_attr(not(stage0), feature(const_max_value))]
+#![cfg_attr(not(stage0), feature(const_atomic_bool_new))]
+#![cfg_attr(not(stage0), feature(const_atomic_isize_new))]
+#![cfg_attr(not(stage0), feature(const_atomic_usize_new))]
+#![cfg_attr(all(not(stage0), windows), feature(const_atomic_ptr_new))]
+#![cfg_attr(not(stage0), feature(const_unsafe_cell_new))]
+#![cfg_attr(not(stage0), feature(const_cell_new))]
+#![cfg_attr(not(stage0), feature(const_once_new))]
+#![cfg_attr(not(stage0), feature(const_ptr_null))]
+#![cfg_attr(not(stage0), feature(const_ptr_null_mut))]
+
+#![default_lib_allocator]
+
+// Always use alloc_system during stage0 since we don't know if the alloc_*
+// crate the stage0 compiler will pick by default is enabled (e.g.
+// if the user has disabled jemalloc in `./configure`).
+// `force_alloc_system` is *only* intended as a workaround for local rebuilds
+// with a rustc without jemalloc.
+// FIXME(#44236) shouldn't need MSVC logic
+#![cfg_attr(all(not(target_env = "msvc"),
+                any(stage0, feature = "force_alloc_system")),
+            feature(global_allocator))]
+#[cfg(all(not(target_env = "msvc"),
+          any(stage0, feature = "force_alloc_system")))]
+#[global_allocator]
+static ALLOC: alloc_system::System = alloc_system::System;
 
 // Explicitly import the prelude. The compiler uses this same unstable attribute
 // to import the prelude implicitly when building crates that depend on std.
@@ -321,22 +362,24 @@ use prelude::v1::*;
                  debug_assert_ne, unreachable, unimplemented, write, writeln, try)]
 extern crate core as __core;
 
+#[doc(masked)]
+#[allow(deprecated)]
+extern crate rand as core_rand;
 #[macro_use]
 #[macro_reexport(vec, format)]
-extern crate collections as core_collections;
-
-#[allow(deprecated)] extern crate rand as core_rand;
 extern crate alloc;
+extern crate alloc_system;
 extern crate std_unicode;
+#[doc(masked)]
 extern crate libc;
 
 // We always need an unwinder currently for backtraces
+#[doc(masked)]
+#[allow(unused_extern_crates)]
 extern crate unwind;
 
-#[cfg(stage0)]
-extern crate alloc_system;
-
 // compiler-rt intrinsics
+#[doc(masked)]
 extern crate compiler_builtins;
 
 // During testing, this crate is not actually the "real" std library, but rather
@@ -398,7 +441,6 @@ pub use core::i32;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::i64;
 #[unstable(feature = "i128", issue = "35118")]
-#[cfg(not(stage0))]
 pub use core::i128;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::usize;
@@ -415,21 +457,20 @@ pub use alloc::boxed;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc::rc;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::borrow;
+pub use alloc::borrow;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::fmt;
+pub use alloc::fmt;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::slice;
+pub use alloc::slice;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::str;
+pub use alloc::str;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::string;
+pub use alloc::string;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core_collections::vec;
+pub use alloc::vec;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use std_unicode::char;
 #[unstable(feature = "i128", issue = "35118")]
-#[cfg(not(stage0))]
 pub use core::u128;
 
 pub mod f32;
@@ -452,6 +493,7 @@ pub mod path;
 pub mod process;
 pub mod sync;
 pub mod time;
+pub mod heap;
 
 // Platform-abstraction modules
 #[macro_use]
@@ -463,9 +505,6 @@ mod panicking;
 mod rand;
 mod memchr;
 
-// This module just defines per-platform native library dependencies
-mod rtdeps;
-
 // The runtime entry point and a few unstable public functions used by the
 // compiler
 pub mod rt;
@@ -476,7 +515,7 @@ pub mod rt;
 // but it may be stabilized long-term. As a result we're exposing a hidden,
 // unstable module so we can get our build working.
 #[doc(hidden)]
-#[unstable(feature = "rand", issue = "0")]
+#[unstable(feature = "rand", issue = "27703")]
 pub mod __rand {
     pub use rand::{thread_rng, ThreadRng, Rng};
 }

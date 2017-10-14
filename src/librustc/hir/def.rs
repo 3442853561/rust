@@ -9,17 +9,19 @@
 // except according to those terms.
 
 use hir::def_id::DefId;
-use util::nodemap::NodeMap;
+use util::nodemap::{NodeMap, DefIdMap};
 use syntax::ast;
+use syntax::ext::base::MacroKind;
+use syntax_pos::Span;
 use hir;
 
 #[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
 pub enum CtorKind {
-    // Constructor function automatically created by a tuple struct/variant.
+    /// Constructor function automatically created by a tuple struct/variant.
     Fn,
-    // Constructor constant automatically created by a unit struct/variant.
+    /// Constructor constant automatically created by a unit struct/variant.
     Const,
-    // Unusable name in value namespace created by a struct variant.
+    /// Unusable name in value namespace created by a struct variant.
     Fictive,
 }
 
@@ -46,45 +48,61 @@ pub enum Def {
     VariantCtor(DefId, CtorKind),
     Method(DefId),
     AssociatedConst(DefId),
-    Local(DefId),
-    Upvar(DefId,        // def id of closed over local
+
+    Local(ast::NodeId),
+    Upvar(ast::NodeId,  // node id of closed over local
           usize,        // index in the freevars list of the closure
           ast::NodeId), // expr node that creates the closure
     Label(ast::NodeId),
 
     // Macro namespace
-    Macro(DefId),
+    Macro(DefId, MacroKind),
+
+    GlobalAsm(DefId),
 
     // Both namespaces
     Err,
 }
 
-/// The result of resolving a path.
-/// Before type checking completes, `depth` represents the number of
-/// trailing segments which are yet unresolved. Afterwards, if there
-/// were no errors, all paths should be fully resolved, with `depth`
-/// set to `0` and `base_def` representing the final resolution.
-///
+/// The result of resolving a path before lowering to HIR.
+/// `base_def` is definition of resolved part of the
+/// path, `unresolved_segments` is the number of unresolved
+/// segments.
 ///     module::Type::AssocX::AssocY::MethodOrAssocType
 ///     ^~~~~~~~~~~~  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-///     base_def      depth = 3
+///     base_def      unresolved_segments = 3
 ///
 ///     <T as Trait>::AssocX::AssocY::MethodOrAssocType
 ///           ^~~~~~~~~~~~~~  ^~~~~~~~~~~~~~~~~~~~~~~~~
-///           base_def        depth = 2
+///           base_def        unresolved_segments = 2
 #[derive(Copy, Clone, Debug)]
 pub struct PathResolution {
-    pub base_def: Def,
-    pub depth: usize
+    base_def: Def,
+    unresolved_segments: usize,
 }
 
 impl PathResolution {
-    pub fn new(def: Def) -> PathResolution {
-        PathResolution { base_def: def, depth: 0 }
+    pub fn new(def: Def) -> Self {
+        PathResolution { base_def: def, unresolved_segments: 0 }
+    }
+
+    pub fn with_unresolved_segments(def: Def, mut unresolved_segments: usize) -> Self {
+        if def == Def::Err { unresolved_segments = 0 }
+        PathResolution { base_def: def, unresolved_segments: unresolved_segments }
+    }
+
+    #[inline]
+    pub fn base_def(&self) -> Def {
+        self.base_def
+    }
+
+    #[inline]
+    pub fn unresolved_segments(&self) -> usize {
+        self.unresolved_segments
     }
 
     pub fn kind_name(&self) -> &'static str {
-        if self.depth != 0 {
+        if self.unresolved_segments != 0 {
             "associated item"
         } else {
             self.base_def.kind_name()
@@ -92,16 +110,21 @@ impl PathResolution {
     }
 }
 
-// Definition mapping
+/// Definition mapping
 pub type DefMap = NodeMap<PathResolution>;
-// This is the replacement export map. It maps a module to all of the exports
-// within.
-pub type ExportMap = NodeMap<Vec<Export>>;
+
+/// This is the replacement export map. It maps a module to all of the exports
+/// within.
+pub type ExportMap = DefIdMap<Vec<Export>>;
 
 #[derive(Copy, Clone, Debug, RustcEncodable, RustcDecodable)]
 pub struct Export {
-    pub name: ast::Name, // The name of the target.
-    pub def: Def, // The definition of the target.
+    /// The name of the target.
+    pub ident: ast::Ident,
+    /// The definition of the target.
+    pub def: Def,
+    /// The span of the target definition.
+    pub span: Span,
 }
 
 impl CtorKind {
@@ -128,10 +151,13 @@ impl Def {
             Def::Variant(id) | Def::VariantCtor(id, ..) | Def::Enum(id) | Def::TyAlias(id) |
             Def::AssociatedTy(id) | Def::TyParam(id) | Def::Struct(id) | Def::StructCtor(id, ..) |
             Def::Union(id) | Def::Trait(id) | Def::Method(id) | Def::Const(id) |
-            Def::AssociatedConst(id) | Def::Local(id) | Def::Upvar(id, ..) | Def::Macro(id) => {
+            Def::AssociatedConst(id) | Def::Macro(id, ..) |
+            Def::GlobalAsm(id) => {
                 id
             }
 
+            Def::Local(..) |
+            Def::Upvar(..) |
             Def::Label(..)  |
             Def::PrimTy(..) |
             Def::SelfTy(..) |
@@ -141,6 +167,7 @@ impl Def {
         }
     }
 
+    /// A human readable kind name
     pub fn kind_name(&self) -> &'static str {
         match *self {
             Def::Fn(..) => "function",
@@ -169,6 +196,7 @@ impl Def {
             Def::Label(..) => "label",
             Def::SelfTy(..) => "self type",
             Def::Macro(..) => "macro",
+            Def::GlobalAsm(..) => "global asm",
             Def::Err => "unresolved item",
         }
     }

@@ -13,36 +13,47 @@
 use build::{BlockAnd, BlockAndExtension, Builder};
 use build::expr::category::Category;
 use hair::*;
+use rustc::middle::region;
 use rustc::mir::*;
 
 impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// Compile `expr` into a fresh temporary. This is used when building
     /// up rvalues so as to freeze the value that will be consumed.
-    pub fn as_temp<M>(&mut self, block: BasicBlock, expr: M) -> BlockAnd<Lvalue<'tcx>>
+    pub fn as_temp<M>(&mut self,
+                      block: BasicBlock,
+                      temp_lifetime: Option<region::Scope>,
+                      expr: M)
+                      -> BlockAnd<Local>
         where M: Mirror<'tcx, Output = Expr<'tcx>>
     {
         let expr = self.hir.mirror(expr);
-        self.expr_as_temp(block, expr)
+        self.expr_as_temp(block, temp_lifetime, expr)
     }
 
-    fn expr_as_temp(&mut self, mut block: BasicBlock, expr: Expr<'tcx>) -> BlockAnd<Lvalue<'tcx>> {
-        debug!("expr_as_temp(block={:?}, expr={:?})", block, expr);
+    fn expr_as_temp(&mut self,
+                    mut block: BasicBlock,
+                    temp_lifetime: Option<region::Scope>,
+                    expr: Expr<'tcx>)
+                    -> BlockAnd<Local> {
+        debug!("expr_as_temp(block={:?}, temp_lifetime={:?}, expr={:?})",
+               block, temp_lifetime, expr);
         let this = self;
 
-        if let ExprKind::Scope { extent, value } = expr.kind {
-            return this.in_scope(extent, block, |this| this.as_temp(block, value));
-        }
-
-        let expr_ty = expr.ty.clone();
-        let temp = this.temp(expr_ty.clone());
-        let temp_lifetime = expr.temp_lifetime;
         let expr_span = expr.span;
         let source_info = this.source_info(expr_span);
+        if let ExprKind::Scope { region_scope, lint_level, value } = expr.kind {
+            return this.in_scope((region_scope, source_info), lint_level, block, |this| {
+                this.as_temp(block, temp_lifetime, value)
+            });
+        }
 
-        if temp_lifetime.is_some() {
+        let expr_ty = expr.ty;
+        let temp = this.local_decls.push(LocalDecl::new_temp(expr_ty, expr_span));
+
+        if !expr_ty.is_never() {
             this.cfg.push(block, Statement {
-                source_info: source_info,
-                kind: StatementKind::StorageLive(temp.clone())
+                source_info,
+                kind: StatementKind::StorageLive(temp)
             });
         }
 
@@ -57,10 +68,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             Category::Lvalue => {
                 let lvalue = unpack!(block = this.as_lvalue(block, expr));
                 let rvalue = Rvalue::Use(Operand::Consume(lvalue));
-                this.cfg.push_assign(block, source_info, &temp, rvalue);
+                this.cfg.push_assign(block, source_info, &Lvalue::Local(temp), rvalue);
             }
             _ => {
-                unpack!(block = this.into(&temp, block, expr));
+                unpack!(block = this.into(&Lvalue::Local(temp), block, expr));
             }
         }
 
@@ -68,7 +79,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // anything because no values with a destructor can be created in
         // a constant at this time, even if the type may need dropping.
         if let Some(temp_lifetime) = temp_lifetime {
-            this.schedule_drop(expr_span, temp_lifetime, &temp, expr_ty);
+            this.schedule_drop(expr_span, temp_lifetime, &Lvalue::Local(temp), expr_ty);
         }
 
         block.and(temp)

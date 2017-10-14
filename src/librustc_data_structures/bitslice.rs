@@ -132,11 +132,18 @@ pub trait BitwiseOperator {
     fn join(&self, pred1: usize, pred2: usize) -> usize;
 }
 
+pub struct Intersect;
+impl BitwiseOperator for Intersect {
+    #[inline]
+    fn join(&self, a: usize, b: usize) -> usize { a & b }
+}
 pub struct Union;
 impl BitwiseOperator for Union {
+    #[inline]
     fn join(&self, a: usize, b: usize) -> usize { a | b }
 }
 pub struct Subtract;
 impl BitwiseOperator for Subtract {
+    #[inline]
     fn join(&self, a: usize, b: usize) -> usize { a & !b }
 }

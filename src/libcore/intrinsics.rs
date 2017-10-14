@@ -46,8 +46,12 @@
             issue = "0")]
 #![allow(missing_docs)]
 
-extern "rust-intrinsic" {
+#[stable(feature = "drop_in_place", since = "1.8.0")]
+#[rustc_deprecated(reason = "no longer an intrinsic - use `ptr::drop_in_place` directly",
+                   since = "1.18.0")]
+pub use ptr::drop_in_place;
 
+extern "rust-intrinsic" {
     // NB: These intrinsics take raw pointers because they mutate aliased
     // memory, which is not valid for either `&` or `&mut`.
 
@@ -56,16 +60,18 @@ extern "rust-intrinsic" {
     /// `std::sync::atomic` types via the `compare_exchange` method by passing
     /// [`Ordering::SeqCst`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
     /// `std::sync::atomic` types via the `compare_exchange` method by passing
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_acq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -74,8 +80,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_rel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -84,16 +91,18 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_acqrel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
     /// `std::sync::atomic` types via the `compare_exchange` method by passing
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_relaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -102,8 +111,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -112,8 +122,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_failacq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -122,8 +133,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_acq_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -132,8 +144,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange).
+    /// [`AtomicBool::compare_exchange`][compare_exchange].
+    ///
+    /// [compare_exchange]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange
     pub fn atomic_cxchg_acqrel_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
 
     /// Stores a value if the current value is the same as the `old` value.
@@ -141,16 +154,18 @@ extern "rust-intrinsic" {
     /// `std::sync::atomic` types via the `compare_exchange_weak` method by passing
     /// [`Ordering::SeqCst`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
     /// `std::sync::atomic` types via the `compare_exchange_weak` method by passing
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_acq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -159,8 +174,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_rel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -169,16 +185,18 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_acqrel<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
     /// `std::sync::atomic` types via the `compare_exchange_weak` method by passing
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as both the `success` and `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_relaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -187,8 +205,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -197,8 +216,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Acquire`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_failacq<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -207,8 +227,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_acq_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
     /// Stores a value if the current value is the same as the `old` value.
     /// The stabilized version of this intrinsic is available on the
@@ -217,8 +238,9 @@ extern "rust-intrinsic" {
     /// as the `success` and
     /// [`Ordering::Relaxed`](../../std/sync/atomic/enum.Ordering.html)
     /// as the `failure` parameters. For example,
-    /// [`AtomicBool::compare_exchange_weak`]
-    /// (../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak).
+    /// [`AtomicBool::compare_exchange_weak`][cew].
+    ///
+    /// [cew]: ../../std/sync/atomic/struct.AtomicBool.html#method.compare_exchange_weak
     pub fn atomic_cxchgweak_acqrel_failrelaxed<T>(dst: *mut T, old: T, src: T) -> (T, bool);
 
     /// Loads the current value of the pointer.
@@ -542,6 +564,39 @@ extern "rust-intrinsic" {
     pub fn atomic_umax_rel<T>(dst: *mut T, src: T) -> T;
     pub fn atomic_umax_acqrel<T>(dst: *mut T, src: T) -> T;
     pub fn atomic_umax_relaxed<T>(dst: *mut T, src: T) -> T;
+
+    /// The `prefetch` intrinsic is a hint to the code generator to insert a prefetch instruction
+    /// if supported; otherwise, it is a noop.
+    /// Prefetches have no effect on the behavior of the program but can change its performance
+    /// characteristics.
+    ///
+    /// The `locality` argument must be a constant integer and is a temporal locality specifier
+    /// ranging from (0) - no locality, to (3) - extremely local keep in cache
+    pub fn prefetch_read_data<T>(data: *const T, locality: i32);
+    /// The `prefetch` intrinsic is a hint to the code generator to insert a prefetch instruction
+    /// if supported; otherwise, it is a noop.
+    /// Prefetches have no effect on the behavior of the program but can change its performance
+    /// characteristics.
+    ///
+    /// The `locality` argument must be a constant integer and is a temporal locality specifier
+    /// ranging from (0) - no locality, to (3) - extremely local keep in cache
+    pub fn prefetch_write_data<T>(data: *const T, locality: i32);
+    /// The `prefetch` intrinsic is a hint to the code generator to insert a prefetch instruction
+    /// if supported; otherwise, it is a noop.
+    /// Prefetches have no effect on the behavior of the program but can change its performance
+    /// characteristics.
+    ///
+    /// The `locality` argument must be a constant integer and is a temporal locality specifier
+    /// ranging from (0) - no locality, to (3) - extremely local keep in cache
+    pub fn prefetch_read_instruction<T>(data: *const T, locality: i32);
+    /// The `prefetch` intrinsic is a hint to the code generator to insert a prefetch instruction
+    /// if supported; otherwise, it is a noop.
+    /// Prefetches have no effect on the behavior of the program but can change its performance
+    /// characteristics.
+    ///
+    /// The `locality` argument must be a constant integer and is a temporal locality specifier
+    /// ranging from (0) - no locality, to (3) - extremely local keep in cache
+    pub fn prefetch_write_instruction<T>(data: *const T, locality: i32);
 }
 
 extern "rust-intrinsic" {
@@ -574,10 +629,12 @@ extern "rust-intrinsic" {
     /// Aborts the execution of the process.
     pub fn abort() -> !;
 
-    /// Tells LLVM that this point in the code is not reachable,
-    /// enabling further optimizations.
+    /// Tells LLVM that this point in the code is not reachable, enabling
+    /// further optimizations.
     ///
-    /// NB: This is very different from the `unreachable!()` macro!
+    /// NB: This is very different from the `unreachable!()` macro: Unlike the
+    /// macro, which panics when it is executed, it is *undefined behavior* to
+    /// reach code marked with this function.
     pub fn unreachable() -> !;
 
     /// Informs the optimizer that a condition is always true.
@@ -622,26 +679,6 @@ extern "rust-intrinsic" {
     pub fn size_of_val<T: ?Sized>(_: &T) -> usize;
     pub fn min_align_of_val<T: ?Sized>(_: &T) -> usize;
 
-    /// Executes the destructor (if any) of the pointed-to value.
-    ///
-    /// This has two use cases:
-    ///
-    /// * It is *required* to use `drop_in_place` to drop unsized types like
-    ///   trait objects, because they can't be read out onto the stack and
-    ///   dropped normally.
-    ///
-    /// * It is friendlier to the optimizer to do this over `ptr::read` when
-    ///   dropping manually allocated memory (e.g. when writing Box/Rc/Vec),
-    ///   as the compiler doesn't need to prove that it's sound to elide the
-    ///   copy.
-    ///
-    /// # Undefined Behavior
-    ///
-    /// This has all the same safety problems as `ptr::read` with respect to
-    /// invalid pointers, types, and double drops.
-    #[stable(feature = "drop_in_place", since = "1.8.0")]
-    pub fn drop_in_place<T: ?Sized>(to_drop: *mut T);
-
     /// Gets a static string slice containing the name of a type.
     pub fn type_name<T: ?Sized>() -> &'static str;
 
@@ -667,9 +704,6 @@ extern "rust-intrinsic" {
     /// initialize memory previous set to the result of `uninit`.
     pub fn uninit<T>() -> T;
 
-    /// Moves a value out of scope without running drop glue.
-    pub fn forget<T>(_: T) -> ();
-
     /// Reinterprets the bits of a value of one type as another type.
     ///
     /// Both types must have the same size. Neither the original, nor the result,
@@ -687,7 +721,7 @@ extern "rust-intrinsic" {
     /// The [nomicon](../../nomicon/transmutes.html) has additional
     /// documentation.
     ///
-    /// [ub]: ../../reference.html#behavior-considered-undefined
+    /// [ub]: ../../reference/behavior-considered-undefined.html
     ///
     /// # Examples
     ///
@@ -814,12 +848,12 @@ extern "rust-intrinsic" {
     /// // The no-copy, unsafe way, still using transmute, but not UB.
     /// // This is equivalent to the original, but safer, and reuses the
     /// // same Vec internals. Therefore the new inner type must have the
-    /// // exact same size, and the same or lesser alignment, as the old
-    /// // type. The same caveats exist for this method as transmute, for
+    /// // exact same size, and the same alignment, as the old type.
+    /// // The same caveats exist for this method as transmute, for
     /// // the original inner type (`&i32`) to the converted inner type
     /// // (`Option<&i32>`), so read the nomicon pages linked above.
     /// let v_from_raw = unsafe {
-    ///     Vec::from_raw_parts(v_orig.as_mut_ptr(),
+    ///     Vec::from_raw_parts(v_orig.as_mut_ptr() as *mut Option<&i32>,
     ///                         v_orig.len(),
     ///                         v_orig.capacity())
     /// };
@@ -1010,20 +1044,23 @@ extern "rust-intrinsic" {
     /// a size of `count` * `size_of::<T>()` and an alignment of
     /// `min_align_of::<T>()`
     ///
-    /// The volatile parameter is set to `true`, so it will not be optimized out.
+    /// The volatile parameter is set to `true`, so it will not be optimized out
+    /// unless size is equal to zero.
     pub fn volatile_copy_nonoverlapping_memory<T>(dst: *mut T, src: *const T,
                                                   count: usize);
     /// Equivalent to the appropriate `llvm.memmove.p0i8.0i8.*` intrinsic, with
     /// a size of `count` * `size_of::<T>()` and an alignment of
     /// `min_align_of::<T>()`
     ///
-    /// The volatile parameter is set to `true`, so it will not be optimized out.
+    /// The volatile parameter is set to `true`, so it will not be optimized out
+    /// unless size is equal to zero..
     pub fn volatile_copy_memory<T>(dst: *mut T, src: *const T, count: usize);
     /// Equivalent to the appropriate `llvm.memset.p0i8.*` intrinsic, with a
     /// size of `count` * `size_of::<T>()` and an alignment of
     /// `min_align_of::<T>()`.
     ///
-    /// The volatile parameter is set to `true`, so it will not be optimized out.
+    /// The volatile parameter is set to `true`, so it will not be optimized out
+    /// unless size is equal to zero.
     pub fn volatile_set_memory<T>(dst: *mut T, val: u8, count: usize);
 
     /// Perform a volatile load from the `src` pointer.
@@ -1183,6 +1220,22 @@ extern "rust-intrinsic" {
     /// ```
     pub fn ctlz<T>(x: T) -> T;
 
+    /// Like `ctlz`, but extra-unsafe as it returns `undef` when
+    /// given an `x` with value `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(core_intrinsics)]
+    ///
+    /// use std::intrinsics::ctlz_nonzero;
+    ///
+    /// let x = 0b0001_1100_u8;
+    /// let num_leading = unsafe { ctlz_nonzero(x) };
+    /// assert_eq!(num_leading, 3);
+    /// ```
+    pub fn ctlz_nonzero<T>(x: T) -> T;
+
     /// Returns the number of trailing unset bits (zeroes) in an integer type `T`.
     ///
     /// # Examples
@@ -1209,6 +1262,22 @@ extern "rust-intrinsic" {
     /// assert_eq!(num_trailing, 16);
     /// ```
     pub fn cttz<T>(x: T) -> T;
+
+    /// Like `cttz`, but extra-unsafe as it returns `undef` when
+    /// given an `x` with value `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(core_intrinsics)]
+    ///
+    /// use std::intrinsics::cttz_nonzero;
+    ///
+    /// let x = 0b0011_1000_u8;
+    /// let num_trailing = unsafe { cttz_nonzero(x) };
+    /// assert_eq!(num_trailing, 3);
+    /// ```
+    pub fn cttz_nonzero<T>(x: T) -> T;
 
     /// Reverses the bytes in an integer type `T`.
     pub fn bswap<T>(x: T) -> T;
@@ -1238,17 +1307,24 @@ extern "rust-intrinsic" {
     /// undefined behavior where y = 0 or x = `T::min_value()` and y = -1
     pub fn unchecked_rem<T>(x: T, y: T) -> T;
 
-    /// Returns (a + b) mod 2^N, where N is the width of T in bits.
+    /// Performs an unchecked left shift, resulting in undefined behavior when
+    /// y < 0 or y >= N, where N is the width of T in bits.
+    pub fn unchecked_shl<T>(x: T, y: T) -> T;
+    /// Performs an unchecked right shift, resulting in undefined behavior when
+    /// y < 0 or y >= N, where N is the width of T in bits.
+    pub fn unchecked_shr<T>(x: T, y: T) -> T;
+
+    /// Returns (a + b) mod 2<sup>N</sup>, where N is the width of T in bits.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_add` method. For example,
     /// [`std::u32::wrapping_add`](../../std/primitive.u32.html#method.wrapping_add)
     pub fn overflowing_add<T>(a: T, b: T) -> T;
-    /// Returns (a - b) mod 2^N, where N is the width of T in bits.
+    /// Returns (a - b) mod 2<sup>N</sup>, where N is the width of T in bits.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_sub` method. For example,
     /// [`std::u32::wrapping_sub`](../../std/primitive.u32.html#method.wrapping_sub)
     pub fn overflowing_sub<T>(a: T, b: T) -> T;
-    /// Returns (a * b) mod 2^N, where N is the width of T in bits.
+    /// Returns (a * b) mod 2<sup>N</sup>, where N is the width of T in bits.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_mul` method. For example,
     /// [`std::u32::wrapping_mul`](../../std/primitive.u32.html#method.wrapping_mul)
@@ -1267,4 +1343,50 @@ extern "rust-intrinsic" {
     /// on MSVC it's `*mut [usize; 2]`. For more information see the compiler's
     /// source as well as std's catch implementation.
     pub fn try(f: fn(*mut u8), data: *mut u8, local_ptr: *mut u8) -> i32;
+
+    /// Computes the byte offset that needs to be applied to `ptr` in order to
+    /// make it aligned to `align`.
+    /// If it is not possible to align `ptr`, the implementation returns
+    /// `usize::max_value()`.
+    ///
+    /// There are no guarantees whatsover that offsetting the pointer will not
+    /// overflow or go beyond the allocation that `ptr` points into.
+    /// It is up to the caller to ensure that the returned offset is correct
+    /// in all terms other than alignment.
+    ///
+    /// # Examples
+    ///
+    /// Accessing adjacent `u8` as `u16`
+    ///
+    /// ```
+    /// # #![feature(core_intrinsics)]
+    /// # fn foo(n: usize) {
+    /// # use std::intrinsics::align_offset;
+    /// # use std::mem::align_of;
+    /// # unsafe {
+    /// let x = [5u8, 6u8, 7u8, 8u8, 9u8];
+    /// let ptr = &x[n] as *const u8;
+    /// let offset = align_offset(ptr as *const (), align_of::<u16>());
+    /// if offset < x.len() - n - 1 {
+    ///     let u16_ptr = ptr.offset(offset as isize) as *const u16;
+    ///     assert_ne!(*u16_ptr, 500);
+    /// } else {
+    ///     // while the pointer can be aligned via `offset`, it would point
+    ///     // outside the allocation
+    /// }
+    /// # } }
+    /// ```
+    #[cfg(not(stage0))]
+    pub fn align_offset(ptr: *const (), align: usize) -> usize;
+}
+
+#[cfg(stage0)]
+/// remove me after the next release
+pub unsafe fn align_offset(ptr: *const (), align: usize) -> usize {
+    let offset = ptr as usize % align;
+    if offset == 0 {
+        0
+    } else {
+        align - offset
+    }
 }

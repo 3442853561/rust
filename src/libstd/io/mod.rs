@@ -21,7 +21,8 @@
 //! of other types, and you can implement them for your types too. As such,
 //! you'll see a few different types of I/O throughout the documentation in
 //! this module: [`File`]s, [`TcpStream`]s, and sometimes even [`Vec<T>`]s. For
-//! example, [`Read`] adds a [`read()`] method, which we can use on `File`s:
+//! example, [`Read`] adds a [`read`][`Read::read`] method, which we can use on
+//! [`File`]s:
 //!
 //! ```
 //! use std::io;
@@ -29,11 +30,11 @@
 //! use std::fs::File;
 //!
 //! # fn foo() -> io::Result<()> {
-//! let mut f = try!(File::open("foo.txt"));
+//! let mut f = File::open("foo.txt")?;
 //! let mut buffer = [0; 10];
 //!
 //! // read up to 10 bytes
-//! try!(f.read(&mut buffer));
+//! f.read(&mut buffer)?;
 //!
 //! println!("The bytes: {:?}", buffer);
 //! # Ok(())
@@ -58,14 +59,14 @@
 //! use std::fs::File;
 //!
 //! # fn foo() -> io::Result<()> {
-//! let mut f = try!(File::open("foo.txt"));
+//! let mut f = File::open("foo.txt")?;
 //! let mut buffer = [0; 10];
 //!
 //! // skip to the last 10 bytes of the file
-//! try!(f.seek(SeekFrom::End(-10)));
+//! f.seek(SeekFrom::End(-10))?;
 //!
 //! // read up to 10 bytes
-//! try!(f.read(&mut buffer));
+//! f.read(&mut buffer)?;
 //!
 //! println!("The bytes: {:?}", buffer);
 //! # Ok(())
@@ -93,12 +94,12 @@
 //! use std::fs::File;
 //!
 //! # fn foo() -> io::Result<()> {
-//! let f = try!(File::open("foo.txt"));
+//! let f = File::open("foo.txt")?;
 //! let mut reader = BufReader::new(f);
 //! let mut buffer = String::new();
 //!
 //! // read a line into buffer
-//! try!(reader.read_line(&mut buffer));
+//! reader.read_line(&mut buffer)?;
 //!
 //! println!("{}", buffer);
 //! # Ok(())
@@ -106,7 +107,7 @@
 //! ```
 //!
 //! [`BufWriter`] doesn't add any new ways of writing; it just buffers every call
-//! to [`write()`]:
+//! to [`write`][`Write::write`]:
 //!
 //! ```
 //! use std::io;
@@ -115,12 +116,12 @@
 //! use std::fs::File;
 //!
 //! # fn foo() -> io::Result<()> {
-//! let f = try!(File::create("foo.txt"));
+//! let f = File::create("foo.txt")?;
 //! {
 //!     let mut writer = BufWriter::new(f);
 //!
 //!     // write a byte to the buffer
-//!     try!(writer.write(&[42]));
+//!     writer.write(&[42])?;
 //!
 //! } // the buffer is flushed once writer goes out of scope
 //!
@@ -138,11 +139,23 @@
 //! # fn foo() -> io::Result<()> {
 //! let mut input = String::new();
 //!
-//! try!(io::stdin().read_line(&mut input));
+//! io::stdin().read_line(&mut input)?;
 //!
 //! println!("You typed: {}", input.trim());
 //! # Ok(())
 //! # }
+//! ```
+//!
+//! Note that you cannot use the [`?` operator] in functions that do not return
+//! a [`Result<T, E>`][`Result`] (e.g. `main`). Instead, you can call [`.unwrap()`]
+//! or `match` on the return value to catch any possible errors:
+//!
+//! ```
+//! use std::io;
+//!
+//! let mut input = String::new();
+//!
+//! io::stdin().read_line(&mut input).unwrap();
 //! ```
 //!
 //! And a very common source of output is standard output:
@@ -152,12 +165,12 @@
 //! use std::io::prelude::*;
 //!
 //! # fn foo() -> io::Result<()> {
-//! try!(io::stdout().write(&[42]));
+//! io::stdout().write(&[42])?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! Of course, using [`io::stdout()`] directly is less common than something like
+//! Of course, using [`io::stdout`] directly is less common than something like
 //! [`println!`].
 //!
 //! ## Iterator types
@@ -173,11 +186,11 @@
 //! use std::fs::File;
 //!
 //! # fn foo() -> io::Result<()> {
-//! let f = try!(File::open("foo.txt"));
+//! let f = File::open("foo.txt")?;
 //! let reader = BufReader::new(f);
 //!
 //! for line in reader.lines() {
-//!     println!("{}", try!(line));
+//!     println!("{}", line?);
 //! }
 //!
 //! # Ok(())
@@ -194,7 +207,7 @@
 //! use std::io;
 //!
 //! # fn foo() -> io::Result<()> {
-//! try!(io::copy(&mut io::stdin(), &mut io::stdout()));
+//! io::copy(&mut io::stdin(), &mut io::stdout())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -206,7 +219,7 @@
 //! Last, but certainly not least, is [`io::Result`]. This type is used
 //! as the return type of many `std::io` functions that can cause an error, and
 //! can be returned from your own functions as well. Many of the examples in this
-//! module use the [`try!`] macro:
+//! module use the [`?` operator]:
 //!
 //! ```
 //! use std::io;
@@ -214,7 +227,7 @@
 //! fn read_input() -> io::Result<()> {
 //!     let mut input = String::new();
 //!
-//!     try!(io::stdin().read_line(&mut input));
+//!     io::stdin().read_line(&mut input)?;
 //!
 //!     println!("You typed: {}", input.trim());
 //!
@@ -245,23 +258,26 @@
 //! [`Vec<T>`]: ../vec/struct.Vec.html
 //! [`BufReader`]: struct.BufReader.html
 //! [`BufWriter`]: struct.BufWriter.html
-//! [`write()`]: trait.Write.html#tymethod.write
-//! [`io::stdout()`]: fn.stdout.html
+//! [`Write::write`]: trait.Write.html#tymethod.write
+//! [`io::stdout`]: fn.stdout.html
 //! [`println!`]: ../macro.println.html
 //! [`Lines`]: struct.Lines.html
 //! [`io::Result`]: type.Result.html
-//! [`try!`]: ../macro.try.html
-//! [`read()`]: trait.Read.html#tymethod.read
+//! [`?` operator]: ../../book/first-edition/syntax-index.html
+//! [`Read::read`]: trait.Read.html#tymethod.read
+//! [`Result`]: ../result/enum.Result.html
+//! [`.unwrap()`]: ../result/enum.Result.html#method.unwrap
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use cmp;
-use std_unicode::str as core_str;
+use core::str as core_str;
 use error as std_error;
 use fmt;
 use result;
 use str;
 use memchr;
+use ptr;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::{BufReader, BufWriter, LineWriter};
@@ -274,10 +290,12 @@ pub use self::error::{Result, Error, ErrorKind};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::util::{copy, sink, Sink, empty, Empty, repeat, Repeat};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use self::stdio::{stdin, stdout, stderr, _print, Stdin, Stdout, Stderr};
+pub use self::stdio::{stdin, stdout, stderr, Stdin, Stdout, Stderr};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::stdio::{StdoutLock, StderrLock, StdinLock};
-#[unstable(feature = "libstd_io_internals", issue = "0")]
+#[unstable(feature = "print_internals", issue = "0")]
+pub use self::stdio::{_print, _eprint};
+#[unstable(feature = "libstd_io_internals", issue = "42788")]
 #[doc(no_inline, hidden)]
 pub use self::stdio::{set_panic, set_print};
 
@@ -291,6 +309,14 @@ mod util;
 mod stdio;
 
 const DEFAULT_BUF_SIZE: usize = ::sys_common::io::DEFAULT_BUF_SIZE;
+
+struct Guard<'a> { buf: &'a mut Vec<u8>, len: usize }
+
+impl<'a> Drop for Guard<'a> {
+    fn drop(&mut self) {
+        unsafe { self.buf.set_len(self.len); }
+    }
+}
 
 // A few methods below (read_to_string, read_line) will append data into a
 // `String` buffer, but we need to be pretty careful when doing this. The
@@ -313,23 +339,16 @@ const DEFAULT_BUF_SIZE: usize = ::sys_common::io::DEFAULT_BUF_SIZE;
 fn append_to_string<F>(buf: &mut String, f: F) -> Result<usize>
     where F: FnOnce(&mut Vec<u8>) -> Result<usize>
 {
-    struct Guard<'a> { s: &'a mut Vec<u8>, len: usize }
-        impl<'a> Drop for Guard<'a> {
-        fn drop(&mut self) {
-            unsafe { self.s.set_len(self.len); }
-        }
-    }
-
     unsafe {
-        let mut g = Guard { len: buf.len(), s: buf.as_mut_vec() };
-        let ret = f(g.s);
-        if str::from_utf8(&g.s[g.len..]).is_err() {
+        let mut g = Guard { len: buf.len(), buf: buf.as_mut_vec() };
+        let ret = f(g.buf);
+        if str::from_utf8(&g.buf[g.len..]).is_err() {
             ret.and_then(|_| {
                 Err(Error::new(ErrorKind::InvalidData,
                                "stream did not contain valid UTF-8"))
             })
         } else {
-            g.len = g.s.len();
+            g.len = g.buf.len();
             ret
         }
     }
@@ -341,25 +360,32 @@ fn append_to_string<F>(buf: &mut String, f: F) -> Result<usize>
 // of data to return. Simply tacking on an extra DEFAULT_BUF_SIZE space every
 // time is 4,500 times (!) slower than this if the reader has a very small
 // amount of data to return.
+//
+// Because we're extending the buffer with uninitialized data for trusted
+// readers, we need to make sure to truncate that if any of this panics.
 fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> {
     let start_len = buf.len();
-    let mut len = start_len;
+    let mut g = Guard { len: buf.len(), buf: buf };
     let mut new_write_size = 16;
     let ret;
     loop {
-        if len == buf.len() {
+        if g.len == g.buf.len() {
             if new_write_size < DEFAULT_BUF_SIZE {
                 new_write_size *= 2;
             }
-            buf.resize(len + new_write_size, 0);
+            unsafe {
+                g.buf.reserve(new_write_size);
+                g.buf.set_len(g.len + new_write_size);
+                r.initializer().initialize(&mut g.buf[g.len..]);
+            }
         }
 
-        match r.read(&mut buf[len..]) {
+        match r.read(&mut g.buf[g.len..]) {
             Ok(0) => {
-                ret = Ok(len - start_len);
+                ret = Ok(g.len - start_len);
                 break;
             }
-            Ok(n) => len += n,
+            Ok(n) => g.len += n,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
             Err(e) => {
                 ret = Err(e);
@@ -368,36 +394,36 @@ fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> 
         }
     }
 
-    buf.truncate(len);
     ret
 }
 
 /// The `Read` trait allows for reading bytes from a source.
 ///
-/// Implementors of the `Read` trait are sometimes called 'readers'.
+/// Implementors of the `Read` trait are called 'readers'.
 ///
-/// Readers are defined by one required method, `read()`. Each call to `read`
+/// Readers are defined by one required method, [`read()`]. Each call to [`read()`]
 /// will attempt to pull bytes from this source into a provided buffer. A
-/// number of other methods are implemented in terms of `read()`, giving
+/// number of other methods are implemented in terms of [`read()`], giving
 /// implementors a number of ways to read bytes while only needing to implement
 /// a single method.
 ///
 /// Readers are intended to be composable with one another. Many implementors
-/// throughout `std::io` take and provide types which implement the `Read`
+/// throughout [`std::io`] take and provide types which implement the `Read`
 /// trait.
 ///
-/// Please note that each call to `read` may involve a system call, and
-/// therefore, using something that implements [`BufRead`][bufread], such as
-/// [`BufReader`][bufreader], will be more efficient.
-///
-/// [bufread]: trait.BufRead.html
-/// [bufreader]: struct.BufReader.html
+/// Please note that each call to [`read()`] may involve a system call, and
+/// therefore, using something that implements [`BufRead`], such as
+/// [`BufReader`], will be more efficient.
 ///
 /// # Examples
 ///
-/// [`File`][file]s implement `Read`:
+/// [`File`]s implement `Read`:
 ///
-/// [file]: ../fs/struct.File.html
+/// [`read()`]: trait.Read.html#tymethod.read
+/// [`std::io`]: ../../std/io/index.html
+/// [`File`]: ../fs/struct.File.html
+/// [`BufRead`]: trait.BufRead.html
+/// [`BufReader`]: struct.BufReader.html
 ///
 /// ```
 /// use std::io;
@@ -405,19 +431,19 @@ fn read_to_end<R: Read + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize> 
 /// use std::fs::File;
 ///
 /// # fn foo() -> io::Result<()> {
-/// let mut f = try!(File::open("foo.txt"));
+/// let mut f = File::open("foo.txt")?;
 /// let mut buffer = [0; 10];
 ///
 /// // read up to 10 bytes
-/// try!(f.read(&mut buffer));
+/// f.read(&mut buffer)?;
 ///
 /// let mut buffer = vec![0; 10];
 /// // read the whole file
-/// try!(f.read_to_end(&mut buffer));
+/// f.read_to_end(&mut buffer)?;
 ///
 /// // read into a String, so that you don't need to do the conversion.
 /// let mut buffer = String::new();
-/// try!(f.read_to_string(&mut buffer));
+/// f.read_to_string(&mut buffer)?;
 ///
 /// // and more! See the other methods for more details.
 /// # Ok(())
@@ -430,9 +456,9 @@ pub trait Read {
     ///
     /// This function does not provide any guarantees about whether it blocks
     /// waiting for data, but if an object needs to block for a read but cannot
-    /// it will typically signal this via an `Err` return value.
+    /// it will typically signal this via an [`Err`] return value.
     ///
-    /// If the return value of this method is `Ok(n)`, then it must be
+    /// If the return value of this method is [`Ok(n)`], then it must be
     /// guaranteed that `0 <= n <= buf.len()`. A nonzero `n` value indicates
     /// that the buffer `buf` has been filled in with `n` bytes of data from this
     /// source. If `n` is `0`, then it can indicate one of two scenarios:
@@ -453,11 +479,17 @@ pub trait Read {
     /// variant will be returned. If an error is returned then it must be
     /// guaranteed that no bytes were read.
     ///
+    /// An error of the [`ErrorKind::Interrupted`] kind is non-fatal and the read
+    /// operation should be retried if there is nothing else to do.
+    ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`Err`]: ../../std/result/enum.Result.html#variant.Err
+    /// [`Ok(n)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`File`]: ../fs/struct.File.html
     ///
     /// ```
     /// use std::io;
@@ -465,30 +497,58 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = [0; 10];
     ///
-    /// // read 10 bytes
-    /// try!(f.read(&mut buffer[..]));
+    /// // read up to 10 bytes
+    /// f.read(&mut buffer[..])?;
     /// # Ok(())
     /// # }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
 
+    /// Determines if this `Read`er can work with buffers of uninitialized
+    /// memory.
+    ///
+    /// The default implementation returns an initializer which will zero
+    /// buffers.
+    ///
+    /// If a `Read`er guarantees that it can work properly with uninitialized
+    /// memory, it should call [`Initializer::nop()`]. See the documentation for
+    /// [`Initializer`] for details.
+    ///
+    /// The behavior of this method must be independent of the state of the
+    /// `Read`er - the method only takes `&self` so that it can be used through
+    /// trait objects.
+    ///
+    /// # Safety
+    ///
+    /// This method is unsafe because a `Read`er could otherwise return a
+    /// non-zeroing `Initializer` from another `Read` type without an `unsafe`
+    /// block.
+    ///
+    /// [`Initializer::nop()`]: ../../std/io/struct.Initializer.html#method.nop
+    /// [`Initializer`]: ../../std/io/struct.Initializer.html
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    unsafe fn initializer(&self) -> Initializer {
+        Initializer::zeroing()
+    }
+
     /// Read all bytes until EOF in this source, placing them into `buf`.
     ///
     /// All bytes read from this source will be appended to the specified buffer
-    /// `buf`. This function will continuously call `read` to append more data to
-    /// `buf` until `read` returns either `Ok(0)` or an error of
-    /// non-`ErrorKind::Interrupted` kind.
+    /// `buf`. This function will continuously call [`read()`] to append more data to
+    /// `buf` until [`read()`] returns either [`Ok(0)`] or an error of
+    /// non-[`ErrorKind::Interrupted`] kind.
     ///
     /// If successful, this function will return the total number of bytes read.
     ///
     /// # Errors
     ///
     /// If this function encounters an error of the kind
-    /// `ErrorKind::Interrupted` then the error is ignored and the operation
+    /// [`ErrorKind::Interrupted`] then the error is ignored and the operation
     /// will continue.
     ///
     /// If any other read error is encountered then this function immediately
@@ -497,9 +557,12 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`read()`]: trait.Read.html#tymethod.read
+    /// [`Ok(0)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`File`]: ../fs/struct.File.html
     ///
     /// ```
     /// use std::io;
@@ -507,11 +570,11 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = Vec::new();
     ///
     /// // read the whole file
-    /// try!(f.read_to_end(&mut buffer));
+    /// f.read_to_end(&mut buffer)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -530,7 +593,7 @@ pub trait Read {
     /// If the data in this stream is *not* valid UTF-8 then an error is
     /// returned and `buf` is unchanged.
     ///
-    /// See [`read_to_end()`][readtoend] for other error semantics.
+    /// See [`read_to_end`][readtoend] for other error semantics.
     ///
     /// [readtoend]: #method.read_to_end
     ///
@@ -546,10 +609,10 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = String::new();
     ///
-    /// try!(f.read_to_string(&mut buffer));
+    /// f.read_to_string(&mut buffer)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -580,11 +643,11 @@ pub trait Read {
     /// # Errors
     ///
     /// If this function encounters an error of the kind
-    /// `ErrorKind::Interrupted` then the error is ignored and the operation
+    /// [`ErrorKind::Interrupted`] then the error is ignored and the operation
     /// will continue.
     ///
     /// If this function encounters an "end of file" before completely filling
-    /// the buffer, it returns an error of the kind `ErrorKind::UnexpectedEof`.
+    /// the buffer, it returns an error of the kind [`ErrorKind::UnexpectedEof`].
     /// The contents of `buf` are unspecified in this case.
     ///
     /// If any other read error is encountered then this function immediately
@@ -596,9 +659,11 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`ErrorKind::Interrupted`]: ../../std/io/enum.ErrorKind.html#variant.Interrupted
+    /// [`ErrorKind::UnexpectedEof`]: ../../std/io/enum.ErrorKind.html#variant.UnexpectedEof
     ///
     /// ```
     /// use std::io;
@@ -606,11 +671,11 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = [0; 10];
     ///
     /// // read exactly 10 bytes
-    /// try!(f.read_exact(&mut buffer));
+    /// f.read_exact(&mut buffer)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -649,7 +714,7 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = Vec::new();
     /// let mut other_buffer = Vec::new();
     ///
@@ -657,23 +722,23 @@ pub trait Read {
     ///     let reference = f.by_ref();
     ///
     ///     // read at most 5 bytes
-    ///     try!(reference.take(5).read_to_end(&mut buffer));
+    ///     reference.take(5).read_to_end(&mut buffer)?;
     ///
     /// } // drop our &mut reference so we can use f again
     ///
     /// // original file still usable, read the rest
-    /// try!(f.read_to_end(&mut other_buffer));
+    /// f.read_to_end(&mut other_buffer)?;
     /// # Ok(())
     /// # }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn by_ref(&mut self) -> &mut Self where Self: Sized { self }
 
-    /// Transforms this `Read` instance to an `Iterator` over its bytes.
+    /// Transforms this `Read` instance to an [`Iterator`] over its bytes.
     ///
-    /// The returned type implements `Iterator` where the `Item` is `Result<u8,
-    /// R::Err>`.  The yielded item is `Ok` if a byte was successfully read and
-    /// `Err` otherwise for I/O errors. EOF is mapped to returning `None` from
+    /// The returned type implements [`Iterator`] where the `Item` is [`Result`]`<`[`u8`]`,
+    /// R::Err>`. The yielded item is [`Ok`] if a byte was successfully read and
+    /// [`Err`] otherwise for I/O errors. EOF is mapped to returning [`None`] from
     /// this iterator.
     ///
     /// # Examples
@@ -681,6 +746,12 @@ pub trait Read {
     /// [`File`][file]s implement `Read`:
     ///
     /// [file]: ../fs/struct.File.html
+    /// [`Iterator`]: ../../std/iter/trait.Iterator.html
+    /// [`Result`]: ../../std/result/enum.Result.html
+    /// [`u8`]: ../../std/primitive.u8.html
+    /// [`Ok`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`Err`]: ../../std/result/enum.Result.html#variant.Err
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// ```
     /// use std::io;
@@ -688,7 +759,7 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     ///
     /// for byte in f.bytes() {
     ///     println!("{}", byte.unwrap());
@@ -701,12 +772,12 @@ pub trait Read {
         Bytes { inner: self }
     }
 
-    /// Transforms this `Read` instance to an `Iterator` over `char`s.
+    /// Transforms this `Read` instance to an [`Iterator`] over [`char`]s.
     ///
     /// This adaptor will attempt to interpret this reader as a UTF-8 encoded
-    /// sequence of characters. The returned iterator will return `None` once
+    /// sequence of characters. The returned iterator will return [`None`] once
     /// EOF is reached for this reader. Otherwise each element yielded will be a
-    /// `Result<char, E>` where `E` may contain information about what I/O error
+    /// [`Result`]`<`[`char`]`, E>` where `E` may contain information about what I/O error
     /// occurred or where decoding failed.
     ///
     /// Currently this adaptor will discard intermediate data read, and should
@@ -714,9 +785,13 @@ pub trait Read {
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`Iterator`]: ../../std/iter/trait.Iterator.html
+    /// [`Result`]: ../../std/result/enum.Result.html
+    /// [`char`]: ../../std/primitive.char.html
+    /// [`None`]: ../../std/option/enum.Option.html#variant.None
     ///
     /// ```
     /// #![feature(io)]
@@ -725,7 +800,7 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     ///
     /// for c in f.chars() {
     ///     println!("{}", c.unwrap());
@@ -759,15 +834,15 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f1 = try!(File::open("foo.txt"));
-    /// let mut f2 = try!(File::open("bar.txt"));
+    /// let mut f1 = File::open("foo.txt")?;
+    /// let mut f2 = File::open("bar.txt")?;
     ///
     /// let mut handle = f1.chain(f2);
     /// let mut buffer = String::new();
     ///
     /// // read the value into a String. We could use any Read method here,
     /// // this is just one example.
-    /// try!(handle.read_to_string(&mut buffer));
+    /// handle.read_to_string(&mut buffer)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -779,15 +854,17 @@ pub trait Read {
     /// Creates an adaptor which will read at most `limit` bytes from it.
     ///
     /// This function returns a new instance of `Read` which will read at most
-    /// `limit` bytes, after which it will always return EOF (`Ok(0)`). Any
+    /// `limit` bytes, after which it will always return EOF ([`Ok(0)`]). Any
     /// read errors will not count towards the number of bytes read and future
-    /// calls to `read` may succeed.
+    /// calls to [`read()`] may succeed.
     ///
     /// # Examples
     ///
-    /// [`File`][file]s implement `Read`:
+    /// [`File`]s implement `Read`:
     ///
-    /// [file]: ../fs/struct.File.html
+    /// [`File`]: ../fs/struct.File.html
+    /// [`Ok(0)`]: ../../std/result/enum.Result.html#variant.Ok
+    /// [`read()`]: trait.Read.html#tymethod.read
     ///
     /// ```
     /// use std::io;
@@ -795,13 +872,13 @@ pub trait Read {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut f = try!(File::open("foo.txt"));
+    /// let mut f = File::open("foo.txt")?;
     /// let mut buffer = [0; 5];
     ///
     /// // read at most five bytes
     /// let mut handle = f.take(5);
     ///
-    /// try!(handle.read(&mut buffer));
+    /// handle.read(&mut buffer)?;
     /// # Ok(())
     /// # }
     /// ```
@@ -811,16 +888,60 @@ pub trait Read {
     }
 }
 
+/// A type used to conditionally initialize buffers passed to `Read` methods.
+#[unstable(feature = "read_initializer", issue = "42788")]
+#[derive(Debug)]
+pub struct Initializer(bool);
+
+impl Initializer {
+    /// Returns a new `Initializer` which will zero out buffers.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn zeroing() -> Initializer {
+        Initializer(true)
+    }
+
+    /// Returns a new `Initializer` which will not zero out buffers.
+    ///
+    /// # Safety
+    ///
+    /// This may only be called by `Read`ers which guarantee that they will not
+    /// read from buffers passed to `Read` methods, and that the return value of
+    /// the method accurately reflects the number of bytes that have been
+    /// written to the head of the buffer.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub unsafe fn nop() -> Initializer {
+        Initializer(false)
+    }
+
+    /// Indicates if a buffer should be initialized.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn should_initialize(&self) -> bool {
+        self.0
+    }
+
+    /// Initializes a buffer if necessary.
+    #[unstable(feature = "read_initializer", issue = "42788")]
+    #[inline]
+    pub fn initialize(&self, buf: &mut [u8]) {
+        if self.should_initialize() {
+            unsafe { ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()) }
+        }
+    }
+}
+
 /// A trait for objects which are byte-oriented sinks.
 ///
 /// Implementors of the `Write` trait are sometimes called 'writers'.
 ///
-/// Writers are defined by two required methods, [`write()`] and [`flush()`]:
+/// Writers are defined by two required methods, [`write`] and [`flush`]:
 ///
-/// * The [`write()`] method will attempt to write some data into the object,
+/// * The [`write`] method will attempt to write some data into the object,
 ///   returning how many bytes were successfully written.
 ///
-/// * The [`flush()`] method is useful for adaptors and explicit buffers
+/// * The [`flush`] method is useful for adaptors and explicit buffers
 ///   themselves for ensuring that all buffered data has been pushed out to the
 ///   'true sink'.
 ///
@@ -828,8 +949,8 @@ pub trait Read {
 /// throughout [`std::io`] take and provide types which implement the `Write`
 /// trait.
 ///
-/// [`write()`]: #tymethod.write
-/// [`flush()`]: #tymethod.flush
+/// [`write`]: #tymethod.write
+/// [`flush`]: #tymethod.flush
 /// [`std::io`]: index.html
 ///
 /// # Examples
@@ -839,9 +960,9 @@ pub trait Read {
 /// use std::fs::File;
 ///
 /// # fn foo() -> std::io::Result<()> {
-/// let mut buffer = try!(File::create("foo.txt"));
+/// let mut buffer = File::create("foo.txt")?;
 ///
-/// try!(buffer.write(b"some bytes"));
+/// buffer.write(b"some bytes")?;
 /// # Ok(())
 /// # }
 /// ```
@@ -872,6 +993,9 @@ pub trait Write {
     /// It is **not** considered an error if the entire buffer could not be
     /// written to this writer.
     ///
+    /// An error of the `ErrorKind::Interrupted` kind is non-fatal and the
+    /// write operation should be retried if there is nothing else to do.
+    ///
     /// # Examples
     ///
     /// ```
@@ -879,9 +1003,10 @@ pub trait Write {
     /// use std::fs::File;
     ///
     /// # fn foo() -> std::io::Result<()> {
-    /// let mut buffer = try!(File::create("foo.txt"));
+    /// let mut buffer = File::create("foo.txt")?;
     ///
-    /// try!(buffer.write(b"some bytes"));
+    /// // Writes some prefix of the byte string, not necessarily all of it.
+    /// buffer.write(b"some bytes")?;
     /// # Ok(())
     /// # }
     /// ```
@@ -904,10 +1029,10 @@ pub trait Write {
     /// use std::fs::File;
     ///
     /// # fn foo() -> std::io::Result<()> {
-    /// let mut buffer = BufWriter::new(try!(File::create("foo.txt")));
+    /// let mut buffer = BufWriter::new(File::create("foo.txt")?);
     ///
-    /// try!(buffer.write(b"some bytes"));
-    /// try!(buffer.flush());
+    /// buffer.write(b"some bytes")?;
+    /// buffer.flush()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -916,14 +1041,17 @@ pub trait Write {
 
     /// Attempts to write an entire buffer into this write.
     ///
-    /// This method will continuously call `write` while there is more data to
-    /// write. This method will not return until the entire buffer has been
-    /// successfully written or an error occurs. The first error generated from
-    /// this method will be returned.
+    /// This method will continuously call `write` until there is no more data
+    /// to be written or an error of non-`ErrorKind::Interrupted` kind is
+    /// returned. This method will not return until the entire buffer has been
+    /// successfully written or such an error occurs. The first error that is
+    /// not of `ErrorKind::Interrupted` kind generated from this method will be
+    /// returned.
     ///
     /// # Errors
     ///
-    /// This function will return the first error that `write` returns.
+    /// This function will return the first error of
+    /// non-`ErrorKind::Interrupted` kind that `write` returns.
     ///
     /// # Examples
     ///
@@ -932,9 +1060,9 @@ pub trait Write {
     /// use std::fs::File;
     ///
     /// # fn foo() -> std::io::Result<()> {
-    /// let mut buffer = try!(File::create("foo.txt"));
+    /// let mut buffer = File::create("foo.txt")?;
     ///
-    /// try!(buffer.write_all(b"some bytes"));
+    /// buffer.write_all(b"some bytes")?;
     /// # Ok(())
     /// # }
     /// ```
@@ -981,12 +1109,12 @@ pub trait Write {
     /// use std::fs::File;
     ///
     /// # fn foo() -> std::io::Result<()> {
-    /// let mut buffer = try!(File::create("foo.txt"));
+    /// let mut buffer = File::create("foo.txt")?;
     ///
     /// // this call
-    /// try!(write!(buffer, "{:.*}", 2, 1.234567));
+    /// write!(buffer, "{:.*}", 2, 1.234567)?;
     /// // turns into this:
-    /// try!(buffer.write_fmt(format_args!("{:.*}", 2, 1.234567)));
+    /// buffer.write_fmt(format_args!("{:.*}", 2, 1.234567))?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1037,12 +1165,12 @@ pub trait Write {
     /// use std::fs::File;
     ///
     /// # fn foo() -> std::io::Result<()> {
-    /// let mut buffer = try!(File::create("foo.txt"));
+    /// let mut buffer = File::create("foo.txt")?;
     ///
     /// let reference = buffer.by_ref();
     ///
     /// // we can use reference just like our original buffer
-    /// try!(reference.write_all(b"some bytes"));
+    /// reference.write_all(b"some bytes")?;
     /// # Ok(())
     /// # }
     /// ```
@@ -1069,10 +1197,10 @@ pub trait Write {
 /// use std::io::SeekFrom;
 ///
 /// # fn foo() -> io::Result<()> {
-/// let mut f = try!(File::open("foo.txt"));
+/// let mut f = File::open("foo.txt")?;
 ///
 /// // move the cursor 42 bytes from the start of the file
-/// try!(f.seek(SeekFrom::Start(42)));
+/// f.seek(SeekFrom::Start(42))?;
 /// # Ok(())
 /// # }
 /// ```
@@ -1159,7 +1287,7 @@ fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>)
 ///
 /// For example, reading line-by-line is inefficient without using a buffer, so
 /// if you want to read by line, you'll need `BufRead`, which includes a
-/// [`read_line()`] method as well as a [`lines()`] iterator.
+/// [`read_line`] method as well as a [`lines`] iterator.
 ///
 /// # Examples
 ///
@@ -1183,8 +1311,8 @@ fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>)
 ///
 /// [`BufReader`]: struct.BufReader.html
 /// [`File`]: ../fs/struct.File.html
-/// [`read_line()`]: #method.read_line
-/// [`lines()`]: #method.lines
+/// [`read_line`]: #method.read_line
+/// [`lines`]: #method.lines
 /// [`Read`]: trait.Read.html
 ///
 /// ```
@@ -1193,7 +1321,7 @@ fn read_until<R: BufRead + ?Sized>(r: &mut R, delim: u8, buf: &mut Vec<u8>)
 /// use std::fs::File;
 ///
 /// # fn foo() -> io::Result<()> {
-/// let f = try!(File::open("foo.txt"));
+/// let f = File::open("foo.txt")?;
 /// let f = BufReader::new(f);
 ///
 /// for line in f.lines() {
@@ -1209,13 +1337,13 @@ pub trait BufRead: Read {
     /// Fills the internal buffer of this object, returning the buffer contents.
     ///
     /// This function is a lower-level call. It needs to be paired with the
-    /// [`consume()`] method to function properly. When calling this
+    /// [`consume`] method to function properly. When calling this
     /// method, none of the contents will be "read" in the sense that later
-    /// calling `read` may return the same contents. As such, [`consume()`] must
+    /// calling `read` may return the same contents. As such, [`consume`] must
     /// be called with the number of bytes that are consumed from this buffer to
     /// ensure that the bytes are never returned twice.
     ///
-    /// [`consume()`]: #tymethod.consume
+    /// [`consume`]: #tymethod.consume
     ///
     /// An empty buffer returned indicates that the stream has reached EOF.
     ///
@@ -1256,21 +1384,21 @@ pub trait BufRead: Read {
     /// so they should no longer be returned in calls to `read`.
     ///
     /// This function is a lower-level call. It needs to be paired with the
-    /// [`fill_buf()`] method to function properly. This function does
+    /// [`fill_buf`] method to function properly. This function does
     /// not perform any I/O, it simply informs this object that some amount of
-    /// its buffer, returned from [`fill_buf()`], has been consumed and should
+    /// its buffer, returned from [`fill_buf`], has been consumed and should
     /// no longer be returned. As such, this function may do odd things if
-    /// [`fill_buf()`] isn't called before calling it.
+    /// [`fill_buf`] isn't called before calling it.
     ///
     /// The `amt` must be `<=` the number of bytes in the buffer returned by
-    /// [`fill_buf()`].
+    /// [`fill_buf`].
     ///
     /// # Examples
     ///
-    /// Since `consume()` is meant to be used with [`fill_buf()`],
+    /// Since `consume()` is meant to be used with [`fill_buf`],
     /// that method's example includes an example of `consume()`.
     ///
-    /// [`fill_buf()`]: #tymethod.fill_buf
+    /// [`fill_buf`]: #tymethod.fill_buf
     #[stable(feature = "rust1", since = "1.0.0")]
     fn consume(&mut self, amt: usize);
 
@@ -1285,33 +1413,47 @@ pub trait BufRead: Read {
     /// # Errors
     ///
     /// This function will ignore all instances of [`ErrorKind::Interrupted`] and
-    /// will otherwise return any errors returned by [`fill_buf()`].
+    /// will otherwise return any errors returned by [`fill_buf`].
     ///
     /// If an I/O error is encountered then all bytes read so far will be
     /// present in `buf` and its length will have been adjusted appropriately.
     ///
-    /// # Examples
-    ///
-    /// A locked standard input implements `BufRead`. In this example, we'll
-    /// read from standard input until we see an `a` byte.
-    ///
-    /// [`fill_buf()`]: #tymethod.fill_buf
+    /// [`fill_buf`]: #tymethod.fill_buf
     /// [`ErrorKind::Interrupted`]: enum.ErrorKind.html#variant.Interrupted
     ///
+    /// # Examples
+    ///
+    /// [`std::io::Cursor`][`Cursor`] is a type that implements `BufRead`. In
+    /// this example, we use [`Cursor`] to read all the bytes in a byte slice
+    /// in hyphen delimited segments:
+    ///
+    /// [`Cursor`]: struct.Cursor.html
+    ///
     /// ```
-    /// use std::io;
-    /// use std::io::prelude::*;
+    /// use std::io::{self, BufRead};
     ///
-    /// fn foo() -> io::Result<()> {
-    /// let stdin = io::stdin();
-    /// let mut stdin = stdin.lock();
-    /// let mut buffer = Vec::new();
+    /// let mut cursor = io::Cursor::new(b"lorem-ipsum");
+    /// let mut buf = vec![];
     ///
-    /// try!(stdin.read_until(b'a', &mut buffer));
+    /// // cursor is at 'l'
+    /// let num_bytes = cursor.read_until(b'-', &mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 6);
+    /// assert_eq!(buf, b"lorem-");
+    /// buf.clear();
     ///
-    /// println!("{:?}", buffer);
-    /// # Ok(())
-    /// # }
+    /// // cursor is at 'i'
+    /// let num_bytes = cursor.read_until(b'-', &mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 5);
+    /// assert_eq!(buf, b"ipsum");
+    /// buf.clear();
+    ///
+    /// // cursor is at EOF
+    /// let num_bytes = cursor.read_until(b'-', &mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 0);
+    /// assert_eq!(buf, b"");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn read_until(&mut self, byte: u8, buf: &mut Vec<u8>) -> Result<usize> {
@@ -1330,35 +1472,43 @@ pub trait BufRead: Read {
     ///
     /// # Errors
     ///
-    /// This function has the same error semantics as [`read_until()`] and will
+    /// This function has the same error semantics as [`read_until`] and will
     /// also return an error if the read bytes are not valid UTF-8. If an I/O
     /// error is encountered then `buf` may contain some bytes already read in
     /// the event that all data read so far was valid UTF-8.
     ///
     /// # Examples
     ///
-    /// A locked standard input implements `BufRead`. In this example, we'll
-    /// read all of the lines from standard input. If we were to do this in
-    /// an actual project, the [`lines()`] method would be easier, of
-    /// course.
+    /// [`std::io::Cursor`][`Cursor`] is a type that implements `BufRead`. In
+    /// this example, we use [`Cursor`] to read all the lines in a byte slice:
     ///
-    /// [`lines()`]: #method.lines
-    /// [`read_until()`]: #method.read_until
+    /// [`Cursor`]: struct.Cursor.html
     ///
     /// ```
-    /// use std::io;
-    /// use std::io::prelude::*;
+    /// use std::io::{self, BufRead};
     ///
-    /// let stdin = io::stdin();
-    /// let mut stdin = stdin.lock();
-    /// let mut buffer = String::new();
+    /// let mut cursor = io::Cursor::new(b"foo\nbar");
+    /// let mut buf = String::new();
     ///
-    /// while stdin.read_line(&mut buffer).unwrap() > 0 {
-    ///     // work with buffer
-    ///     println!("{:?}", buffer);
+    /// // cursor is at 'f'
+    /// let num_bytes = cursor.read_line(&mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 4);
+    /// assert_eq!(buf, "foo\n");
+    /// buf.clear();
     ///
-    ///     buffer.clear();
-    /// }
+    /// // cursor is at 'b'
+    /// let num_bytes = cursor.read_line(&mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 3);
+    /// assert_eq!(buf, "bar");
+    /// buf.clear();
+    ///
+    /// // cursor is at EOF
+    /// let num_bytes = cursor.read_line(&mut buf)
+    ///     .expect("reading from cursor won't fail");
+    /// assert_eq!(num_bytes, 0);
+    /// assert_eq!(buf, "");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn read_line(&mut self, buf: &mut String) -> Result<usize> {
@@ -1375,27 +1525,31 @@ pub trait BufRead: Read {
     /// [`io::Result`]`<`[`Vec<u8>`]`>`. Each vector returned will *not* have
     /// the delimiter byte at the end.
     ///
-    /// This function will yield errors whenever [`read_until()`] would have
+    /// This function will yield errors whenever [`read_until`] would have
     /// also yielded an error.
-    ///
-    /// # Examples
-    ///
-    /// A locked standard input implements `BufRead`. In this example, we'll
-    /// read some input from standard input, splitting on commas.
     ///
     /// [`io::Result`]: type.Result.html
     /// [`Vec<u8>`]: ../vec/struct.Vec.html
-    /// [`read_until()`]: #method.read_until
+    /// [`read_until`]: #method.read_until
+    ///
+    /// # Examples
+    ///
+    /// [`std::io::Cursor`][`Cursor`] is a type that implements `BufRead`. In
+    /// this example, we use [`Cursor`] to iterate over all hyphen delimited
+    /// segments in a byte slice
+    ///
+    /// [`Cursor`]: struct.Cursor.html
     ///
     /// ```
-    /// use std::io;
-    /// use std::io::prelude::*;
+    /// use std::io::{self, BufRead};
     ///
-    /// let stdin = io::stdin();
+    /// let cursor = io::Cursor::new(b"lorem-ipsum-dolor");
     ///
-    /// for content in stdin.lock().split(b',') {
-    ///     println!("{:?}", content.unwrap());
-    /// }
+    /// let mut split_iter = cursor.split(b'-').map(|l| l.unwrap());
+    /// assert_eq!(split_iter.next(), Some(b"lorem".to_vec()));
+    /// assert_eq!(split_iter.next(), Some(b"ipsum".to_vec()));
+    /// assert_eq!(split_iter.next(), Some(b"dolor".to_vec()));
+    /// assert_eq!(split_iter.next(), None);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     fn split(self, byte: u8) -> Split<Self> where Self: Sized {
@@ -1413,24 +1567,29 @@ pub trait BufRead: Read {
     ///
     /// # Examples
     ///
-    /// A locked standard input implements `BufRead`:
+    /// [`std::io::Cursor`][`Cursor`] is a type that implements `BufRead`. In
+    /// this example, we use [`Cursor`] to iterate over all the lines in a byte
+    /// slice.
+    ///
+    /// [`Cursor`]: struct.Cursor.html
     ///
     /// ```
-    /// use std::io;
-    /// use std::io::prelude::*;
+    /// use std::io::{self, BufRead};
     ///
-    /// let stdin = io::stdin();
+    /// let cursor = io::Cursor::new(b"lorem\nipsum\r\ndolor");
     ///
-    /// for line in stdin.lock().lines() {
-    ///     println!("{}", line.unwrap());
-    /// }
+    /// let mut lines_iter = cursor.lines().map(|l| l.unwrap());
+    /// assert_eq!(lines_iter.next(), Some(String::from("lorem")));
+    /// assert_eq!(lines_iter.next(), Some(String::from("ipsum")));
+    /// assert_eq!(lines_iter.next(), Some(String::from("dolor")));
+    /// assert_eq!(lines_iter.next(), None);
     /// ```
     ///
     /// # Errors
     ///
-    /// Each line of the iterator has the same error semantics as [`BufRead::read_line()`].
+    /// Each line of the iterator has the same error semantics as [`BufRead::read_line`].
     ///
-    /// [`BufRead::read_line()`]: trait.BufRead.html#method.read_line
+    /// [`BufRead::read_line`]: trait.BufRead.html#method.read_line
     #[stable(feature = "rust1", since = "1.0.0")]
     fn lines(self) -> Lines<Self> where Self: Sized {
         Lines { buf: self }
@@ -1439,10 +1598,10 @@ pub trait BufRead: Read {
 
 /// Adaptor to chain together two readers.
 ///
-/// This struct is generally created by calling [`chain()`] on a reader.
-/// Please see the documentation of [`chain()`] for more details.
+/// This struct is generally created by calling [`chain`] on a reader.
+/// Please see the documentation of [`chain`] for more details.
 ///
-/// [`chain()`]: trait.Read.html#method.chain
+/// [`chain`]: trait.Read.html#method.chain
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Chain<T, U> {
     first: T,
@@ -1450,7 +1609,82 @@ pub struct Chain<T, U> {
     done_first: bool,
 }
 
-#[stable(feature = "std_debug", since = "1.15.0")]
+impl<T, U> Chain<T, U> {
+    /// Consumes the `Chain`, returning the wrapped readers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let mut foo_file = File::open("foo.txt")?;
+    /// let mut bar_file = File::open("bar.txt")?;
+    ///
+    /// let chain = foo_file.chain(bar_file);
+    /// let (foo_file, bar_file) = chain.into_inner();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
+    pub fn into_inner(self) -> (T, U) {
+        (self.first, self.second)
+    }
+
+    /// Gets references to the underlying readers in this `Chain`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let mut foo_file = File::open("foo.txt")?;
+    /// let mut bar_file = File::open("bar.txt")?;
+    ///
+    /// let chain = foo_file.chain(bar_file);
+    /// let (foo_file, bar_file) = chain.get_ref();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
+    pub fn get_ref(&self) -> (&T, &U) {
+        (&self.first, &self.second)
+    }
+
+    /// Gets mutable references to the underlying readers in this `Chain`.
+    ///
+    /// Care should be taken to avoid modifying the internal I/O state of the
+    /// underlying readers as doing so may corrupt the internal state of this
+    /// `Chain`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let mut foo_file = File::open("foo.txt")?;
+    /// let mut bar_file = File::open("bar.txt")?;
+    ///
+    /// let mut chain = foo_file.chain(bar_file);
+    /// let (foo_file, bar_file) = chain.get_mut();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
+    pub fn get_mut(&mut self) -> (&mut T, &mut U) {
+        (&mut self.first, &mut self.second)
+    }
+}
+
+#[stable(feature = "std_debug", since = "1.16.0")]
 impl<T: fmt::Debug, U: fmt::Debug> fmt::Debug for Chain<T, U> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Chain")
@@ -1470,6 +1704,15 @@ impl<T: Read, U: Read> Read for Chain<T, U> {
             }
         }
         self.second.read(buf)
+    }
+
+    unsafe fn initializer(&self) -> Initializer {
+        let initializer = self.first.initializer();
+        if initializer.should_initialize() {
+            initializer
+        } else {
+            self.second.initializer()
+        }
     }
 }
 
@@ -1496,10 +1739,10 @@ impl<T: BufRead, U: BufRead> BufRead for Chain<T, U> {
 
 /// Reader adaptor which limits the bytes read from an underlying reader.
 ///
-/// This struct is generally created by calling [`take()`] on a reader.
-/// Please see the documentation of [`take()`] for more details.
+/// This struct is generally created by calling [`take`] on a reader.
+/// Please see the documentation of [`take`] for more details.
 ///
-/// [`take()`]: trait.Read.html#method.take
+/// [`take`]: trait.Read.html#method.take
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
 pub struct Take<T> {
@@ -1526,7 +1769,7 @@ impl<T> Take<T> {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let f = try!(File::open("foo.txt"));
+    /// let f = File::open("foo.txt")?;
     ///
     /// // read at most five bytes
     /// let handle = f.take(5);
@@ -1538,6 +1781,35 @@ impl<T> Take<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn limit(&self) -> u64 { self.limit }
 
+    /// Sets the number of bytes that can be read before this instance will
+    /// return EOF. This is the same as constructing a new `Take` instance, so
+    /// the amount of bytes read and the previous limit value don't matter when
+    /// calling this method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(take_set_limit)]
+    /// use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let f = File::open("foo.txt")?;
+    ///
+    /// // read at most five bytes
+    /// let mut handle = f.take(5);
+    /// handle.set_limit(10);
+    ///
+    /// assert_eq!(handle.limit(), 10);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[unstable(feature = "take_set_limit", issue = "42781")]
+    pub fn set_limit(&mut self, limit: u64) {
+        self.limit = limit;
+    }
+
     /// Consumes the `Take`, returning the wrapped reader.
     ///
     /// # Examples
@@ -1548,11 +1820,11 @@ impl<T> Take<T> {
     /// use std::fs::File;
     ///
     /// # fn foo() -> io::Result<()> {
-    /// let mut file = try!(File::open("foo.txt"));
+    /// let mut file = File::open("foo.txt")?;
     ///
     /// let mut buffer = [0; 5];
     /// let mut handle = file.take(5);
-    /// try!(handle.read(&mut buffer));
+    /// handle.read(&mut buffer)?;
     ///
     /// let file = handle.into_inner();
     /// # Ok(())
@@ -1561,6 +1833,60 @@ impl<T> Take<T> {
     #[stable(feature = "io_take_into_inner", since = "1.15.0")]
     pub fn into_inner(self) -> T {
         self.inner
+    }
+
+    /// Gets a reference to the underlying reader.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let mut file = File::open("foo.txt")?;
+    ///
+    /// let mut buffer = [0; 5];
+    /// let mut handle = file.take(5);
+    /// handle.read(&mut buffer)?;
+    ///
+    /// let file = handle.get_ref();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
+    pub fn get_ref(&self) -> &T {
+        &self.inner
+    }
+
+    /// Gets a mutable reference to the underlying reader.
+    ///
+    /// Care should be taken to avoid modifying the internal I/O state of the
+    /// underlying reader as doing so may corrupt the internal limit of this
+    /// `Take`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io;
+    /// use std::io::prelude::*;
+    /// use std::fs::File;
+    ///
+    /// # fn foo() -> io::Result<()> {
+    /// let mut file = File::open("foo.txt")?;
+    ///
+    /// let mut buffer = [0; 5];
+    /// let mut handle = file.take(5);
+    /// handle.read(&mut buffer)?;
+    ///
+    /// let file = handle.get_mut();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[stable(feature = "more_io_inner_methods", since = "1.20.0")]
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
     }
 }
 
@@ -1576,6 +1902,10 @@ impl<T: Read> Read for Take<T> {
         let n = self.inner.read(&mut buf[..max])?;
         self.limit -= n as u64;
         Ok(n)
+    }
+
+    unsafe fn initializer(&self) -> Initializer {
+        self.inner.initializer()
     }
 }
 
@@ -1614,10 +1944,10 @@ fn read_one_byte(reader: &mut Read) -> Option<Result<u8>> {
 
 /// An iterator over `u8` values of a reader.
 ///
-/// This struct is generally created by calling [`bytes()`] on a reader.
-/// Please see the documentation of [`bytes()`] for more details.
+/// This struct is generally created by calling [`bytes`] on a reader.
+/// Please see the documentation of [`bytes`] for more details.
 ///
-/// [`bytes()`]: trait.Read.html#method.bytes
+/// [`bytes`]: trait.Read.html#method.bytes
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
 pub struct Bytes<R> {
@@ -1635,7 +1965,7 @@ impl<R: Read> Iterator for Bytes<R> {
 
 /// An iterator over the `char`s of a reader.
 ///
-/// This struct is generally created by calling [`chars()`][chars] on a reader.
+/// This struct is generally created by calling [`chars`][chars] on a reader.
 /// Please see the documentation of `chars()` for more details.
 ///
 /// [chars]: trait.Read.html#method.chars
@@ -1726,7 +2056,7 @@ impl fmt::Display for CharsError {
 /// An iterator over the contents of an instance of `BufRead` split on a
 /// particular byte.
 ///
-/// This struct is generally created by calling [`split()`][split] on a
+/// This struct is generally created by calling [`split`][split] on a
 /// `BufRead`. Please see the documentation of `split()` for more details.
 ///
 /// [split]: trait.BufRead.html#method.split
@@ -1758,7 +2088,7 @@ impl<B: BufRead> Iterator for Split<B> {
 
 /// An iterator over the lines of an instance of `BufRead`.
 ///
-/// This struct is generally created by calling [`lines()`][lines] on a
+/// This struct is generally created by calling [`lines`][lines] on a
 /// `BufRead`. Please see the documentation of `lines()` for more details.
 ///
 /// [lines]: trait.BufRead.html#method.lines

@@ -17,7 +17,6 @@ extern crate graphviz;
 
 extern crate krate2;
 extern crate krate2 as krate3;
-extern crate flate as myflate;
 
 use graphviz::RenderOption;
 use std::collections::{HashMap,HashSet};
@@ -51,7 +50,6 @@ fn test_alias<I: Iterator>(i: Option<<I as Iterator>::Item>) {
 
     krate2::hello();
     krate3::hello();
-    myflate::deflate_bytes(&[]);
 
     let x = (3isize, 4usize);
     let y = x.1;
@@ -447,4 +445,9 @@ fn test_format_args() {
     print!("Hello {0}", name);
     print!("{0} + {} = {}", x, y);
     print!("x is {}, y is {1}, name is {n}", x, y, n = name);
+}
+
+extern {
+    static EXTERN_FOO: u8;
+    fn extern_foo(a: u8, b: i32) -> String;
 }
